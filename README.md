@@ -34,6 +34,7 @@ project telling you at a glance who is working and who is waiting.
 
 - **Answer prompts from the phone.** Selection prompts render as their own
   card, with number keys that follow however many options the agent listed.
+  Claude Code and Codex panes are both read, whichever glyphs they draw with.
 - **Your herd at a glance.** One sheep per project, coloured *and* posed by
   what its agent is doing: grazing while it works, head up when idle, ear
   pricked when blocked, asleep when done. Sorted by whatever changed last.
@@ -163,7 +164,7 @@ context left — which is hidden by default because it is noise on a phone.
 | `web/` | The phone app — plain HTML, CSS and JavaScript, no build step. |
 | `menubar/` | `SheepIt.app`, the macOS menu bar switch. One `clang` invocation, no Xcode project. |
 | `deploy/` | systemd and launchd units for running the gateway unattended. |
-| `tools/` | Asset generators, currently the synthesised bleat. |
+| `tools/` | The synthesised bleat, and `test-transcript.js` — `node tools/test-transcript.js` checks the pane parser against both agents. |
 | `docs/` | Everything below. |
 
 ## Documentation

@@ -255,6 +255,10 @@
     }
     return out;
   }
+  /* Two agents, two sets of glyphs for the same handful of roles. Claude Code
+     marks a turn with "⏺" and a tool result with "⎿"; Codex uses "•" and "└".
+     `bol` pins a marker to the left margin: Codex's bullet always starts a
+     turn there, while a "•" further in is a list item in somebody's prose. */
   const MARKERS = [
     { re: /^❯/, cls: "user" },        // > user message / live input
     { re: /^⏺/, cls: "assistant" },   // assistant message or tool call
@@ -262,14 +266,29 @@
     { re: /^[✻✽✳]/, cls: "meta" }, // "Worked for 1m 8s"
     { re: /^※/, cls: "tip" },         // tips
     { re: /^⏵⏵/, cls: "status" }, // "auto mode on ..."
+    { re: /^•\s/, cls: "assistant", bol: true }, // "• Ran docker compose ps"
+    { re: /^[✓✔✗✘]\s/, cls: "meta", bol: true },  // "✔ You approved codex to ..."
+    { re: /^└\s/, cls: "tool" },                 // "  └ {"acknowledged":true}"
   ];
   const RE_BOX = /^[┌┐└┘├┤┬┴┼│╭╮╯╰┏┓┗┛┣┫┳┻╋┃║╔╗╚╝╠╣╦╩╬]/;
-  // "❯ 2. app.bodyweight.plus" - one choice in a selection prompt.
-  const RE_OPTION = /^[\s\u00a0]*[❯>]?[\s\u00a0]*(\d{1,2})\.[\s\u00a0]/;
-  // The footer the terminal prints under a selection prompt.
-  const RE_SELECT_HINT = /Enter to select|keys? to navigate|Esc to cancel/i;
+  // "❯ 2. app.bodyweight.plus", "› 1. Yes, proceed (y)" - one choice in a
+  // selection prompt.
+  const RE_OPTION = /^\s*[❯›>]?\s*(\d{1,2})\.\s/;
+  /* The footer a terminal prints under the prompt it is waiting on: Claude
+     Code's "Enter to select", Codex's "Press enter to confirm or esc to
+     cancel". RE_PROMPT_HINT is the half only a prompt says - "Esc to cancel"
+     on its own is also what an autocomplete menu offers. */
+  const RE_PROMPT_HINT = /Enter to select|keys? to navigate|Enter to confirm/i;
+  const RE_SELECT_HINT = /Esc to cancel|Esc to reject/i;
+  // The composer's own glyph: "❯" in Claude Code, "›" in Codex.
+  const RE_COMPOSER = /^[❯›](?:\s|$)/;
+  // What a composer shows when nothing has been typed into it.
+  const RE_PLACEHOLDER = /^(?:ask codex to do anything|try ".*")$/i;
   // Long runs of rule glyphs anywhere in a line, not just whole-line rules.
   const RE_INLINE_RULE = /([─━┄┅┈┉═—–_=*.])\1{7,}/g;
+  // Both the composer and a pending prompt sit at the foot of the pane. This
+  // far above it, the same glyphs are something the agent printed.
+  const TAIL_REACH = 24;
 
   /* Is this line one of the terminal's horizontal rules? Returns null if not,
      otherwise the caption embedded in it - the input box's top border carries
@@ -286,14 +305,106 @@
     return null; // prose that merely contains a long run of glyphs
   }
 
-  function classifyLine(trimmed) {
+  function classifyLine(line, trimmed) {
     if (!trimmed) return null;
+    // Markers before boxes: Codex's "└ " tool result would otherwise read as
+    // the bottom-left corner of one.
+    for (const m of MARKERS) {
+      if (m.re.test(m.bol ? line : trimmed)) return m.cls;
+    }
     if (RE_BOX.test(trimmed)) return "table";
     if (ruleLabel(trimmed) !== null) return "rule";
-    for (const m of MARKERS) {
-      if (m.re.test(trimmed)) return m.cls;
-    }
     return null; // continuation of whatever came before
+  }
+
+  /* The terminal's own furniture at the foot of the pane: the composer, and
+     the status bar under it. Claude Code frames the composer in a pair of
+     rules and marks it "❯"; Codex prints "›" with nothing around it at all,
+     then names its model and cwd.
+
+     Anchoring on that glyph rather than on the last pair of rules is what
+     keeps a message whole. A markdown table's separator row is a rule too, so
+     taking the last two of those lifted the tail of the agent's answer into
+     the input mirror - a strip built for one line - and deleted the rest. */
+  function findChrome(raw) {
+    let idx = -1;
+    for (let i = raw.length - 1; i >= Math.max(0, raw.length - TAIL_REACH); i--) {
+      const trimmed = raw[i].trim();
+      if (!RE_COMPOSER.test(trimmed)) continue;
+      // "❯ 1. Yes, proceed" is a choice being offered, not the composer.
+      if (RE_OPTION.test(trimmed)) return null;
+      idx = i;
+      break;
+    }
+    if (idx < 0) return null;
+
+    // Claude Code's box: a rule opens it just above the "❯", the next rule
+    // closes it, and an autocomplete menu can sit in between.
+    let open = -1;
+    for (let i = idx - 1; i >= 0 && idx - i <= 3; i--) {
+      if (ruleLabel(raw[i].trim()) !== null) { open = i; break; }
+      if (raw[i].trim()) break;
+    }
+    let close = -1;
+    if (open >= 0) {
+      for (let i = idx + 1; i < raw.length && i - idx <= 12; i++) {
+        if (ruleLabel(raw[i].trim()) !== null) { close = i; break; }
+      }
+    }
+
+    const value = raw
+      .slice(idx, close >= 0 ? close : idx + 1)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(RE_COMPOSER, "")
+      .trim();
+    return {
+      // The opening rule stays: it carries the session title.
+      dropFrom: open >= 0 ? open + 1 : idx,
+      dropTo: close >= 0 ? close : idx,
+      statusFrom: close >= 0 ? close : idx,
+      liveInput: RE_PLACEHOLDER.test(value) ? "" : value,
+    };
+  }
+
+  /* The prompt an agent has stopped on - a tool confirmation, a plan
+     approval, AskUserQuestion. Claude Code frames it in the same pair of
+     rules that otherwise frames its composer; Codex frames it in nothing at
+     all. So find it by what it says - numbered choices and the footer under
+     them - rather than by the furniture around it. Getting this wrong is how
+     the question vanishes from the phone entirely. */
+  function findSelection(raw) {
+    const floor = Math.max(0, raw.length - TAIL_REACH);
+    let hintIdx = -1;
+    for (let i = floor; i < raw.length; i++) {
+      if (RE_PROMPT_HINT.test(raw[i]) || RE_SELECT_HINT.test(raw[i])) hintIdx = i;
+    }
+    let firstOption = -1;
+    let lastOption = -1;
+    let optionMax = 0;
+    for (let i = floor; i <= (hintIdx >= 0 ? hintIdx : raw.length - 1); i++) {
+      const m = RE_OPTION.exec(raw[i]);
+      if (!m) continue;
+      if (firstOption < 0) firstOption = i;
+      lastOption = i;
+      optionMax = Math.max(optionMax, Number(m[1]));
+    }
+    // A footer only a prompt prints is proof by itself; anything weaker needs
+    // the numbered choices to back it up.
+    if (optionMax < 2 && !(hintIdx >= 0 && RE_PROMPT_HINT.test(raw[hintIdx]))) return null;
+
+    /* Walk up to the head of the prompt: the rule that opens Claude Code's
+       box, or - Codex having no box - the line after the last thing the agent
+       printed for itself. */
+    const head = firstOption >= 0 ? firstOption : hintIdx;
+    let start = Math.max(0, head - TAIL_REACH);
+    for (let i = head - 1; i >= start; i--) {
+      const trimmed = raw[i].trim();
+      if (ruleLabel(trimmed) !== null) { start = i; break; }
+      if (classifyLine(raw[i], trimmed)) { start = i + 1; break; }
+    }
+    return { start, end: Math.max(hintIdx, lastOption), optionMax, hint: hintIdx >= 0 };
   }
 
   function parseTranscript(text) {
@@ -306,79 +417,44 @@
     });
     const raw = rows.map((r) => r.text);
 
-    // Everything after the final rule is the agent's own status bar.
-    const ruleIdxs = [];
-    raw.forEach((l, i) => {
-      if (ruleLabel(l.trim()) !== null) ruleIdxs.push(i);
-    });
-    const lastRule = ruleIdxs.length ? ruleIdxs[ruleIdxs.length - 1] : -1;
-    const prevRule = ruleIdxs.length > 1 ? ruleIdxs[ruleIdxs.length - 2] : -1;
+    const chrome = findChrome(raw);
+    let sel = findSelection(raw);
+    /* Numbered lines with the composer still under them are prose, not a
+       prompt: the composer gives way to the question while an agent waits. */
+    if (sel && !sel.hint && chrome && chrome.dropFrom > sel.end) sel = null;
+    /* Where the two overlap the prompt wins. A question folded into the input
+       mirror is a question nobody ever sees. */
+    const box = sel && chrome && chrome.dropFrom <= sel.end ? null : chrome;
 
-    /* A selection prompt - AskUserQuestion, a plan approval, a tool
-       confirmation - is framed by the same pair of rules as the input box, and
-       mistaking one for the other is how a question vanishes from the phone
-       entirely. Its numbered options and its "Enter to select" footer, which
-       runs past the closing rule, are what tell the two apart. */
-    let hintIdx = -1;
-    let optionMax = 0;
-    if (prevRule >= 0) {
-      for (let i = prevRule + 1; i < raw.length; i++) {
-        if (RE_SELECT_HINT.test(raw[i])) hintIdx = i;
-      }
-      // Without a footer, only the framed lines count - the status bar below
-      // is not part of any prompt.
-      const optionEnd = hintIdx >= 0 ? hintIdx : lastRule;
-      for (let i = prevRule + 1; i <= optionEnd; i++) {
-        const m = RE_OPTION.exec(raw[i]);
-        if (m) optionMax = Math.max(optionMax, Number(m[1]));
-      }
-    }
-    const isSelection = prevRule >= 0 && (hintIdx >= 0 || optionMax >= 2);
-    // Where the agent's own status bar starts; a prompt's footer is not it.
-    const statusFrom = isSelection && hintIdx > lastRule ? hintIdx : lastRule;
+    const liveInput = box ? box.liveInput : "";
+    const statusFrom = box ? box.statusFrom : -1;
 
-    /* The final pair of rules otherwise frames the terminal's own input box -
-       whatever is typed on the desktop, plus any autocomplete menu it has
-       opened. That is live UI state, not conversation, so it must not render
-       as a past user message. Lift it out and let the caller show it next to
-       the phone's own composer instead. */
-    let inputStart = -1;
-    let inputEnd = -1;
-    if (!isSelection && prevRule >= 0 && lastRule - prevRule <= 12) {
-      inputStart = prevRule + 1;
-      inputEnd = lastRule - 1;
-    }
     // The status bar names the current mode; shift+tab cycles through them.
     let mode = "";
-    if (lastRule >= 0) {
-      const tail = raw.slice(lastRule + 1).join(" ");
-      const m = /\b(auto|plan|manual|accept edits|bypass\w*)\s+mode\b/i.exec(tail);
-      if (m) mode = m[1].toLowerCase();
-    }
-
-    const liveInput =
-      inputStart >= 0
-        ? raw
-            .slice(inputStart, inputEnd + 1)
-            .join(" ")
-            .replace(/^[\s\u00a0]*❯[\s\u00a0]*/, "")
-            .replace(/\s+/g, " ")
-            .trim()
-        : "";
+    const tail = raw
+      .slice(statusFrom >= 0 ? statusFrom : Math.max(0, raw.length - 6))
+      .join(" ");
+    const m = /\b(auto|plan|manual|accept edits|bypass\w*)\s+mode\b/i.exec(tail);
+    if (m) mode = m[1].toLowerCase();
 
     const blocks = [];
     let current = "assistant";
     raw.forEach((line, i) => {
-      // Drop the input box's contents and its closing rule; the opening rule
-      // stays because it carries the session title.
-      if (inputStart >= 0 && i >= inputStart && i <= lastRule) return;
+      /* Drop the composer and everything under it: that is live UI state, not
+         conversation, and rendering it as a past user message is how the
+         phone ends up arguing with the laptop. */
+      if (box && i >= box.dropFrom && i <= box.dropTo) return;
 
       const trimmed = line.trim();
-      let cls = classifyLine(trimmed);
+      let cls = classifyLine(line, trimmed);
 
-      if (isSelection && cls === "rule" && i === lastRule) return; // keeps the prompt one card
-      if (statusFrom >= 0 && i > statusFrom && cls !== "rule") cls = "status";
-      else if (isSelection && i > prevRule && i <= statusFrom && cls !== "rule") cls = "select";
+      if (sel && i >= sel.start && i <= sel.end) {
+        // A rule inside the prompt would break it into several cards.
+        if (cls === "rule") { if (i !== sel.start) return; }
+        else cls = "select";
+      } else if (statusFrom >= 0 && i > statusFrom && cls !== "rule") {
+        cls = "status";
+      }
 
       if (cls === "rule") {
         const label = ruleLabel(trimmed);
@@ -411,7 +487,7 @@
       return b.rows.length > 0;
     });
 
-    return { blocks: kept, liveInput, mode, optionCount: isSelection ? optionMax : 0 };
+    return { blocks: kept, liveInput, mode, optionCount: sel ? sel.optionMax : 0 };
   }
 
   /* What the desktop currently has typed into the pane, mirrored above the

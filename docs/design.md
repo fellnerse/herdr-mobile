@@ -38,6 +38,39 @@ sequence but show no age, rather than claiming everything happened the moment
 the app first looked. The order is also held steady while the list is open, so
 a state change cannot slide a row out from under the thumb about to tap it.
 
+## Reading the pane
+
+The phone gets a terminal dump: the pane's last hundred lines, padded to the
+desktop's width, with no structure but glyphs. Two agents draw the same handful
+of roles differently — Claude Code marks a turn `⏺` and a tool result `⎿`,
+Codex uses `•` and `└` — so the parser knows both alphabets, and the block a
+line belongs to decides its colour.
+
+The part that has to be right is the foot of the pane, because that is where
+the composer, the status bar, and the question an agent is waiting on all live.
+Those first two are live UI rather than conversation: what the laptop has typed
+is mirrored in a one-line strip above the phone's own composer, and the status
+bar is hidden behind a toggle. A prompt must survive both.
+
+Anchor on the composer's own glyph — `❯` in Claude Code, `›` in Codex — and not
+on the last pair of horizontal rules. Rules are not a frame you can trust:
+Claude Code brackets its input box with them, Codex prints them as turn
+separators, and a markdown table's separator row is one too. Taking the last
+two of *those* lifted the tail of a Codex answer into the one-line mirror and
+dropped the rest — and with Codex framing its approval box in nothing at all,
+whatever fell past the final rule was greyed out as status bar and hidden. Both
+ways a question vanished, which is the one failure that matters: the sheep goes
+red and the phone shows nothing to answer.
+
+So the prompt is found by what it says — numbered choices, and the footer under
+them ("Enter to select", "Press enter to confirm or esc to cancel") — rather
+than by the furniture around it, and where prompt and chrome overlap the prompt
+wins. A numbered list with the composer still under it is prose, not a
+question: the composer gives way while an agent waits.
+
+`node tools/test-transcript.js` holds both agents' panes idle, typing, and
+waiting.
+
 ## The bleat
 
 `web/bleat.wav` is a synthesised "määäh", played once when an agent stops
