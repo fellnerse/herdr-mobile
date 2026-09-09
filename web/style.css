@@ -678,6 +678,20 @@ html, body {
 
 .key-btn:active { background: var(--bg-hover); transform: scale(0.94); }
 
+/* ^C armed: the next tap sends, so it has to read as live from arm's length. */
+.key-btn.armed {
+  background: rgba(248, 81, 73, 0.22);
+  border-color: #f85149;
+  color: #ff9b93;
+}
+
+/* Herdr refused the key. The only sign a phone gets that nothing was sent. */
+.key-btn.key-failed {
+  background: rgba(248, 81, 73, 0.3);
+  border-color: #f85149;
+  color: #ffb4ad;
+}
+
 .key-yes { color: var(--status-idle); border-color: rgba(63, 185, 80, 0.35); }
 .key-no { color: #ff7b72; border-color: rgba(248, 81, 73, 0.3); }
 .key-enter { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }

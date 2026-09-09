@@ -137,6 +137,11 @@ arrows, tab, enter, `Esc` and `Ctrl+C`. The number keys follow whatever the
 prompt on screen actually offers, so a five-option question gets five keys. The
 choice is remembered.
 
+`Ctrl+C` arms on the first tap and sends on the second, so a stray tap cannot
+interrupt a working agent. It stays armed for a few seconds afterwards: leaving
+an agent takes two interrupts in a row, and both agents give you only a moment
+between them.
+
 ### Agent mode
 
 **gear → Agent mode** cycles auto / plan / manual — the same `shift+tab` you

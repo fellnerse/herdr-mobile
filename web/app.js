@@ -819,6 +819,7 @@
       return;
     }
     closePicker();
+    setCtrlCArmed(false);
     touchAgent(paneId);
     state.activePaneId = paneId;
     state.historyText = "";
@@ -959,9 +960,12 @@
     }
   }
 
-  // Send Key Action
-  async function sendKey(key) {
-    if (!state.activePaneId) return;
+  /* Send Key Action. A refused key used to fail silently, which on a phone is
+     indistinguishable from a key that landed - so the button that was tapped
+     says so itself. Not an alert(): iOS suppresses those in a home screen web
+     app once the user has dismissed a few. */
+  async function sendKey(key, btn = null) {
+    if (!state.activePaneId) return false;
     triggerHaptic("warning");
 
     try {
@@ -973,10 +977,21 @@
 
       if (res.ok) {
         setTimeout(() => fetchHistory(true), 300);
+        return true;
       }
+      flashKeyFailed(btn);
+      return false;
     } catch (err) {
       console.error("Failed to send key:", err);
+      flashKeyFailed(btn);
+      return false;
     }
+  }
+
+  function flashKeyFailed(btn) {
+    if (!btn) return;
+    btn.classList.add("key-failed");
+    setTimeout(() => btn.classList.remove("key-failed"), 900);
   }
 
   // Copy visible history text
@@ -1343,13 +1358,36 @@
 
   elPromptForm.addEventListener("submit", submitPrompt);
 
-  elBtnCtrlC.addEventListener("click", () => {
-    if (confirm("Send interrupt (Ctrl+C) to agent?")) {
-      sendKey("ctrl+c");
+  /* ^C arms itself before it fires, rather than asking through confirm():
+     iOS stops showing confirm() in a home screen web app after the user has
+     dismissed a few, and a suppressed dialog returns false - so the button
+     quietly sent nothing at all. Arming keeps the same protection against a
+     stray tap and stays live afterwards, because leaving an agent takes two
+     interrupts in a row and a modal between them misses the agent's window. */
+  const CTRL_C_ARM_MS = 4000;
+  let ctrlCArmTimer = null;
+
+  function setCtrlCArmed(armed) {
+    if (ctrlCArmTimer) clearTimeout(ctrlCArmTimer);
+    ctrlCArmTimer = null;
+    elBtnCtrlC.classList.toggle("armed", armed);
+    elBtnCtrlC.textContent = armed ? "^C?" : "^C";
+    if (armed) {
+      ctrlCArmTimer = setTimeout(() => setCtrlCArmed(false), CTRL_C_ARM_MS);
     }
+  }
+
+  elBtnCtrlC.addEventListener("click", () => {
+    if (!elBtnCtrlC.classList.contains("armed")) {
+      triggerHaptic("warning");
+      setCtrlCArmed(true);
+      return;
+    }
+    sendKey("ctrl+c", elBtnCtrlC);
+    setCtrlCArmed(true); // a second tap exits the agent the first one stopped
   });
 
-  elBtnEsc.addEventListener("click", () => sendKey("esc"));
+  elBtnEsc.addEventListener("click", () => sendKey("esc", elBtnEsc));
 
   // Pull the desktop's draft into the composer to carry on editing it here.
   elBtnAdopt.addEventListener("click", () => {
@@ -1384,7 +1422,7 @@
 
   elKeysBar.addEventListener("click", (e) => {
     const btn = e.target.closest(".key-btn");
-    if (btn && btn.dataset.key) sendKey(btn.dataset.key);
+    if (btn && btn.dataset.key) sendKey(btn.dataset.key, btn);
   });
 
   // shift+tab cycles the agent between auto, manual and plan mode.
