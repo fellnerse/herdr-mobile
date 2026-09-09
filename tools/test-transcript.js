@@ -20,15 +20,30 @@ const path = require("path");
 
 const SRC = path.join(__dirname, "..", "web", "app.js");
 const FROM = "  const RE_RULE_GLYPH";
-const TO = "  /* What the desktop currently has typed";
+const TO = "  function renderTranscript(text)";
+
+/* The slice reaches past the parser to renderNumberKeys, because the keypad
+   is the other half of reading a prompt: getting optionCount right and then
+   drawing the wrong number of keys still leaves a choice nobody can press.
+   Everything it touches is a DOM node or a sibling function; both are stubs. */
+const PRELUDE = `
+  function escapeHtml(s) { return s; }
+  const state = { numberKeys: 0 };
+  const el = () => ({ classList: { toggle() {} }, textContent: "", innerHTML: "" });
+  const elTerminalInputRow = el();
+  const elTerminalInput = el();
+  const elKeysNumbers = el();
+`;
 
 function loadParser() {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf(FROM);
   const to = src.indexOf(TO);
   if (from < 0 || to < 0) throw new Error(`anchors moved in ${SRC}`);
-  const body = "function escapeHtml(s) { return s; }\n" + src.slice(from, to);
-  return new Function(`${body}\nreturn { parseTranscript };`)().parseTranscript;
+  const body = PRELUDE + src.slice(from, to);
+  return new Function(
+    `${body}\nreturn { parseTranscript, renderNumberKeys, state, elKeysNumbers };`
+  )();
 }
 
 const W = 120;
@@ -150,7 +165,83 @@ const CODEX_PROSE_LIST = [
   pad("  gpt-6-astra default · ~/repos/ib-public"),
 ].join("\n");
 
-const parseTranscript = loadParser();
+/* Codex, mid-run, echoing the instruction it was given. Its composer is gone
+   while it works, so the lowest line starting with the composer glyph is
+   something the agent printed - and taking it for the composer swallowed
+   every line under it. */
+const CODEX_QUOTED_LINE = [
+  "• Reading the transcript you pasted:",
+  "› deploy the staging cluster and drop the old index",
+  "  That is the instruction I am acting on. Starting now.",
+  "  I will report back when the reindex finishes.",
+  pad("  Esc to interrupt"),
+].join("\n");
+
+/* A numbered list an agent wrote while working. No composer under it - Codex
+   hides its own - and no footer either, which is the tell: a prompt always
+   says how to answer it. */
+const CODEX_WORKING_LIST = [
+  "• Ran rg -n 'analyzer' src/",
+  "",
+  "  Three things to try, in order:",
+  "  1. Reindex media_v4 with the shared analyzer.",
+  "  2. Drop the local filter.",
+  "  3. Re-run the fixture test.",
+  pad("  Esc to interrupt"),
+].join("\n");
+
+/* A markdown table mid-answer. Its separator row is a rule like any other, so
+   anchoring the input box on the last pair of rules lifted the sentence under
+   the table into the one-line mirror and dropped the rest of the answer. */
+const CODEX_TABLE = [
+  "• Compared the two analyzers:",
+  "",
+  "  Field        Old        New",
+  "  ──────────── ────────── ──────────────",
+  "  analyzer     german     german_light",
+  "  stopwords    231        0",
+  "",
+  "  Both Personen documents survive the change.",
+  pad("  Esc to interrupt"),
+].join("\n");
+
+/* A prompt with more choices than the pad ships with, and more than there are
+   number keys to press. */
+const CLAUDE_TEN = [
+  "⏺ Which index should I rebuild?",
+  "",
+  rule(),
+  "  Select an index                                                     ",
+  ...Array.from({ length: 10 }, (_, i) =>
+    `  ${i === 0 ? "❯" : " "} ${i + 1}. media_v${i + 1}                              `
+  ),
+  rule(),
+  pad("  Enter to select · Esc to cancel"),
+].join("\n");
+
+/* Every real pane arrives coloured, and the glyph match runs on what is left
+   after the escape sequences are stripped. Same prompt as CLAUDE_PROMPT, as
+   the terminal actually sends it. */
+const sgr = (code, text) => `\x1b[${code}m${text}\x1b[0m`;
+const CLAUDE_ANSI = [
+  sgr("1;38;2;215;119;87", "⏺") + " Bash(rm -rf build)",
+  "",
+  sgr("2", rule()),
+  "  Bash command                                                        ",
+  "                                                                      ",
+  "    " + sgr("38;2;180;180;180", "rm -rf build") + "                    ",
+  "    Remove the stale build directory                                  ",
+  "                                                                      ",
+  "  Do you want to proceed?                                             ",
+  "  " + sgr("38;2;97;175;239", "❯ 1. Yes") + "                           ",
+  "    2. Yes, and don't ask again for rm commands in /repo               ",
+  "    3. No, and tell Claude what to do differently (esc)               ",
+  sgr("2", rule()),
+  pad("  " + sgr("2", "Enter to select · Esc to cancel")),
+].join("\n");
+
+const parser = loadParser();
+const parseTranscript = parser.parseTranscript;
 
 let failed = 0;
 function check(name, cond, detail) {
@@ -256,6 +347,63 @@ run("codex prose list", CODEX_PROSE_LIST, {
   liveInput: "",
   optionCount: 0,
 });
+
+run("codex quoted line", CODEX_QUOTED_LINE, {
+  shows: [
+    "deploy the staging cluster and drop the old index",
+    "That is the instruction I am acting on.",
+    "I will report back when the reindex finishes.",
+  ],
+  liveInput: "", // the glyph is the agent quoting, not an input to mirror
+  optionCount: 0,
+});
+
+run("codex working list", CODEX_WORKING_LIST, {
+  shows: ["Three things to try", "1. Reindex media_v4", "3. Re-run the fixture test."],
+  optionCount: 0, // no footer, so no prompt and no keys to press it with
+  liveInput: "",
+});
+
+run("codex table", CODEX_TABLE, {
+  shows: [
+    "analyzer     german     german_light",
+    "Both Personen documents survive the change.",
+  ],
+  liveInput: "",
+  optionCount: 0,
+});
+
+run("claude ten options", CLAUDE_TEN, {
+  shows: ["Select an index", "10. media_v10"],
+  optionCount: 10,
+  select: ["1. media_v1", "10. media_v10"],
+});
+
+run("claude prompt in colour", CLAUDE_ANSI, {
+  shows: ["Do you want to proceed?", "rm -rf build", "3. No, and tell Claude"],
+  liveInput: "",
+  optionCount: 3,
+  select: ["Do you want to proceed?", "Enter to select"],
+});
+
+/* The keypad. optionCount is only half the job: the pad still has to draw the
+   keys the prompt lists, and never one the agent cannot act on. */
+function keys(count) {
+  parser.state.numberKeys = -1; // renderNumberKeys skips a redraw it has done
+  parser.renderNumberKeys(count);
+  return (parser.elKeysNumbers.innerHTML.match(/data-key="(\d+)"/g) || []).map((m) =>
+    m.replace(/\D/g, "")
+  );
+}
+
+check("keypad: no prompt keeps the three it ships with", keys(0).join("") === "123");
+check("keypad: two choices still leave three keys", keys(2).join("") === "123");
+check("keypad: five choices, five keys", keys(5).join("") === "12345");
+check(
+  "keypad: ten choices stop at nine - a tenth is not one keypress",
+  keys(10).join("") === "123456789",
+  `got ${keys(10).join("")}`
+);
 
 console.log(failed ? `\n${failed} failed` : "all transcript tests passed");
 process.exit(failed ? 1 : 0);

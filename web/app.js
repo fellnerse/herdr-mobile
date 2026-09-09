@@ -266,6 +266,7 @@
     { re: /^[✻✽✳]/, cls: "meta" }, // "Worked for 1m 8s"
     { re: /^※/, cls: "tip" },         // tips
     { re: /^⏵⏵/, cls: "status" }, // "auto mode on ..."
+    { re: /^›\s/, cls: "user" },      // "› what changed in the indexer?"
     { re: /^•\s/, cls: "assistant", bol: true }, // "• Ran docker compose ps"
     { re: /^[✓✔✗✘]\s/, cls: "meta", bol: true },  // "✔ You approved codex to ..."
     { re: /^└\s/, cls: "tool" },                 // "  └ {"acknowledged":true}"
@@ -284,6 +285,10 @@
   const RE_COMPOSER = /^[❯›](?:\s|$)/;
   // What a composer shows when nothing has been typed into it.
   const RE_PLACEHOLDER = /^(?:ask codex to do anything|try ".*")$/i;
+  /* Codex's footer - its model and the directory it works in - is the only
+     thing it prints under the composer. Claude Code closes the box with a
+     rule instead, so between them they say where the composer ends. */
+  const RE_AGENT_FOOTER = /·\s*[~/]/;
   // Long runs of rule glyphs anywhere in a line, not just whole-line rules.
   const RE_INLINE_RULE = /([─━┄┅┈┉═—–_=*.])\1{7,}/g;
   // Both the composer and a pending prompt sit at the foot of the pane. This
@@ -352,6 +357,20 @@
       }
     }
 
+    /* The composer is the last thing in the pane, so nothing may stand under
+       it but blanks and the agent's own footer. An agent quoting a line back
+       - a pasted transcript, the instruction it is acting on - starts it with
+       the same glyph, and mistaking that for the composer lifts it into the
+       one-line mirror and drops every line below it as chrome. */
+    if (close < 0) {
+      for (let i = idx + 1; i < raw.length; i++) {
+        const trimmed = raw[i].trim();
+        if (!trimmed || RE_AGENT_FOOTER.test(trimmed)) continue;
+        if (ruleLabel(trimmed) !== null) continue;
+        return null;
+      }
+    }
+
     const value = raw
       .slice(idx, close >= 0 ? close : idx + 1)
       .join(" ")
@@ -382,17 +401,26 @@
     }
     let firstOption = -1;
     let lastOption = -1;
-    let optionMax = 0;
+    const labels = new Set();
     for (let i = floor; i <= (hintIdx >= 0 ? hintIdx : raw.length - 1); i++) {
       const m = RE_OPTION.exec(raw[i]);
       if (!m) continue;
       if (firstOption < 0) firstOption = i;
       lastOption = i;
-      optionMax = Math.max(optionMax, Number(m[1]));
+      labels.add(Number(m[1]));
     }
-    // A footer only a prompt prints is proof by itself; anything weaker needs
-    // the numbered choices to back it up.
-    if (optionMax < 2 && !(hintIdx >= 0 && RE_PROMPT_HINT.test(raw[hintIdx]))) return null;
+    /* How many choices are on offer - the run of labels from 1, not the
+       highest number seen, so a stray "12." in the text above cannot invent
+       nine keys that answer nothing. */
+    let optionCount = 0;
+    while (labels.has(optionCount + 1)) optionCount++;
+
+    /* A footer only a prompt prints is proof by itself. Numbered choices are
+       not: an agent listing three things to try mid-run looks exactly like a
+       question, and the missing composer is no help - Codex hides its own
+       while it works. So they need a footer under them too. */
+    const promptFooter = hintIdx >= 0 && RE_PROMPT_HINT.test(raw[hintIdx]);
+    if (!promptFooter && !(optionCount >= 2 && hintIdx >= 0)) return null;
 
     /* Walk up to the head of the prompt: the rule that opens Claude Code's
        box, or - Codex having no box - the line after the last thing the agent
@@ -404,7 +432,7 @@
       if (ruleLabel(trimmed) !== null) { start = i; break; }
       if (classifyLine(raw[i], trimmed)) { start = i + 1; break; }
     }
-    return { start, end: Math.max(hintIdx, lastOption), optionMax, hint: hintIdx >= 0 };
+    return { start, end: Math.max(hintIdx, lastOption), optionCount };
   }
 
   function parseTranscript(text) {
@@ -418,10 +446,7 @@
     const raw = rows.map((r) => r.text);
 
     const chrome = findChrome(raw);
-    let sel = findSelection(raw);
-    /* Numbered lines with the composer still under them are prose, not a
-       prompt: the composer gives way to the question while an agent waits. */
-    if (sel && !sel.hint && chrome && chrome.dropFrom > sel.end) sel = null;
+    const sel = findSelection(raw);
     /* Where the two overlap the prompt wins. A question folded into the input
        mirror is a question nobody ever sees. */
     const box = sel && chrome && chrome.dropFrom <= sel.end ? null : chrome;
@@ -487,7 +512,7 @@
       return b.rows.length > 0;
     });
 
-    return { blocks: kept, liveInput, mode, optionCount: sel ? sel.optionMax : 0 };
+    return { blocks: kept, liveInput, mode, optionCount: sel ? sel.optionCount : 0 };
   }
 
   /* What the desktop currently has typed into the pane, mirrored above the
@@ -501,7 +526,9 @@
   /* The keypad ships with 1-3, but a prompt can list more - or fewer - and a
      choice you cannot press is the same as no choice at all. Follow whatever
      the current prompt actually offers, never dropping below the three keys
-     the pad is built around. */
+     the pad is built around. It stops at nine: a tenth choice has no single
+     key behind it - both agents act on the first digit typed - so the arrows
+     and enter are how you reach it. */
   function renderNumberKeys(count) {
     const want = Math.min(Math.max(count || 0, 3), 9);
     if (want === state.numberKeys) return;
