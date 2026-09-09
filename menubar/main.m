@@ -478,7 +478,7 @@
     alert.informativeText =
         @"Another process is serving this port - most likely the launchd "
         @"agent. Stop it so this app can own the gateway:\n\n"
-        @"launchctl bootout gui/$(id -u)/com.herdr.mobile";
+        @"launchctl bootout gui/$(id -u)/com.sheepit.gateway";
     alert.alertStyle = NSAlertStyleWarning;
     [alert runModal];
 }

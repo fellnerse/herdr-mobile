@@ -45,7 +45,7 @@ install: $(BUNDLE)
 # Start at login. A LaunchAgent rather than a Login Item because scripting
 # System Events needs Automation permission that cannot be prompted for here.
 login: install
-	cp $(AGENT).plist ~/Library/LaunchAgents/
+	cp ../deploy/$(AGENT).plist ~/Library/LaunchAgents/
 	-launchctl bootout gui/$$(id -u)/$(AGENT) 2>/dev/null
 	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(AGENT).plist
 	@echo "will start at login"

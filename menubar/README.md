@@ -76,8 +76,8 @@ The app and the launchd agent cannot both own the port. If you use this app,
 remove the agent:
 
 ```bash
-launchctl bootout gui/$(id -u)/com.herdr.mobile
-rm ~/Library/LaunchAgents/com.herdr.mobile.plist
+launchctl bootout gui/$(id -u)/com.sheepit.gateway
+rm ~/Library/LaunchAgents/com.sheepit.gateway.plist
 ```
 
 An orphaned gateway from a previous run is reclaimed automatically — but only
