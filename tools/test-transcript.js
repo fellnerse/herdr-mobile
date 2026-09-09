@@ -42,7 +42,7 @@ function loadParser() {
   if (from < 0 || to < 0) throw new Error(`anchors moved in ${SRC}`);
   const body = PRELUDE + src.slice(from, to);
   return new Function(
-    `${body}\nreturn { parseTranscript, renderNumberKeys, state, elKeysNumbers };`
+    `${body}\nreturn { parseTranscript, renderNumberKeys, plainHtml, state, elKeysNumbers };`
   )();
 }
 
@@ -385,6 +385,52 @@ run("claude prompt in colour", CLAUDE_ANSI, {
   optionCount: 3,
   select: ["Do you want to proceed?", "Enter to select"],
 });
+
+/* The plain view, the setting that answers "the phone is not showing me
+   something". Its promise is narrow enough to check exactly: every line of the
+   pane, in the order it arrived, with nothing but the terminal's right-hand
+   padding gone. The fixtures it runs on are the ones the parsed view is known
+   to thin out - the status bar, the composer, a caption swallowed by the rule
+   under it, and a banner whose own glyphs read as rules. */
+const PLAIN_BANNER = [
+  "⏺ Here is the banner it prints:",
+  "",
+  "  ====================================",
+  "  progress: ........................ 80%",
+  "",
+  rule("Worked for 2m 11s"),
+  rule("Get this to work in herdr"),
+  "⏺ And that is the whole banner.",
+].join("\n");
+
+function plainLines(text) {
+  const html = parser.plainHtml(parseTranscript(text).rows);
+  return html
+    .replace(/^<div[^>]*>/, "")
+    .replace(/<\/div>$/, "")
+    .replace(/<\/?span[^>]*>/g, "")
+    .split("\n");
+}
+
+for (const [name, text] of [
+  ["claude idle", CLAUDE_IDLE],
+  ["claude typing", CLAUDE_TYPING],
+  ["codex prompt", CODEX_PROMPT],
+  ["banner and captions", PLAIN_BANNER],
+  ["claude in colour", CLAUDE_ANSI],
+]) {
+  const want = text
+    .split("\n")
+    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, ""));
+  const got = plainLines(text);
+  check(
+    `plain view: ${name} arrives whole`,
+    got.length === want.length && got.every((line, i) => line === want[i]),
+    `line ${got.findIndex((l, i) => l !== want[i])}: ${JSON.stringify(
+      got[got.findIndex((l, i) => l !== want[i])]
+    )} != ${JSON.stringify(want[got.findIndex((l, i) => l !== want[i])])}`
+  );
+}
 
 /* The keypad. optionCount is only half the job: the pad still has to draw the
    keys the prompt lists, and never one the agent cannot act on. */

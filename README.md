@@ -42,6 +42,8 @@ project telling you at a glance who is working and who is waiting.
   locked, plus a count on the home screen icon.
 - **A bleat.** A sheep answers when an agent stops, if the app is open.
 - **Native dictation.** Talk to your agent using the iOS keyboard's mic.
+- **A plain view**, one switch away: the pane verbatim when you would rather
+  read the terminal than the phone's reading of it.
 - **A key palette** for the keys agents stop on — `y`, `n`, numbers, arrows,
   tab, enter, `Esc` and `Ctrl+C`.
 - **Workspace control.** Start a project with **New**, swipe a row left to
@@ -155,11 +157,20 @@ stops every agent in it, and a stray swipe on a phone is cheap to make and
 expensive to undo. The list is ordered by whatever changed most recently, and
 holds still while you are looking at it.
 
-### Scrollback and the status bar
+### Scrollback, the plain view and the status bar
 
 **gear → Scrollback** trades detail for speed: 50 to 400 lines per refresh.
+
+**Plain view** draws the pane verbatim: every line the agent printed, in order,
+in the terminal's own colours, with nothing classified, collapsed or hidden.
+The normal view is a set of guesses about a terminal dump — which glyph starts
+a turn, which rules frame the composer, which of the last lines are the status
+bar — and it earns its keep, but a guess that goes wrong hides something. Turn
+this on when the phone is not showing you something the laptop is.
+
 **Show agent status bar** brings back the agent's own bottom line — mode,
-context left — which is hidden by default because it is noise on a phone.
+context left — which is hidden by default because it is noise on a phone. The
+plain view already shows it, and greys the switch out while it is on.
 
 ## Repository layout
 

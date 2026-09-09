@@ -71,6 +71,25 @@ question: the composer gives way while an agent waits.
 `node tools/test-transcript.js` holds both agents' panes idle, typing, and
 waiting.
 
+### When the guessing is wrong
+
+All of the above is inference over a screen dump, and inference that misses
+hides something. Most of what the parser drops is padding and furniture, but
+not all of it: a caption on a rule sitting directly under another rule is
+overwritten by it, a line of the agent's own `=` or `.` is read as a rule and
+collapsed to three characters, a run of eight glyphs with no words in it
+becomes a hairline, and everything Claude Code prints *below* its input box —
+usage warnings, background tasks, errors — is filed under the status bar and
+hidden with it.
+
+Rather than chase each of those with another heuristic, there is a way out
+from under all of them: **gear → Plain view** draws the tokenised rows as they
+arrived, coloured by the terminal's own escape codes and classified as
+nothing, with only the right-hand padding gone. The parse still runs — the
+keypad, the mode readout and the input mirror are read out of it — but it no
+longer decides what you may see. The test asserts the promise directly: every
+line, in order, byte for byte.
+
 ## The bleat
 
 `web/bleat.wav` is a synthesised "määäh", played once when an agent stops

@@ -7,6 +7,7 @@
     historyText: "",
     linesCount: 100,
     showStatusBar: false,
+    plainView: false,
     numberKeys: 3,
     badgeCount: -1,
     activity: {},
@@ -60,6 +61,7 @@
   const elSheet = document.getElementById("settings-sheet");
   const elSheetBackdrop = document.getElementById("sheet-backdrop");
   const elToggleStatusBar = document.getElementById("toggle-statusbar");
+  const elTogglePlain = document.getElementById("toggle-plain");
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
@@ -514,7 +516,13 @@
       return b.rows.length > 0;
     });
 
-    return { blocks: kept, liveInput, mode, optionCount: sel ? sel.optionCount : 0 };
+    return {
+      blocks: kept,
+      rows,
+      liveInput,
+      mode,
+      optionCount: sel ? sel.optionCount : 0,
+    };
   }
 
   /* What the desktop currently has typed into the pane, mirrored above the
@@ -541,6 +549,26 @@
     }).join("");
   }
 
+  /* The pane exactly as it arrived, minus the terminal's own padding: every
+     line in the order the agent drew it, coloured by its own escape codes and
+     classified as nothing at all.
+
+     The parsed view is a set of guesses - which glyph starts a turn, which
+     rules frame the composer, which of the last lines are the status bar - and
+     a guess that goes wrong hides something. Most of what it drops is padding
+     and furniture, but not all of it: a caption on a rule directly under
+     another rule is overwritten by it, a line of the agent's own "=" or "."
+     is read as a rule and collapsed, and everything below Claude Code's input
+     box - usage warnings, background tasks, errors - is filed under the status
+     bar and hidden with it. This view is the answer to "the phone is not
+     showing me something": no classification, no collapsing, nothing
+     dropped. */
+  function plainHtml(rows) {
+    return `<div class="t-block t-plain">${rows
+      .map((row) => runsToHtml(row.runs))
+      .join("\n")}</div>`;
+  }
+
   function renderTranscript(text) {
     if (!text) {
       renderLiveInput("");
@@ -557,6 +585,14 @@
     renderNumberKeys(parsed.optionCount);
     state.mode = parsed.mode;
     elModeCurrent.textContent = parsed.mode || "unknown";
+
+    /* Parsing still runs in the plain view: the keypad, the mode and the input
+       mirror are read out of it, and they are as useful when the transcript is
+       drawn verbatim as when it is not. Only the drawing changes. */
+    if (state.plainView) {
+      elHistoryContent.innerHTML = plainHtml(parsed.rows);
+      return;
+    }
 
     const visible = [];
     for (const b of parsed.blocks) {
@@ -1208,6 +1244,9 @@
       }
       state.showStatusBar = readPref("statusbar") === "1";
       elToggleStatusBar.checked = state.showStatusBar;
+      state.plainView = readPref("plain") === "1";
+      elTogglePlain.checked = state.plainView;
+      syncStatusBarRow();
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
       state.bleat = readPref("bleat") !== "0";
@@ -1536,6 +1575,23 @@
   elToggleStatusBar.addEventListener("change", (e) => {
     state.showStatusBar = e.target.checked;
     savePref("sheepit.statusbar", state.showStatusBar ? "1" : "0");
+    renderTranscript(state.historyText);
+    scrollToBottom();
+  });
+
+  /* The plain view already draws the status bar, so the toggle for it has
+     nothing left to say - grey it out rather than leave a switch that does
+     nothing when flicked. */
+  function syncStatusBarRow() {
+    elToggleStatusBar.disabled = state.plainView;
+    const row = elToggleStatusBar.closest(".sheet-row");
+    if (row) row.classList.toggle("row-muted", state.plainView);
+  }
+
+  elTogglePlain.addEventListener("change", (e) => {
+    state.plainView = e.target.checked;
+    savePref("sheepit.plain", state.plainView ? "1" : "0");
+    syncStatusBarRow();
     renderTranscript(state.historyText);
     scrollToBottom();
   });

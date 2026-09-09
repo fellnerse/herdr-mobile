@@ -506,6 +506,15 @@ html, body {
   font-size: 13px;
 }
 
+/* The plain view: one block for the whole pane, in the terminal's own colours
+   and nothing else. No role colouring - a marker the parser reads wrongly is
+   exactly what this view exists to show. */
+.t-plain {
+  color: var(--text-secondary);
+  margin: 0;
+  font-size: 12px;
+}
+
 /* Tables keep their alignment and scroll sideways instead of wrapping. */
 .t-table {
   white-space: pre;
@@ -892,6 +901,9 @@ html, body {
 }
 
 .sheet-row input[type="checkbox"]:disabled { opacity: 0.4; }
+
+/* A row whose setting the current view has taken over. */
+.sheet-row.row-muted label { opacity: 0.45; }
 
 .sheet-agent-text {
   display: flex;
