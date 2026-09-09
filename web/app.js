@@ -19,6 +19,8 @@
     pollInterval: 2000,
     timer: null,
     isSending: false,
+    listSignature: null,
+    swiping: false,
   };
 
   // DOM Elements
@@ -741,8 +743,14 @@
       <path d="M33 20.6 q-0.8 -2.6 -2.4 -3.8" fill="none" stroke="currentColor"
             stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>`;
 
+  // A status Herdr does not draw a sheep for. POSE is a plain object, so ask
+  // it what it owns: POSE["constructor"] is truthy and draws nothing at all.
+  function poseFor(status) {
+    return Object.prototype.hasOwnProperty.call(POSE, status) ? status : "unknown";
+  }
+
   function sheepSvg(status) {
-    const pose = POSE[status] || POSE.unknown;
+    const pose = POSE[poseFor(status)];
     if (pose === "empty") {
       return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${EMPTY_PASTURE}</svg>`;
     }
@@ -754,29 +762,55 @@
       </svg>`;
   }
 
+  /* Everything a row draws. The picker is redrawn on every poll, and replacing
+     its HTML restarts each sheep's graze mid-cycle and throws away the row a
+     swipe is holding open - so redraw only when one of these actually moved. */
+  function agentListSignature() {
+    return state.agents
+      .map((a) =>
+        [
+          a.pane_id,
+          a.workspace_id,
+          a.status,
+          a.name,
+          a.title || a.cwd,
+          agoLabel(a.pane_id),
+          a.pane_id === state.activePaneId ? "1" : "",
+        ].join("\u001f")
+      )
+      .join("\u001e");
+  }
+
   // Full-screen project list
   function renderAgentList() {
     if (state.agents.length === 0) {
+      state.listSignature = null;
       elAgentList.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
       return;
     }
 
+    // Never under the thumb: a rebuild would snap a swiped row shut.
+    if (state.swiping || elAgentList.querySelector(".agent-row.swiped")) return;
+    const signature = agentListSignature();
+    if (signature === state.listSignature) return;
+    state.listSignature = signature;
+
     elAgentList.innerHTML = state.agents
       .map((agent) => {
         const isActive = agent.pane_id === state.activePaneId;
-        const status = agent.status || "unknown";
+        const status = poseFor(agent.status);
         const subtitle = agent.title || agent.cwd || "";
         return `
           <div class="agent-row-wrap">
-            <button class="agent-row-delete" data-workspace-id="${agent.workspace_id}">Close</button>
-            <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${agent.pane_id}">
+            <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+            <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
               <span class="sheep-wrap ${status}">${sheepSvg(status)}</span>
               <span class="agent-row-text">
                 <span class="agent-row-name">${escapeHtml(agent.name || agent.pane_id)}</span>
                 <span class="agent-row-title">${escapeHtml(subtitle)}</span>
               </span>
               <span class="agent-row-side">
-                <span class="status-badge status-${status}">${escapeHtml(status)}</span>
+                <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
                 <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
               </span>
             </button>
@@ -1156,19 +1190,27 @@
       .replace(/'/g, "&#039;");
   }
 
-  // Preferences that should survive a reload
+  /* Preferences that should survive a reload. The keys were "herdr.*" before
+     the app was called Sheep It, and an install that has been on a home screen
+     since then still holds them - so read the old name where the new one is
+     missing, rather than silently resetting every toggle on upgrade. */
+  function readPref(name) {
+    const value = localStorage.getItem(`sheepit.${name}`);
+    return value === null ? localStorage.getItem(`herdr.${name}`) : value;
+  }
+
   function loadPrefs() {
     try {
-      const lines = parseInt(localStorage.getItem("sheepit.lines"), 10);
+      const lines = parseInt(readPref("lines"), 10);
       if (lines) {
         state.linesCount = lines;
         elLinesSelect.value = String(lines);
       }
-      state.showStatusBar = localStorage.getItem("sheepit.statusbar") === "1";
+      state.showStatusBar = readPref("statusbar") === "1";
       elToggleStatusBar.checked = state.showStatusBar;
-      setKeysBar(localStorage.getItem("sheepit.keys") !== "0");
+      setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
-      state.bleat = localStorage.getItem("sheepit.bleat") !== "0";
+      state.bleat = readPref("bleat") !== "0";
       elToggleBleat.checked = state.bleat;
     } catch (err) {
       /* localStorage unavailable in private mode; defaults are fine */
@@ -1185,7 +1227,7 @@
 
   function loadActivity() {
     try {
-      const raw = JSON.parse(localStorage.getItem(ACTIVITY_KEY) || "{}");
+      const raw = JSON.parse(readPref("activity") || "{}");
       return raw && typeof raw === "object" ? raw : {};
     } catch (err) {
       return {};
@@ -1200,10 +1242,13 @@
      newest first. On a first run nothing is known and every pane stamps the
      same instant, so the sequence itself breaks the tie - the order is right
      immediately instead of after a day of watching. */
+  // How many polls a pane may be missing from the list before it is forgotten.
+  const FORGET_AFTER_MISSES = 5;
+
   function sortAgentsByRecency() {
     const now = Date.now();
     const next = {};
-    let changed = Object.keys(state.activity).length !== state.agents.length;
+    let changed = false;
 
     for (const a of state.agents) {
       const id = a.pane_id;
@@ -1211,13 +1256,29 @@
       const seq = Number(a.state_change_seq) || 0;
       const prev = state.activity[id];
       if (prev && prev.seq === seq) {
-        next[id] = prev;
+        next[id] = prev.miss ? { seq: prev.seq, ts: prev.ts, seeded: prev.seeded } : prev;
+        if (prev.miss) changed = true;
       } else {
         // A first sighting is not a change: we have no idea when it happened,
         // so the stamp orders the list but carries no time to show.
         next[id] = { seq, ts: now, seeded: !prev };
         changed = true;
       }
+    }
+
+    /* A pane missing from one poll is the gateway blinking far more often than
+       it is a closed workspace, and rebuilding the map from the current rows
+       alone meant a single empty answer re-seeded every project - every age
+       label blank, for good. Let an absence stand a few polls first. */
+    for (const id of Object.keys(state.activity)) {
+      if (next[id]) continue;
+      const entry = state.activity[id];
+      const miss = (entry.miss || 0) + 1;
+      if (miss >= FORGET_AFTER_MISSES) {
+        changed = true;
+        continue;
+      }
+      next[id] = { seq: entry.seq, ts: entry.ts, seeded: entry.seeded, miss };
     }
 
     state.activity = next;
@@ -1308,6 +1369,7 @@
     if (!row) return;
     if (!row.classList.contains("swiped")) resetSwipe();
     swipe = { row, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, axis: null };
+    state.swiping = true; // hold the redraw until the finger is off the row
   }, { passive: true });
 
   elAgentList.addEventListener("touchmove", (e) => {
@@ -1326,6 +1388,7 @@
   }, { passive: true });
 
   elAgentList.addEventListener("touchend", () => {
+    state.swiping = false;
     if (!swipe) return;
     const { row, dx, axis } = swipe;
     swipe = null;
@@ -1335,6 +1398,12 @@
     row.classList.toggle("swiped", open);
     row.style.transform = open ? `translateX(${-SWIPE_WIDTH}px)` : "";
     if (open) triggerHaptic();
+  }, { passive: true });
+
+  // A call or a notification cancels the touch: do not hold the redraw for good.
+  elAgentList.addEventListener("touchcancel", () => {
+    state.swiping = false;
+    swipe = null;
   }, { passive: true });
 
   elBtnNewWorkspace.addEventListener("click", createWorkspace);

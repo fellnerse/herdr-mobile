@@ -70,13 +70,16 @@ self.addEventListener("push", (event) => {
           fetch("/api/agents", { cache: "no-store" }).catch(() => null),
           fetch("/api/push/last", { cache: "no-store" }).catch(() => null),
         ]);
-        const data = (await readJson(agentsRes)) || {};
+        const data = await readJson(agentsRes);
         const last = await readJson(lastRes);
 
-        const done = (data.agents || []).filter(
+        const done = ((data && data.agents) || []).filter(
           (a) => a.has_agent && IDLE.includes(a.status)
         );
-        await setBadge(done.length);
+        /* Only when the list was actually read. Off the tailnet the fetch
+           fails, and clearing the badge on that would wipe the one part of a
+           frozen home screen icon that still says anything. */
+        if (data) await setBadge(done.length);
 
         const finished = whoFinished(last);
         if (finished) {
