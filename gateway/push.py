@@ -18,7 +18,10 @@ import os
 import json
 import time
 import base64
+import socket
+import ipaddress
 import threading
+import contextlib
 import subprocess
 import urllib.request
 import urllib.error
@@ -36,17 +39,81 @@ VAPID_SUB = os.environ.get("SHEEPIT_PUSH_SUB", "https://github.com/mowolf/herdr-
 _LOCK = threading.Lock()
 
 
+def _is_public_host(host: str) -> bool:
+    """Does every address this name resolves to sit on the public internet?
+
+    A name is not one address: it can resolve to several, and to different
+    ones next time. Rejecting on any private answer is the conservative
+    reading, and a real push service never has one."""
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return True
+
+
 def valid_endpoint(endpoint: str) -> bool:
     """Endpoints arrive as client JSON and are later fetched by the server, so
     an unvalidated one is an SSRF primitive: anything that can POST to
     /api/push/subscribe could aim the gateway at a loopback or LAN address and
-    have it fire on every agent completion. Real push services are always
-    https, so require exactly that."""
+    have it fire on every agent completion - and /api/push/test hands back the
+    status code it got, which is a port scanner with extra steps.
+
+    So: https, a default port, and a host that resolves only to the public
+    internet. `https` alone let 127.0.0.1, 10.0.0.5 and 169.254.169.254
+    straight through."""
     try:
         parsed = urlparse(endpoint)
     except Exception:
         return False
-    return parsed.scheme == "https" and bool(parsed.hostname)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    try:
+        if parsed.port not in (None, 443):
+            return False
+    except ValueError:
+        return False
+    return _is_public_host(parsed.hostname)
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """A 302 is the way back in: urlopen would follow it without re-checking
+    the target and replay the VAPID Authorization header at whatever it names,
+    including plain http to something on this machine. Push services answer
+    the endpoint they gave us, so nothing legitimate is lost."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirects)
+
+
+@contextlib.contextmanager
+def _private_umask():
+    """Create files private from the first byte. chmod() afterwards leaves a
+    window - short, but it recurs on every subscription write."""
+    old = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(old)
+
+
+def _ensure_state_dir() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        STATE_DIR.chmod(0o700)
 
 
 def b64url(data: bytes) -> str:
@@ -55,13 +122,14 @@ def b64url(data: bytes) -> str:
 
 def ensure_keys() -> None:
     """Generate the VAPID keypair once, readable only by this user."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_state_dir()
     if KEY_PATH.exists():
         return
-    subprocess.run(
-        ["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", str(KEY_PATH)],
-        check=True, capture_output=True,
-    )
+    with _private_umask():
+        subprocess.run(
+            ["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", str(KEY_PATH)],
+            check=True, capture_output=True,
+        )
     KEY_PATH.chmod(0o600)
 
 
@@ -123,10 +191,13 @@ def _read_subs() -> list:
 
 def _write_subs(subs: list) -> None:
     """Atomic swap: a crash mid-write must not leave a truncated file behind."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_state_dir()
     tmp = SUBS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(subs, indent=2))
-    tmp.chmod(0o600)
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(subs, indent=2))
     os.replace(tmp, SUBS_PATH)
 
 
@@ -142,7 +213,7 @@ def save_subs(subs: list) -> None:
 
 def add_sub(sub: dict) -> int:
     if not valid_endpoint(sub.get("endpoint", "")):
-        raise ValueError("endpoint must be an https URL")
+        raise ValueError("endpoint must be an https URL on the public internet")
     with _LOCK:
         subs = [s for s in _read_subs() if s.get("endpoint") != sub.get("endpoint")]
         subs.append(sub)
@@ -170,7 +241,7 @@ def send_one(sub: dict, ttl: int = 120) -> int:
     req.add_header("Urgency", "high")
     req.add_header("Content-Length", "0")
     try:
-        with urllib.request.urlopen(req, timeout=10) as res:
+        with _OPENER.open(req, timeout=10) as res:
             return res.status
     except urllib.error.HTTPError as e:
         return e.code

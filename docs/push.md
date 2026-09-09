@@ -25,7 +25,8 @@ library has no ECDSA, so the VAPID JWT is signed by shelling out to it. No pip
 packages, no service account, no third party.
 
 VAPID keys and device subscriptions are generated on first use and stored mode
-`600` in `~/.config/sheepit/` — override with `SHEEPIT_STATE_DIR`. They live
+`600` in `~/.config/sheepit/` (itself `700`) — override with
+`SHEEPIT_STATE_DIR`. Both are created private rather than chmod'ed afterwards. They live
 outside the repository and must never be committed. `SHEEPIT_PUSH_SUB` sets the
 RFC 8292 contact sent to the push service.
 
@@ -55,6 +56,12 @@ reached at all.
 
 The same handler sets the badge count, and collapses repeats into one
 notification so a burst of finishing agents does not become a burst of alerts.
+
+Naming the agent is the point of the feature, so a notification puts a pane's
+name — and sometimes its terminal title — **on the lock screen**, where it is
+readable without unlocking the phone. Titles are whatever the agent set them
+to, which is usually what you asked it to do. The record itself is dropped
+after two minutes on both sides of the wire.
 
 ## Testing and troubleshooting
 

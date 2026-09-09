@@ -132,6 +132,25 @@ tailscale serve --https=8443 off # drop one proxy
 tailscale serve reset            # drop all of them
 ```
 
+## Who can reach it
+
+There are no accounts and no tokens. What protects the gateway is where it
+sits: bound to `127.0.0.1`, reachable only through `tailscale serve`, on your
+own tailnet. Anyone who can open the URL can read your panes and type into
+them, so treat tailnet access as the credential.
+
+One thing does not follow from network placement, and the gateway handles it
+itself: a **page in another tab** is on your phone too. It cannot see the
+tailnet, but it can ask the browser to make the request for you. So the
+gateway serves no CORS headers at all — the app is same-origin with it and
+needs none — and refuses any `/api/` request a browser marks as coming from
+another site. Requests with no `Origin` and no `Sec-Fetch-Site` are not from a
+page (curl, the menu bar app) and are left alone.
+
+If you put something else in front of it, the same rule applies: `Origin` has
+to agree with `Host`. Tailscale Serve passes the browser's `Host` through
+untouched, which is what makes this work.
+
 ## Implementation notes
 
 * **Percent-encoded pane ids.** Mobile Safari encodes the colon in `w1:p2` as
@@ -146,3 +165,7 @@ tailscale serve reset            # drop all of them
 * **Caching.** Assets are served with a strong `ETag` and
   `no-cache, must-revalidate`; without a validator iOS will happily strand a
   home-screen install on an old build.
+* **Headers.** `web/` is served with a content security policy that allows
+  nothing off-origin, plus `nosniff` and `X-Frame-Options: DENY`. The
+  transcript reaches the page through `innerHTML`, so the policy is the
+  backstop if anything ever slips past the escaping.
