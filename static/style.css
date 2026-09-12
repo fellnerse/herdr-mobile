@@ -485,6 +485,44 @@ html, body {
 /* Prompt Form */
 /* Mirror of the desktop's own input line, so a prompt typed on the laptop is
    visibly the terminal's and not something half-entered on the phone. */
+/* Path suggestions for the @token being typed. */
+.complete-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 6px 0 2px 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.complete-bar::-webkit-scrollbar { display: none; }
+
+.complete-bar.hidden { display: none; }
+
+.complete-chip {
+  flex-shrink: 0;
+  max-width: 60vw;
+  padding: 6px 11px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.complete-chip:active { background: var(--bg-hover); }
+
+/* Directories continue the path, so they read as the primary choice. */
+.complete-chip.is-dir {
+  color: var(--accent-primary);
+  border-color: rgba(47, 129, 247, 0.35);
+}
+
 /* Key palette: single keypresses for the agent's confirmation prompts. */
 .keys-bar {
   display: flex;

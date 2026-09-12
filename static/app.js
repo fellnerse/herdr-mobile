@@ -34,6 +34,7 @@
   const elPromptForm = document.getElementById("prompt-form");
   const elPromptInput = document.getElementById("prompt-input");
   const elTerminalInput = document.getElementById("terminal-input");
+  const elCompleteBar = document.getElementById("complete-bar");
   const elTerminalInputRow = document.getElementById("terminal-input-row");
   const elBtnAdopt = document.getElementById("btn-adopt");
   const elBtnCycleMode = document.getElementById("btn-cycle-mode");
@@ -655,6 +656,7 @@
 
       // Success
       elPromptInput.value = "";
+      hideCompletions();
       autoResizeTextarea();
       elBtnSend.disabled = true;
 
@@ -705,6 +707,86 @@
       console.error("Clipboard copy failed:", err);
     }
   }
+
+  /* Path completion for an @token, rooted at the pane's working directory.
+     Typing a path on a phone keyboard is the slowest thing here, and the cwd
+     is the one piece of context the gateway can complete against reliably -
+     there is no completion RPC, and slash commands are not enumerable. */
+  let completeTimer = null;
+  let completeAbort = null;
+
+  /// The @token immediately before the caret, or null.
+  function activeToken() {
+    const pos = elPromptInput.selectionStart ?? elPromptInput.value.length;
+    const upto = elPromptInput.value.slice(0, pos);
+    const match = /(^|\s)@(\S*)$/.exec(upto);
+    if (!match) return null;
+    return { query: match[2], start: pos - match[2].length };
+  }
+
+  function hideCompletions() {
+    elCompleteBar.classList.add("hidden");
+    elCompleteBar.innerHTML = "";
+  }
+
+  function scheduleCompletion() {
+    clearTimeout(completeTimer);
+    const token = activeToken();
+    if (!token || !state.activePaneId) {
+      hideCompletions();
+      return;
+    }
+    completeTimer = setTimeout(() => fetchCompletions(token.query), 130);
+  }
+
+  async function fetchCompletions(query) {
+    if (completeAbort) completeAbort.abort();
+    completeAbort = new AbortController();
+    try {
+      const url = `/api/agents/${encodeURIComponent(state.activePaneId)}/files?q=${encodeURIComponent(query)}`;
+      const res = await fetch(url, { signal: completeAbort.signal });
+      if (!res.ok) return hideCompletions();
+      const data = await res.json();
+      renderCompletions(data.entries || []);
+    } catch (err) {
+      if (err.name !== "AbortError") hideCompletions();
+    }
+  }
+
+  function renderCompletions(entries) {
+    if (!entries.length) return hideCompletions();
+    elCompleteBar.innerHTML = entries
+      .map(
+        (e) =>
+          `<button type="button" class="complete-chip${e.is_dir ? " is-dir" : ""}" data-path="${escapeHtml(e.path)}" data-dir="${e.is_dir ? 1 : 0}">${escapeHtml(e.name)}${e.is_dir ? "/" : ""}</button>`
+      )
+      .join("");
+    elCompleteBar.classList.remove("hidden");
+  }
+
+  /// Replace the token under the caret; a directory stays open for the next segment.
+  function applyCompletion(path, isDir) {
+    const token = activeToken();
+    if (!token) return;
+    const value = elPromptInput.value;
+    const insert = path + (isDir ? "/" : " ");
+    elPromptInput.value = value.slice(0, token.start) + insert + value.slice(token.start + token.query.length);
+    const caret = token.start + insert.length;
+    elPromptInput.setSelectionRange(caret, caret);
+    elPromptInput.focus();
+    autoResizeTextarea();
+    triggerHaptic();
+    if (isDir) scheduleCompletion();
+    else hideCompletions();
+  }
+
+  // Keep focus in the composer when a chip is pressed.
+  elCompleteBar.addEventListener("mousedown", (e) => e.preventDefault());
+
+  elCompleteBar.addEventListener("click", (e) => {
+    const chip = e.target.closest(".complete-chip");
+    if (chip) applyCompletion(chip.dataset.path, chip.dataset.dir === "1");
+  });
 
   // Auto-resize textarea
   function autoResizeTextarea() {
@@ -849,7 +931,15 @@
   elHistoryContainer.addEventListener("scroll", onHistoryScroll, { passive: true });
   elBtnScrollBottom.addEventListener("click", () => scrollToBottom(true));
 
-  elPromptInput.addEventListener("input", autoResizeTextarea);
+  elPromptInput.addEventListener("input", () => {
+    autoResizeTextarea();
+    scheduleCompletion();
+  });
+  // Tapping a chip blurs the textarea, so the bar must outlive the blur long
+  // enough for the click to land on it.
+  elPromptInput.addEventListener("blur", () => {
+    setTimeout(hideCompletions, 250);
+  });
   // Enter inserts a newline (iOS shows a return key); the button sends.
   elPromptInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {

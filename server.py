@@ -80,6 +80,60 @@ def call_herdr_rpc(method: str, params: dict = None, timeout: float = 5.0) -> di
 
 
 
+
+# Directories that are never worth completing into on a phone.
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".direnv",
+             ".mypy_cache", ".pytest_cache", "dist", "build", ".next", "target"}
+
+
+def complete_path(base: str, query: str, limit: int = 20) -> list:
+    """Complete `query` against the pane's working directory.
+
+    `base` comes from herdr, `query` from the client, so the resolved target is
+    checked to still sit inside `base`: without that, "../../.." walks the
+    gateway out of the project and lists arbitrary parts of the filesystem.
+    """
+    try:
+        root = Path(base).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return []
+
+    head, _, prefix = query.rpartition("/")
+    try:
+        target = (root / head).resolve()
+    except (OSError, RuntimeError):
+        return []
+    if target != root and root not in target.parents:
+        return []
+
+    try:
+        entries = sorted(
+            target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+        )
+    except OSError:
+        return []
+
+    out = []
+    for entry in entries:
+        name = entry.name
+        if not name.lower().startswith(prefix.lower()):
+            continue
+        # Hidden entries only surface once the user types the dot.
+        if name.startswith(".") and not prefix.startswith("."):
+            continue
+        is_dir = entry.is_dir()
+        if is_dir and name in SKIP_DIRS:
+            continue
+        out.append({
+            "name": name,
+            "path": f"{head}/{name}" if head else name,
+            "is_dir": is_dir,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 def build_agent_rows(ws_list: list, panes: list, agents_raw: list) -> list:
     """One row per pane running an agent, grouped under its workspace.
 
@@ -194,6 +248,33 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 "subscriptions": len(push.load_subs()),
             })
             return
+
+        # API: Path completion for a pane, rooted at its working directory
+        # /api/agents/{pane_id}/files?q=<prefix>
+        if path.startswith("/api/agents/") and path.endswith("/files"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                pane_id = unquote(parts[3])
+                query = qs.get("q", [""])[0]
+
+                cwd = ""
+                res = call_herdr_rpc("agent.list")
+                for a in res.get("result", {}).get("agents", []):
+                    if a.get("pane_id") == pane_id:
+                        cwd = a.get("foreground_cwd") or a.get("cwd") or ""
+                        break
+                if not cwd:
+                    res = call_herdr_rpc("pane.list")
+                    for pane in res.get("result", {}).get("panes", []):
+                        if pane.get("pane_id") == pane_id:
+                            cwd = pane.get("cwd") or ""
+                            break
+                if not cwd:
+                    self.send_json({"ok": False, "error": "No cwd for pane"}, 404)
+                    return
+
+                self.send_json({"ok": True, "cwd": cwd, "entries": complete_path(cwd, query)})
+                return
 
         # API: Get history / output for a specific agent pane
         # /api/agents/{pane_id}/history
