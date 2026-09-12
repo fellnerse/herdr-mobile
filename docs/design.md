@@ -165,3 +165,63 @@ the same SVG keeps one sheep to edit rather than two.
 If a rebuild seems to change nothing, note that the menu bar icon lives in the
 binary: a copy left running keeps drawing its own. `make -C menubar install`
 quits any running copy first.
+
+## The console, and why it is not the transcript
+
+The transcript is a reading: the pane parsed into turns, the furniture taken
+off, a question lifted out and given its own card with keys under it. That
+reading is the whole point of the app, and it is also a guess - and a guess
+has failure modes. An agent that opens a full-screen editor, an installer
+drawing a progress bar, a TUI with its own layout: none of these are turns,
+and no parser makes them into any.
+
+So there is a second view that does not read anything. It attaches to the
+pane's terminal over Herdr's client socket and puts the bytes on screen with
+[xterm.js](https://xtermjs.org) - the same ANSI, the same colours, the same
+redraws, and keystrokes going back. Where the transcript is the app's opinion
+of the pane, the console is the pane.
+
+The trade it makes is size. A terminal has a shape, the pane's shape is the
+one the desktop gave it, and a phone is narrower than any of them. Three
+options existed:
+
+1. **Show it at the pane's size and shrink the font.** Honest, and unreadable
+   at 100 columns on a phone: about 6px.
+2. **Resize the pane to the phone.** Readable, but the pane runtime is shared
+   with whatever is drawing it on the desktop, so the window over there jumps
+   to phone size while you read.
+3. **Wrap.** Which is what a terminal does with a line too long for it, and
+   what makes a diff or a table unreadable.
+
+The handshake forces the choice, because it names a size and Herdr acts on it:
+there is no attaching without saying how big. So the phone asks for the size
+it can actually show - eleven pixels' worth of columns - and says so in the
+header (`59×43 · 11px`), and **Fit** asks again after a rotation. The desktop
+window does change shape. That is the cost of the console being the pane
+rather than a picture of one, and it is better stated than hidden.
+
+## The changed files
+
+An agent's own account of what it did is a claim. Git holds the other one, and
+the phone is a good place to check it: what was touched, how much, and what
+the change actually says.
+
+The reading is plumbing rather than porcelain - `status --porcelain=v1 -z`,
+`diff --numstat -z`, and a per-file `diff` fetched only when a row is tapped,
+because a repository an agent has been working in for an hour is not something
+to send to a phone in one piece. `-z` matters more than it looks: the text
+format quotes paths with spaces, quotes or newlines in C style, and unquoting
+them correctly is a small parser nobody needs. NUL-separated output has no
+quoting at all.
+
+Untracked files have no diff to ask git for, so they are counted by reading
+them and rendered against `/dev/null` - an agent's brand new file is the thing
+you most want to look at, and "no diff available" would be the wrong answer.
+
+Side by side is two independently scrolling columns rather than one grid: a
+grid sized to its content puts the right-hand column past the edge of a phone,
+because the longest line in the file decides where it starts. Each column
+mirrors the other's horizontal scroll, so a line and its replacement stay
+opposite each other. A run of removals pairs one-to-one with the run of
+additions that replaced it, and the shorter side is padded - which is what
+keeps everything after a lopsided edit level.

@@ -151,6 +151,46 @@ If you put something else in front of it, the same rule applies: `Origin` has
 to agree with `Host`. Tailscale Serve passes the browser's `Host` through
 untouched, which is what makes this work.
 
+## The two Herdr sockets
+
+Most of the gateway speaks JSON-RPC to `~/.config/herdr/herdr.sock`: listing
+panes, reading scrollback, sending keys. The console needs something that
+socket does not offer — a live byte stream — so it opens
+`~/.config/herdr/herdr-client.sock` instead and speaks the protocol a desktop
+Herdr speaks: a length-prefixed bincode envelope, `TerminalHello`, then
+`AttachTerminal`, after which the pane's own ANSI arrives as it is drawn and
+keystrokes go back the same way.
+
+Both paths are found next to each other, and `HERDR_CLIENT_SOCKET` overrides
+the second the way `HERDR_SOCKET` overrides the first.
+
+Two consequences worth knowing:
+
+* **Attaching sets the pane's size.** The handshake names a size and Herdr
+  gives the pane that size; the runtime is shared with whatever is drawing the
+  pane on the desktop, so that window changes shape too. The phone asks for
+  what it can show at a readable font, and the **Fit** button asks again.
+* **Protocol versions.** `ping` reports the protocol, and only the codecs
+  actually verified here are used — 14 to 20, and 22, which Herdr 0.8.2 and
+  later speak. Anything else is refused rather than guessed at, because a
+  wrong variant index does not fail, it mis-decodes.
+
+## The routes
+
+| | |
+|---|---|
+| `GET /api/agents` | The herd: one row per pane, with status, cwd and recency. |
+| `GET /api/agents/{pane}/history` | Scrollback as text or ANSI. |
+| `GET /api/agents/{pane}/changes` | What git says the agent changed. |
+| `GET /api/agents/{pane}/diff?path=` | One file's unified diff. |
+| `GET /ws/terminal/{pane}` | The console: a WebSocket carrying the pane's ANSI, with keystrokes, resizes and scrolls going back. |
+| `POST /api/agents/{pane}/prompt`, `/keys` | Typing and single keys. |
+| `POST /api/workspaces`, `/api/workspaces/{id}/close` | Starting and closing projects. |
+| `GET|POST /api/push/*` | Notification keys, subscriptions and the last finisher. |
+
+Everything under `/api/` and the WebSocket refuse a cross-origin request:
+browsers do not apply CORS to a WebSocket, so the check is made by hand there.
+
 ## Implementation notes
 
 * **Percent-encoded pane ids.** Mobile Safari encodes the colon in `w1:p2` as
@@ -160,6 +200,10 @@ untouched, which is what makes this work.
   `viewport-fit=cover`, and the layout height is driven from `visualViewport`,
   because iOS does not reliably reflow a fixed `dvh` layout when the keyboard
   opens — the header would slide off screen.
+* **The console's scrolling.** Herdr streams the viewport rather than a
+  scrolling log, so the browser's terminal keeps no scrollback of its own: a
+  wheel or a drag is forwarded to Herdr, which scrolls the pane and sends the
+  next frame already moved.
 * **Battery.** Polling stops on `visibilitychange` when the phone locks or
   Safari is backgrounded, and resumes with an immediate refresh on wake.
 * **Caching.** Assets are served with a strong `ETag` and
