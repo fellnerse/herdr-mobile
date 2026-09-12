@@ -8,6 +8,7 @@
     linesCount: 100,
     showStatusBar: false,
     plainView: false,
+    diffSplit: false,
     numberKeys: 3,
     badgeCount: -1,
     activity: {},
@@ -65,6 +66,20 @@
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
+  const elBtnConsole = document.getElementById("btn-console");
+  const elConsoleView = document.getElementById("console-view");
+  const elConsoleTerm = document.getElementById("console-term");
+  const elConsoleSub = document.getElementById("console-sub");
+  const elBtnCloseConsole = document.getElementById("btn-close-console");
+  const elBtnConsoleKeyboard = document.getElementById("btn-console-keyboard");
+  const elBtnConsoleFit = document.getElementById("btn-console-fit");
+  const elBtnChanges = document.getElementById("btn-changes");
+  const elChangesView = document.getElementById("changes-view");
+  const elChangesList = document.getElementById("changes-list");
+  const elChangesSub = document.getElementById("changes-sub");
+  const elChangesCount = document.getElementById("changes-count");
+  const elBtnCloseChanges = document.getElementById("btn-close-changes");
+  const elBtnDiffLayout = document.getElementById("btn-diff-layout");
 
   /* The bleat an agent gets when it stops working, while you are looking at
      the app. iOS will not let a page make noise until it has been touched
@@ -1248,6 +1263,7 @@
       elToggleStatusBar.checked = state.showStatusBar;
       state.plainView = readPref("plain") === "1";
       elTogglePlain.checked = state.plainView;
+      setDiffLayout(readPref("diffsplit") === "1");
       syncStatusBarRow();
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
@@ -1265,19 +1281,6 @@
      a reload and follows this phone rather than the server's workspace
      numbering. */
   const ACTIVITY_KEY = "sheepit.activity";
-
-  function loadActivity() {
-    try {
-      const raw = JSON.parse(readPref("activity") || "{}");
-      return raw && typeof raw === "object" ? raw : {};
-    } catch (err) {
-      return {};
-    }
-  }
-
-  function saveActivity() {
-    savePref(ACTIVITY_KEY, JSON.stringify(state.activity));
-  }
 
   /* Stamp anything whose sequence moved, forget panes that are gone, and sort
      newest first. On a first run nothing is known and every pane stamps the
@@ -1734,6 +1737,635 @@
       loop();
       startPolling();
     }
+  });
+
+
+  /* ----------------------------------------------------------------------
+     The console
+
+     The transcript above is a reading of a pane: parsed into turns, with the
+     furniture taken off. Sometimes you want the pane itself - a full-screen
+     editor an agent opened, a curses installer, a prompt the parser has no
+     shape for. So: xterm.js here, Herdr's own client socket at the far end of
+     a WebSocket, and the pane's bytes flowing both ways with nothing in
+     between deciding what they mean.
+
+     Herdr streams the viewport rather than a scrolling log, so scrolling is
+     not xterm's to do: a wheel or a drag asks Herdr to move its own scrollback
+     and the next frame arrives already scrolled.
+     ---------------------------------------------------------------------- */
+  /* A monospace cell, as a fraction of the font size. The width is close
+     enough to pick a font that fits the pane's columns; the height is only an
+     opening guess, because xterm rounds every row up and the roundings add up
+     over a tall pane - the real one is measured off the first grid it draws
+     and kept in consoleState.cellHeight. */
+  const CELL_WIDTH = 0.6;
+  const CELL_HEIGHT = 1.35;
+  // What a font has to be before it stops being worth reading on a phone.
+  const MIN_FONT = 4.5;
+  const MAX_FONT = 15;
+  const FIT_FONT = 11;
+  // Matches the padding .console-term draws with.
+  const CONSOLE_PAD_X = 12;
+  const CONSOLE_PAD_Y = 12;
+
+  const consoleState = {
+    term: null, ws: null, paneId: null, scrollAcc: 0, cols: 80, rows: 24,
+    loading: null, cellHeight: CELL_HEIGHT,
+  };
+  const encoder = new TextEncoder();
+
+  function consoleTheme() {
+    const css = getComputedStyle(document.documentElement);
+    const pick = (name, fallback) =>
+      (css.getPropertyValue(name) || "").trim() || fallback;
+    return {
+      background: pick("--bg-base", "#090a0f"),
+      foreground: pick("--text-primary", "#f0f3f8"),
+      cursor: pick("--accent-primary", "#2f81f7"),
+      selectionBackground: "rgba(47, 129, 247, 0.35)",
+    };
+  }
+
+  /* Half a megabyte of terminal, fetched the first time the console is opened
+     rather than on every load: most of the time the app is a transcript and a
+     composer, and the phone should not pay for what it is not showing. */
+  function loadTerminalLibrary() {
+    if (window.Terminal) return Promise.resolve(true);
+    if (!consoleState.loading) {
+      consoleState.loading = new Promise((resolve) => {
+        const script = document.createElement("script");
+        script.src = "/vendor/xterm.js";
+        script.onload = () => resolve(Boolean(window.Terminal));
+        script.onerror = () => {
+          consoleState.loading = null;   // a flaky tailnet gets another go
+          resolve(false);
+        };
+        document.head.appendChild(script);
+      });
+    }
+    return consoleState.loading;
+  }
+
+  function ensureTerminal() {
+    if (consoleState.term) return consoleState.term;
+    if (!window.Terminal) return null;
+    const term = new window.Terminal({
+      allowProposedApi: true,
+      convertEol: false,
+      cursorBlink: true,
+      fontFamily: getComputedStyle(document.documentElement)
+        .getPropertyValue("--font-mono").trim() || "monospace",
+      fontSize: 12,
+      lineHeight: 1.15,
+      // Herdr repaints the viewport, so a local scrollback would only hold
+      // copies of frames that have already been replaced.
+      scrollback: 0,
+      theme: consoleTheme(),
+    });
+    consoleState.term = term;
+    term.open(elConsoleTerm);
+    // Keystrokes as bytes. A terminal has no notion of a key name, and the
+    // gateway forwards what arrives without looking at it.
+    term.onData((data) => sendConsole(encoder.encode(data)));
+    term.onBinary((data) => {
+      const bytes = new Uint8Array(data.length);
+      for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 255;
+      sendConsole(bytes);
+    });
+    attachConsoleScroll();
+    return term;
+  }
+
+  function sendConsole(bytes) {
+    const ws = consoleState.ws;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(bytes);
+  }
+
+  function sendConsoleControl(message) {
+    const ws = consoleState.ws;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+  }
+
+  /* Herdr owns the scrollback, so a gesture here is a request, not a local
+     move: wheel notches and finger drags both become lines for it to scroll. */
+  function attachConsoleScroll() {
+    elConsoleTerm.addEventListener(
+      "wheel",
+      (e) => {
+        if (!consoleState.ws) return;
+        e.preventDefault();
+        consoleState.scrollAcc += e.deltaY;
+        const lines = Math.trunc(consoleState.scrollAcc / 40);
+        if (!lines) return;
+        consoleState.scrollAcc -= lines * 40;
+        sendConsoleControl({
+          type: "scroll",
+          direction: lines < 0 ? "up" : "down",
+          lines: Math.min(20, Math.abs(lines)),
+        });
+      },
+      { passive: false }
+    );
+
+    let touchY = null;
+    elConsoleTerm.addEventListener("touchstart", (e) => {
+      touchY = e.touches.length === 1 ? e.touches[0].clientY : null;
+    }, { passive: true });
+    elConsoleTerm.addEventListener("touchmove", (e) => {
+      if (touchY === null || !consoleState.ws) return;
+      const y = e.touches[0].clientY;
+      const moved = touchY - y;
+      // A tap that drifts is still a tap; only a real drag scrolls.
+      if (Math.abs(moved) < 24) return;
+      touchY = y;
+      sendConsoleControl({
+        type: "scroll",
+        direction: moved < 0 ? "up" : "down",
+        lines: Math.min(10, Math.max(1, Math.round(Math.abs(moved) / 24))),
+      });
+    }, { passive: true });
+    elConsoleTerm.addEventListener("touchend", () => { touchY = null; }, { passive: true });
+  }
+
+  /* Attaching is not a read-only act: the connection names a size in its
+     handshake and Herdr gives the pane that size, and the pane runtime is the
+     same one the desktop is drawing. So the size asked for is the one that
+     suits this screen, and the font then follows whatever Herdr actually
+     settled on - which is not always what was asked. */
+  function showPaneSize(cols, rows) {
+    const term = consoleState.term;
+    if (!term || !cols || !rows) return;
+    consoleState.cols = cols;
+    consoleState.rows = rows;
+    if (keyboardOpen()) {
+      if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
+      pinConsoleBottom();
+      return;
+    }
+    const box = consoleBox();
+    if (!box) return;
+    const byWidth = box.width / (cols * CELL_WIDTH);
+    const byHeight = box.height / (rows * consoleState.cellHeight);
+    const size = Math.max(MIN_FONT, Math.min(MAX_FONT, Math.min(byWidth, byHeight)));
+    term.options.fontSize = Math.round(size * 10) / 10;
+    if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
+    setConsoleSub(`${cols}×${rows} · ${term.options.fontSize}px`);
+    /* The numbers above are an estimate of a cell from the font size, and an
+       estimate is not what the terminal then draws: xterm rounds every row's
+       height up, so a tall pane overflows by those roundings added together -
+       and what falls off the bottom is the composer, the one line you came to
+       read. So measure the grid it actually produced and correct. */
+    requestAnimationFrame(() => correctConsoleOverflow(cols, rows, 0));
+  }
+
+  function correctConsoleOverflow(cols, rows, pass) {
+    const term = consoleState.term;
+    const grid = elConsoleTerm.querySelector(".xterm-rows");
+    const box = consoleBox();
+    if (!term || !grid || !box || pass > 2 || keyboardOpen()) return;
+    const drawn = grid.getBoundingClientRect();
+    /* What a cell really costs, in multiples of the font size. Remembering it
+       means the next size asked for is one that fits at a readable font,
+       rather than one the estimate said would fit and then did not. */
+    const measured = drawn.height / (term.rows * term.options.fontSize);
+    if (measured > 0.8 && measured < 3) consoleState.cellHeight = measured;
+    const overflow = Math.max(drawn.height / box.height, drawn.width / box.width);
+    if (overflow <= 1.001) return;
+    const size = Math.max(MIN_FONT, term.options.fontSize / overflow);
+    const rounded = Math.floor(size * 10) / 10;
+    if (rounded >= term.options.fontSize) return;
+    term.options.fontSize = rounded;
+    setConsoleSub(`${cols}×${rows} · ${rounded}px`);
+    requestAnimationFrame(() => correctConsoleOverflow(cols, rows, pass + 1));
+  }
+
+  /* The room the rows actually get, padding taken off - a terminal sized to
+     the box including its padding loses its bottom line under the key row. */
+  function consoleBox() {
+    const width = elConsoleTerm.clientWidth - CONSOLE_PAD_X;
+    const height = elConsoleTerm.clientHeight - CONSOLE_PAD_Y;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+
+  /* What this screen can show comfortably, in cells. */
+  function phoneSize() {
+    const box = consoleBox();
+    if (!box) return null;
+    return {
+      cols: Math.max(20, Math.floor(box.width / (FIT_FONT * CELL_WIDTH))),
+      rows: Math.max(5, Math.floor(box.height / (FIT_FONT * consoleState.cellHeight))),
+    };
+  }
+
+  // After a rotation, or once the keyboard has given the screen back.
+  function requestFit() {
+    const size = phoneSize();
+    if (size) sendConsoleControl({ type: "resize", ...size });
+  }
+
+  /* The keyboard takes half the screen, and re-fitting a 43-row pane into what
+     is left would put the font somewhere near six pixels. So while it is open
+     the size is left alone and the terminal is scrolled to its bottom instead -
+     which is where the prompt you are typing at lives. */
+  function keyboardOpen() {
+    const vv = window.visualViewport;
+    return Boolean(vv && vv.height < window.innerHeight * 0.75);
+  }
+
+  function pinConsoleBottom() {
+    elConsoleTerm.scrollTop = elConsoleTerm.scrollHeight;
+  }
+
+  function fitConsole() {
+    if (elConsoleView.classList.contains("hidden")) return;
+    if (keyboardOpen()) {
+      pinConsoleBottom();
+      return;
+    }
+    showPaneSize(consoleState.cols, consoleState.rows);
+  }
+
+  function setConsoleSub(text) {
+    elConsoleSub.textContent = text;
+  }
+
+  async function openConsole() {
+    if (!state.activePaneId) return;
+    triggerHaptic();
+    elConsoleView.classList.remove("hidden");
+    setConsoleSub("loading…");
+    if (!(await loadTerminalLibrary())) {
+      setConsoleSub("could not load the terminal");
+      return;
+    }
+    // Closed again while it was loading: do not attach behind their back.
+    if (elConsoleView.classList.contains("hidden")) return;
+    const term = ensureTerminal();
+    if (!term) {
+      setConsoleSub("terminal unavailable");
+      return;
+    }
+    // A different pane is a different terminal: drop what is on screen rather
+    // than drawing the new pane's frames over the old pane's.
+    if (consoleState.paneId !== state.activePaneId) {
+      term.reset();
+      consoleState.paneId = state.activePaneId;
+    }
+    fitConsole();
+    term.focus();
+    connectConsole();
+  }
+
+  function connectConsole() {
+    closeConsoleSocket();
+    const term = consoleState.term;
+    const paneId = consoleState.paneId;
+    if (!term || !paneId) return;
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    const size = phoneSize() || { cols: term.cols, rows: term.rows };
+    const url = `${scheme}://${location.host}/ws/terminal/${encodeURIComponent(paneId)}` +
+      `?cols=${size.cols}&rows=${size.rows}`;
+    setConsoleSub("connecting…");
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      setConsoleSub("could not connect");
+      return;
+    }
+    ws.binaryType = "arraybuffer";
+    consoleState.ws = ws;
+    ws.onopen = () => setConsoleSub("attached");
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        // The only text the gateway sends is a failure it could not report as
+        // a status code, the socket having already been upgraded.
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "size") showPaneSize(msg.cols, msg.rows);
+          else if (msg.type === "error") setConsoleSub(msg.message || "error");
+        } catch (err) {
+          /* not ours */
+        }
+        return;
+      }
+      term.write(new Uint8Array(event.data));
+      if (keyboardOpen()) pinConsoleBottom();
+    };
+    ws.onclose = () => {
+      if (consoleState.ws === ws) consoleState.ws = null;
+      if (!elConsoleView.classList.contains("hidden")) setConsoleSub("detached");
+    };
+    ws.onerror = () => setConsoleSub("connection failed");
+  }
+
+  function closeConsoleSocket() {
+    const ws = consoleState.ws;
+    consoleState.ws = null;
+    if (ws && ws.readyState <= WebSocket.OPEN) ws.close();
+  }
+
+  function closeConsole() {
+    elConsoleView.classList.add("hidden");
+    closeConsoleSocket();
+    // Polling stopped while the console had the screen; it is the transcript's
+    // turn again.
+    startPolling();
+    loop();
+  }
+
+  elBtnConsole.addEventListener("click", () => {
+    stopPolling();
+    openConsole();
+  });
+  elBtnCloseConsole.addEventListener("click", closeConsole);
+  elBtnConsoleKeyboard.addEventListener("click", () => {
+    if (consoleState.term) consoleState.term.focus();
+  });
+  elBtnConsoleFit.addEventListener("click", requestFit);
+  window.addEventListener("resize", fitConsole);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", fitConsole);
+  }
+
+  /* ----------------------------------------------------------------------
+     Changed files
+
+     What an agent says it did and what it did to the working tree are two
+     different claims. This is the second one: git's own porcelain, read in
+     the pane's directory, with each file's diff fetched only when you ask for
+     it. Unified by default because a phone is narrow; side by side for when
+     the change is a replacement and the two versions want to be level.
+     ---------------------------------------------------------------------- */
+  function diffSplitPref() {
+    return state.diffSplit ? "1" : "0";
+  }
+
+  function setDiffLayout(split) {
+    state.diffSplit = split;
+    elBtnDiffLayout.setAttribute("aria-pressed", split ? "true" : "false");
+    elBtnDiffLayout.textContent = split ? "Unified" : "Split";
+    savePref("sheepit.diffsplit", diffSplitPref());
+    // Re-render whatever is already open, in the other shape.
+    elChangesList.querySelectorAll(".diff-body[data-patch]").forEach((body) => {
+      body.innerHTML = renderPatch(body.getAttribute("data-patch"));
+      syncSplitScroll(body);
+    });
+  }
+
+  function statusLabel(file) {
+    if (file.untracked) return "new";
+    const letters = (file.index_status + file.worktree_status).replace(/\s/g, "");
+    const words = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", U: "conflict" };
+    return words[letters[0]] || letters.toLowerCase() || "changed";
+  }
+
+  async function openChanges() {
+    if (!state.activePaneId) return;
+    triggerHaptic();
+    elChangesView.classList.remove("hidden");
+    elChangesList.innerHTML = '<div class="history-empty">Reading the working tree…</div>';
+    elChangesSub.textContent = "";
+    await refreshChanges();
+  }
+
+  async function refreshChanges() {
+    const paneId = state.activePaneId;
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(paneId)}/changes`);
+      const data = await res.json();
+      if (paneId !== state.activePaneId) return;
+      if (!data.ok) throw new Error(data.error || "could not read git");
+      renderChanges(data);
+    } catch (err) {
+      elChangesList.innerHTML = `<div class="history-empty">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderChanges(data) {
+    if (!data.repo) {
+      elChangesSub.textContent = "";
+      setChangesBadge(0);
+      elChangesList.innerHTML =
+        '<div class="history-empty">This agent is not working in a git repository.</div>';
+      return;
+    }
+    setChangesBadge(data.files.length);
+    elChangesSub.textContent = data.files.length
+      ? `${data.branch} · +${data.added} −${data.removed}`
+      : `${data.branch} · nothing changed`;
+    if (!data.files.length) {
+      elChangesList.innerHTML =
+        '<div class="history-empty">The working tree is clean.</div>';
+      return;
+    }
+    elChangesList.innerHTML = data.files
+      .map((file) => {
+        const name = file.path.split("/").pop();
+        const dir = file.path.slice(0, file.path.length - name.length);
+        const counts = file.binary
+          ? '<span class="diff-binary">binary</span>'
+          : `<span class="diff-add">+${file.added}</span>` +
+            `<span class="diff-del">−${file.removed}</span>`;
+        return `
+          <div class="change-row-wrap">
+            <button class="change-row" data-path="${escapeHtml(file.path)}">
+              <span class="change-status status-${escapeHtml(statusLabel(file))}">${escapeHtml(statusLabel(file))}</span>
+              <span class="change-name">
+                <span class="change-dir">${escapeHtml(dir)}</span>${escapeHtml(name)}
+                ${file.old_path ? `<span class="change-dir">← ${escapeHtml(file.old_path)}</span>` : ""}
+              </span>
+              <span class="change-counts">${counts}</span>
+            </button>
+            <div class="diff-body hidden"></div>
+          </div>`;
+      })
+      .join("");
+  }
+
+  function setChangesBadge(count) {
+    if (!count) {
+      elChangesCount.classList.add("hidden");
+      return;
+    }
+    elChangesCount.textContent = count > 99 ? "99+" : String(count);
+    elChangesCount.classList.remove("hidden");
+  }
+
+  async function toggleDiff(row) {
+    const body = row.parentElement.querySelector(".diff-body");
+    if (!body.classList.contains("hidden")) {
+      body.classList.add("hidden");
+      row.classList.remove("open");
+      return;
+    }
+    row.classList.add("open");
+    body.classList.remove("hidden");
+    if (body.getAttribute("data-patch") !== null) return;
+    body.innerHTML = '<div class="diff-loading">Reading…</div>';
+    const path = row.getAttribute("data-path");
+    try {
+      const res = await fetch(
+        `/api/agents/${encodeURIComponent(state.activePaneId)}/diff` +
+          `?path=${encodeURIComponent(path)}`
+      );
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "could not read the diff");
+      const patch = data.patch + (data.truncated ? "\n… diff truncated\n" : "");
+      body.setAttribute("data-patch", patch);
+      body.innerHTML = renderPatch(patch);
+      syncSplitScroll(body);
+    } catch (err) {
+      body.innerHTML = `<div class="diff-loading">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  /* A patch is hunks, and a hunk is lines that are context, removals or
+     additions. Both layouts are drawn from the same parse: unified keeps the
+     file's order, split pairs each run of removals with the run of additions
+     that replaced it, so the two versions sit level. */
+  function parsePatch(patch) {
+    const hunks = [];
+    let hunk = null;
+    for (const line of patch.split("\n")) {
+      const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(line);
+      if (header) {
+        hunk = {
+          heading: header[3].trim(),
+          oldLine: Number(header[1]),
+          newLine: Number(header[2]),
+          lines: [],
+        };
+        hunks.push(hunk);
+        continue;
+      }
+      if (!hunk) continue; // the diff --git preamble
+      const kind = line[0];
+      if (kind === "+") hunk.lines.push({ kind: "add", text: line.slice(1) });
+      else if (kind === "-") hunk.lines.push({ kind: "del", text: line.slice(1) });
+      else if (kind === "\\") continue; // "\ No newline at end of file"
+      else hunk.lines.push({ kind: "ctx", text: line.slice(1) });
+    }
+    return hunks;
+  }
+
+  function numberedRows(hunk) {
+    let oldNo = hunk.oldLine;
+    let newNo = hunk.newLine;
+    return hunk.lines.map((line) => {
+      const row = { ...line, oldNo: null, newNo: null };
+      if (line.kind !== "add") row.oldNo = oldNo++;
+      if (line.kind !== "del") row.newNo = newNo++;
+      return row;
+    });
+  }
+
+  function renderPatch(patch) {
+    const hunks = parsePatch(patch);
+    if (!hunks.length) {
+      return '<div class="diff-loading">No textual change to show.</div>';
+    }
+    return hunks
+      .map((hunk) => {
+        const rows = numberedRows(hunk);
+        const body = state.diffSplit ? renderSplitRows(rows) : renderUnifiedRows(rows);
+        const heading = hunk.heading
+          ? `<div class="diff-hunk">${escapeHtml(hunk.heading)}</div>`
+          : '<div class="diff-hunk"></div>';
+        return heading + body;
+      })
+      .join("");
+  }
+
+  function renderUnifiedRows(rows) {
+    const marks = { add: "+", del: "−", ctx: " " };
+    return (
+      '<div class="diff-grid unified">' +
+      rows
+        .map(
+          (row) => `
+        <div class="diff-line ${row.kind}">
+          <span class="diff-no">${row.oldNo || ""}</span>
+          <span class="diff-no">${row.newNo || ""}</span>
+          <span class="diff-mark">${marks[row.kind]}</span>
+          <span class="diff-text">${escapeHtml(row.text) || "&nbsp;"}</span>
+        </div>`
+        )
+        .join("") +
+      "</div>"
+    );
+  }
+
+  /* Side by side is two columns, not one grid: a grid sized to its content
+     puts the right-hand column past the edge of a phone, where the longest
+     line in the file decides where it starts. Each side scrolls on its own -
+     and each mirrors the other, so a line and its replacement stay level. */
+  function renderSplitRows(rows) {
+    const pairs = [];
+    let dels = [];
+    let adds = [];
+    const flush = () => {
+      const height = Math.max(dels.length, adds.length);
+      for (let i = 0; i < height; i++) {
+        pairs.push({ left: dels[i] || null, right: adds[i] || null });
+      }
+      dels = [];
+      adds = [];
+    };
+    for (const row of rows) {
+      if (row.kind === "del") dels.push(row);
+      else if (row.kind === "add") adds.push(row);
+      else {
+        flush();
+        pairs.push({ left: row, right: row });
+      }
+    }
+    flush();
+
+    const column = (side) =>
+      '<div class="diff-col">' +
+      pairs
+        .map(({ left, right }) => {
+          const row = side === "left" ? left : right;
+          if (!row) return '<div class="diff-side pad"><span class="diff-no"></span></div>';
+          const no = side === "left" ? row.oldNo : row.newNo;
+          return (
+            `<div class="diff-side ${row.kind}">` +
+            `<span class="diff-no">${no || ""}</span>` +
+            `<span class="diff-text">${escapeHtml(row.text) || "&nbsp;"}</span>` +
+            "</div>"
+          );
+        })
+        .join("") +
+      "</div>";
+
+    return `<div class="diff-grid split">${column("left")}${column("right")}</div>`;
+  }
+
+  /* Two columns, one gesture: scrolling either side moves the other, so the
+     two versions of a line stay opposite each other. */
+  function syncSplitScroll(root) {
+    root.querySelectorAll(".diff-grid.split").forEach((grid) => {
+      const columns = grid.querySelectorAll(".diff-col");
+      if (columns.length !== 2) return;
+      columns.forEach((column, i) => {
+        column.addEventListener("scroll", () => {
+          const other = columns[i === 0 ? 1 : 0];
+          if (other.scrollLeft !== column.scrollLeft) other.scrollLeft = column.scrollLeft;
+        }, { passive: true });
+      });
+    });
+  }
+
+  elBtnChanges.addEventListener("click", openChanges);
+  elBtnCloseChanges.addEventListener("click", () => {
+    elChangesView.classList.add("hidden");
+  });
+  elBtnDiffLayout.addEventListener("click", () => setDiffLayout(!state.diffSplit));
+  elChangesList.addEventListener("click", (e) => {
+    const row = e.target.closest(".change-row");
+    if (row) toggleDiff(row);
   });
 
   // Init
