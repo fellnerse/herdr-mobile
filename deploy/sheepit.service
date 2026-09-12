@@ -1,15 +1,16 @@
 [Unit]
-Description=Herdr Mobile Web Gateway
+Description=SheepIt gateway
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/projects/herdr-mobile
-ExecStart=/usr/bin/python3 /root/projects/herdr-mobile/server.py
+WorkingDirectory=/root/projects/sheepit
+ExecStart=/usr/bin/python3 /root/projects/sheepit/gateway/server.py
 Restart=always
-Environment=PORT=3009
+Environment=SHEEPIT_PORT=3009
 Environment=HOST=127.0.0.1
+# Where Herdr itself listens.
 Environment=HERDR_SOCKET=/root/.config/herdr/herdr.sock
 
 [Install]

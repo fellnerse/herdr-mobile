@@ -2,18 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Herdr Mobile</title>
+  <title>Sheep It</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
 
   <!-- Apple iOS Web App / PWA Capabilities -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Herdr">
+  <meta name="apple-mobile-web-app-title" content="Sheep It">
   <meta name="theme-color" content="#12151d">
 
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
-  <link rel="apple-touch-icon" href="/icon.svg">
+  <!-- iOS ignores manifest icons and SVG here: the home screen icon is this
+       PNG, snapshotted once when the app is added. -->
+  <link rel="apple-touch-icon" href="/icon-180.png">
 
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -69,15 +71,18 @@
       <div id="keys-bar" class="keys-bar">
         <div class="keys-row">
           <button type="button" id="btn-esc" class="key-btn" title="Send Escape">esc</button>
-          <button type="button" id="btn-ctrl-c" class="key-btn key-no" title="Send Interrupt (Ctrl+C)">^C</button>
+          <button type="button" id="btn-ctrl-c" class="key-btn key-no" title="Send Interrupt (Ctrl+C) - tap twice">^C</button>
           <button type="button" class="key-btn key-yes" data-key="y">y</button>
           <button type="button" class="key-btn key-no" data-key="n">n</button>
           <button type="button" class="key-btn key-enter" data-key="enter">⏎</button>
         </div>
         <div class="keys-row">
-          <button type="button" class="key-btn" data-key="1">1</button>
-          <button type="button" class="key-btn" data-key="2">2</button>
-          <button type="button" class="key-btn" data-key="3">3</button>
+          <!-- Number keys grow to match however many options the prompt lists -->
+          <span id="keys-numbers" class="keys-numbers">
+            <button type="button" class="key-btn" data-key="1">1</button>
+            <button type="button" class="key-btn" data-key="2">2</button>
+            <button type="button" class="key-btn" data-key="3">3</button>
+          </span>
           <button type="button" class="key-btn" data-key="up">↑</button>
           <button type="button" class="key-btn" data-key="down">↓</button>
           <button type="button" class="key-btn" data-key="tab">⇥</button>
@@ -163,8 +168,24 @@
     </div>
 
     <div class="sheet-row">
+      <label for="toggle-plain">
+        Plain view
+        <span class="sheet-hint">the pane verbatim, nothing parsed away</span>
+      </label>
+      <input type="checkbox" id="toggle-plain">
+    </div>
+
+    <div class="sheet-row">
       <label for="toggle-statusbar">Show agent status bar</label>
       <input type="checkbox" id="toggle-statusbar">
+    </div>
+
+    <div class="sheet-row">
+      <label for="toggle-bleat">
+        Bleat when an agent finishes
+        <span class="sheet-hint">only while the app is open</span>
+      </label>
+      <input type="checkbox" id="toggle-bleat">
     </div>
 
     <div class="sheet-row">

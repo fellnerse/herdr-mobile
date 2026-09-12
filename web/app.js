@@ -1,4 +1,4 @@
-// Herdr Mobile Client Application
+// Sheep It - the phone client for the SheepIt gateway
 
 (function () {
   let state = {
@@ -7,12 +7,21 @@
     historyText: "",
     linesCount: 100,
     showStatusBar: false,
+    plainView: false,
+    numberKeys: 3,
+    badgeCount: -1,
+    activity: {},
+    order: [],
+    bleat: true,
+    statuses: null,
     showKeys: true,
     mode: "",
     isUserScrolledUp: false,
     pollInterval: 2000,
     timer: null,
     isSending: false,
+    listSignature: null,
+    swiping: false,
   };
 
   // DOM Elements
@@ -40,6 +49,7 @@
   const elBtnCycleMode = document.getElementById("btn-cycle-mode");
   const elBtnKeys = document.getElementById("btn-keys");
   const elKeysBar = document.getElementById("keys-bar");
+  const elKeysNumbers = document.getElementById("keys-numbers");
   const elModeCurrent = document.getElementById("mode-current");
   const elBtnSend = document.getElementById("btn-send");
   const elBtnCtrlC = document.getElementById("btn-ctrl-c");
@@ -51,8 +61,66 @@
   const elSheet = document.getElementById("settings-sheet");
   const elSheetBackdrop = document.getElementById("sheet-backdrop");
   const elToggleStatusBar = document.getElementById("toggle-statusbar");
+  const elTogglePlain = document.getElementById("toggle-plain");
   const elTogglePush = document.getElementById("toggle-push");
+  const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
+
+  /* The bleat an agent gets when it stops working, while you are looking at
+     the app. iOS will not let a page make noise until it has been touched
+     once, so the context is created and the file decoded on the first
+     interaction and kept for the rest of the session. */
+  const BLEAT_URL = "/bleat.wav";
+  let audioCtx = null;
+  let bleatBuffer = null;
+
+  async function unlockAudio() {
+    if (audioCtx) {
+      if (audioCtx.state === "suspended") await audioCtx.resume().catch(() => {});
+      return;
+    }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    try {
+      audioCtx = new Ctx();
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+      const res = await fetch(BLEAT_URL);
+      bleatBuffer = await audioCtx.decodeAudioData(await res.arrayBuffer());
+    } catch (err) {
+      audioCtx = null; // no audio this session; everything else still works
+    }
+  }
+
+  function playBleat() {
+    if (!state.bleat || !audioCtx || !bleatBuffer) return;
+    if (document.hidden) return; // never bleat from a backgrounded tab
+    try {
+      const src = audioCtx.createBufferSource();
+      src.buffer = bleatBuffer;
+      const gain = audioCtx.createGain();
+      gain.gain.value = 0.55;
+      src.connect(gain).connect(audioCtx.destination);
+      src.start();
+    } catch (err) {
+      /* context died with the page going to sleep; nothing to do */
+    }
+  }
+
+  /* One bleat per batch, however many agents landed at once - eight sheep at
+     the same instant is a farmyard, not a notification. */
+  function bleatForFinished(agents) {
+    const now = {};
+    for (const a of agents) {
+      if (a.pane_id) now[a.pane_id] = a.has_agent ? a.status : null;
+    }
+    const before = state.statuses;
+    state.statuses = now;
+    if (!before) return; // first sweep: everything looks new, nothing finished
+    const finished = Object.keys(now).some(
+      (id) => before[id] === "working" && now[id] && now[id] !== "working"
+    );
+    if (finished) playBleat();
+  }
 
   // Haptic feedback helper
   function triggerHaptic(type = "light") {
@@ -191,6 +259,10 @@
     }
     return out;
   }
+  /* Two agents, two sets of glyphs for the same handful of roles. Claude Code
+     marks a turn with "⏺" and a tool result with "⎿"; Codex uses "•" and "└".
+     `bol` pins a marker to the left margin: Codex's bullet always starts a
+     turn there, while a "•" further in is a list item in somebody's prose. */
   const MARKERS = [
     { re: /^❯/, cls: "user" },        // > user message / live input
     { re: /^⏺/, cls: "assistant" },   // assistant message or tool call
@@ -198,10 +270,34 @@
     { re: /^[✻✽✳]/, cls: "meta" }, // "Worked for 1m 8s"
     { re: /^※/, cls: "tip" },         // tips
     { re: /^⏵⏵/, cls: "status" }, // "auto mode on ..."
+    { re: /^›\s/, cls: "user" },      // "› what changed in the indexer?"
+    { re: /^•\s/, cls: "assistant", bol: true }, // "• Ran docker compose ps"
+    { re: /^[✓✔✗✘]\s/, cls: "meta", bol: true },  // "✔ You approved codex to ..."
+    { re: /^└\s/, cls: "tool" },                 // "  └ {"acknowledged":true}"
   ];
   const RE_BOX = /^[┌┐└┘├┤┬┴┼│╭╮╯╰┏┓┗┛┣┫┳┻╋┃║╔╗╚╝╠╣╦╩╬]/;
+  // "❯ 2. app.bodyweight.plus", "› 1. Yes, proceed (y)" - one choice in a
+  // selection prompt.
+  const RE_OPTION = /^\s*[❯›>]?\s*(\d{1,2})\.\s/;
+  /* The footer a terminal prints under the prompt it is waiting on: Claude
+     Code's "Enter to select", Codex's "Press enter to confirm or esc to
+     cancel". RE_PROMPT_HINT is the half only a prompt says - "Esc to cancel"
+     on its own is also what an autocomplete menu offers. */
+  const RE_PROMPT_HINT = /Enter to select|keys? to navigate|Enter to confirm/i;
+  const RE_SELECT_HINT = /Esc to cancel|Esc to reject/i;
+  // The composer's own glyph: "❯" in Claude Code, "›" in Codex.
+  const RE_COMPOSER = /^[❯›](?:\s|$)/;
+  // What a composer shows when nothing has been typed into it.
+  const RE_PLACEHOLDER = /^(?:ask codex to do anything|try ".*")$/i;
+  /* Codex's footer - its model and the directory it works in - is the only
+     thing it prints under the composer. Claude Code closes the box with a
+     rule instead, so between them they say where the composer ends. */
+  const RE_AGENT_FOOTER = /·\s*[~/]/;
   // Long runs of rule glyphs anywhere in a line, not just whole-line rules.
   const RE_INLINE_RULE = /([─━┄┅┈┉═—–_=*.])\1{7,}/g;
+  // Both the composer and a pending prompt sit at the foot of the pane. This
+  // far above it, the same glyphs are something the agent printed.
+  const TAIL_REACH = 24;
 
   /* Is this line one of the terminal's horizontal rules? Returns null if not,
      otherwise the caption embedded in it - the input box's top border carries
@@ -218,14 +314,129 @@
     return null; // prose that merely contains a long run of glyphs
   }
 
-  function classifyLine(trimmed) {
+  function classifyLine(line, trimmed) {
     if (!trimmed) return null;
+    // Markers before boxes: Codex's "└ " tool result would otherwise read as
+    // the bottom-left corner of one.
+    for (const m of MARKERS) {
+      if (m.re.test(m.bol ? line : trimmed)) return m.cls;
+    }
     if (RE_BOX.test(trimmed)) return "table";
     if (ruleLabel(trimmed) !== null) return "rule";
-    for (const m of MARKERS) {
-      if (m.re.test(trimmed)) return m.cls;
-    }
     return null; // continuation of whatever came before
+  }
+
+  /* The terminal's own furniture at the foot of the pane: the composer, and
+     the status bar under it. Claude Code frames the composer in a pair of
+     rules and marks it "❯"; Codex prints "›" with nothing around it at all,
+     then names its model and cwd.
+
+     Anchoring on that glyph rather than on the last pair of rules is what
+     keeps a message whole. A markdown table's separator row is a rule too, so
+     taking the last two of those lifted the tail of the agent's answer into
+     the input mirror - a strip built for one line - and deleted the rest. */
+  function findChrome(raw) {
+    let idx = -1;
+    for (let i = raw.length - 1; i >= Math.max(0, raw.length - TAIL_REACH); i--) {
+      const trimmed = raw[i].trim();
+      if (!RE_COMPOSER.test(trimmed)) continue;
+      // "❯ 1. Yes, proceed" is a choice being offered, not the composer.
+      if (RE_OPTION.test(trimmed)) return null;
+      idx = i;
+      break;
+    }
+    if (idx < 0) return null;
+
+    // Claude Code's box: a rule opens it just above the "❯", the next rule
+    // closes it, and an autocomplete menu can sit in between.
+    let open = -1;
+    for (let i = idx - 1; i >= 0 && idx - i <= 3; i--) {
+      if (ruleLabel(raw[i].trim()) !== null) { open = i; break; }
+      if (raw[i].trim()) break;
+    }
+    let close = -1;
+    if (open >= 0) {
+      for (let i = idx + 1; i < raw.length && i - idx <= 12; i++) {
+        if (ruleLabel(raw[i].trim()) !== null) { close = i; break; }
+      }
+    }
+
+    /* The composer is the last thing in the pane, so nothing may stand under
+       it but blanks and the agent's own footer. An agent quoting a line back
+       - a pasted transcript, the instruction it is acting on - starts it with
+       the same glyph, and mistaking that for the composer lifts it into the
+       one-line mirror and drops every line below it as chrome. */
+    if (close < 0) {
+      for (let i = idx + 1; i < raw.length; i++) {
+        const trimmed = raw[i].trim();
+        if (!trimmed || RE_AGENT_FOOTER.test(trimmed)) continue;
+        if (ruleLabel(trimmed) !== null) continue;
+        return null;
+      }
+    }
+
+    const value = raw
+      .slice(idx, close >= 0 ? close : idx + 1)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(RE_COMPOSER, "")
+      .trim();
+    return {
+      // The opening rule stays: it carries the session title.
+      dropFrom: open >= 0 ? open + 1 : idx,
+      dropTo: close >= 0 ? close : idx,
+      statusFrom: close >= 0 ? close : idx,
+      liveInput: RE_PLACEHOLDER.test(value) ? "" : value,
+    };
+  }
+
+  /* The prompt an agent has stopped on - a tool confirmation, a plan
+     approval, AskUserQuestion. Claude Code frames it in the same pair of
+     rules that otherwise frames its composer; Codex frames it in nothing at
+     all. So find it by what it says - numbered choices and the footer under
+     them - rather than by the furniture around it. Getting this wrong is how
+     the question vanishes from the phone entirely. */
+  function findSelection(raw) {
+    const floor = Math.max(0, raw.length - TAIL_REACH);
+    let hintIdx = -1;
+    for (let i = floor; i < raw.length; i++) {
+      if (RE_PROMPT_HINT.test(raw[i]) || RE_SELECT_HINT.test(raw[i])) hintIdx = i;
+    }
+    let firstOption = -1;
+    let lastOption = -1;
+    const labels = new Set();
+    for (let i = floor; i <= (hintIdx >= 0 ? hintIdx : raw.length - 1); i++) {
+      const m = RE_OPTION.exec(raw[i]);
+      if (!m) continue;
+      if (firstOption < 0) firstOption = i;
+      lastOption = i;
+      labels.add(Number(m[1]));
+    }
+    /* How many choices are on offer - the run of labels from 1, not the
+       highest number seen, so a stray "12." in the text above cannot invent
+       nine keys that answer nothing. */
+    let optionCount = 0;
+    while (labels.has(optionCount + 1)) optionCount++;
+
+    /* A footer only a prompt prints is proof by itself. Numbered choices are
+       not: an agent listing three things to try mid-run looks exactly like a
+       question, and the missing composer is no help - Codex hides its own
+       while it works. So they need a footer under them too. */
+    const promptFooter = hintIdx >= 0 && RE_PROMPT_HINT.test(raw[hintIdx]);
+    if (!promptFooter && !(optionCount >= 2 && hintIdx >= 0)) return null;
+
+    /* Walk up to the head of the prompt: the rule that opens Claude Code's
+       box, or - Codex having no box - the line after the last thing the agent
+       printed for itself. */
+    const head = firstOption >= 0 ? firstOption : hintIdx;
+    let start = Math.max(0, head - TAIL_REACH);
+    for (let i = head - 1; i >= start; i--) {
+      const trimmed = raw[i].trim();
+      if (ruleLabel(trimmed) !== null) { start = i; break; }
+      if (classifyLine(raw[i], trimmed)) { start = i + 1; break; }
+    }
+    return { start, end: Math.max(hintIdx, lastOption), optionCount };
   }
 
   function parseTranscript(text) {
@@ -238,54 +449,41 @@
     });
     const raw = rows.map((r) => r.text);
 
-    // Everything after the final rule is the agent's own status bar.
-    const ruleIdxs = [];
-    raw.forEach((l, i) => {
-      if (ruleLabel(l.trim()) !== null) ruleIdxs.push(i);
-    });
-    const lastRule = ruleIdxs.length ? ruleIdxs[ruleIdxs.length - 1] : -1;
-    const prevRule = ruleIdxs.length > 1 ? ruleIdxs[ruleIdxs.length - 2] : -1;
+    const chrome = findChrome(raw);
+    const sel = findSelection(raw);
+    /* Where the two overlap the prompt wins. A question folded into the input
+       mirror is a question nobody ever sees. */
+    const box = sel && chrome && chrome.dropFrom <= sel.end ? null : chrome;
 
-    /* The final pair of rules frames the terminal's own input box - whatever
-       is typed on the desktop, plus any autocomplete menu it has opened. That
-       is live UI state, not conversation, so it must not render as a past
-       user message. Lift it out and let the caller show it next to the phone's
-       own composer instead. */
-    let inputStart = -1;
-    let inputEnd = -1;
-    if (prevRule >= 0 && lastRule - prevRule <= 12) {
-      inputStart = prevRule + 1;
-      inputEnd = lastRule - 1;
-    }
+    const liveInput = box ? box.liveInput : "";
+    const statusFrom = box ? box.statusFrom : -1;
+
     // The status bar names the current mode; shift+tab cycles through them.
     let mode = "";
-    if (lastRule >= 0) {
-      const tail = raw.slice(lastRule + 1).join(" ");
-      const m = /\b(auto|plan|manual|accept edits|bypass\w*)\s+mode\b/i.exec(tail);
-      if (m) mode = m[1].toLowerCase();
-    }
-
-    const liveInput =
-      inputStart >= 0
-        ? raw
-            .slice(inputStart, inputEnd + 1)
-            .join(" ")
-            .replace(/^[\s\u00a0]*❯[\s\u00a0]*/, "")
-            .replace(/\s+/g, " ")
-            .trim()
-        : "";
+    const tail = raw
+      .slice(statusFrom >= 0 ? statusFrom : Math.max(0, raw.length - 6))
+      .join(" ");
+    const m = /\b(auto|plan|manual|accept edits|bypass\w*)\s+mode\b/i.exec(tail);
+    if (m) mode = m[1].toLowerCase();
 
     const blocks = [];
     let current = "assistant";
     raw.forEach((line, i) => {
-      // Drop the input box's contents and its closing rule; the opening rule
-      // stays because it carries the session title.
-      if (inputStart >= 0 && i >= inputStart && i <= lastRule) return;
+      /* Drop the composer and everything under it: that is live UI state, not
+         conversation, and rendering it as a past user message is how the
+         phone ends up arguing with the laptop. */
+      if (box && i >= box.dropFrom && i <= box.dropTo) return;
 
       const trimmed = line.trim();
-      let cls = classifyLine(trimmed);
+      let cls = classifyLine(line, trimmed);
 
-      if (lastRule >= 0 && i > lastRule && cls !== "rule") cls = "status";
+      if (sel && i >= sel.start && i <= sel.end) {
+        // A rule inside the prompt would break it into several cards.
+        if (cls === "rule") { if (i !== sel.start) return; }
+        else cls = "select";
+      } else if (statusFrom >= 0 && i > statusFrom && cls !== "rule") {
+        cls = "status";
+      }
 
       if (cls === "rule") {
         const label = ruleLabel(trimmed);
@@ -318,7 +516,13 @@
       return b.rows.length > 0;
     });
 
-    return { blocks: kept, liveInput, mode };
+    return {
+      blocks: kept,
+      rows,
+      liveInput,
+      mode,
+      optionCount: sel ? sel.optionCount : 0,
+    };
   }
 
   /* What the desktop currently has typed into the pane, mirrored above the
@@ -329,9 +533,46 @@
     if (show) elTerminalInput.textContent = textValue;
   }
 
+  /* The keypad ships with 1-3, but a prompt can list more - or fewer - and a
+     choice you cannot press is the same as no choice at all. Follow whatever
+     the current prompt actually offers, never dropping below the three keys
+     the pad is built around. It stops at nine: a tenth choice has no single
+     key behind it - both agents act on the first digit typed - so the arrows
+     and enter are how you reach it. */
+  function renderNumberKeys(count) {
+    const want = Math.min(Math.max(count || 0, 3), 9);
+    if (want === state.numberKeys) return;
+    state.numberKeys = want;
+    elKeysNumbers.innerHTML = Array.from({ length: want }, (_, i) => {
+      const n = i + 1;
+      return `<button type="button" class="key-btn" data-key="${n}">${n}</button>`;
+    }).join("");
+  }
+
+  /* The pane exactly as it arrived, minus the terminal's own padding: every
+     line in the order the agent drew it, coloured by its own escape codes and
+     classified as nothing at all.
+
+     The parsed view is a set of guesses - which glyph starts a turn, which
+     rules frame the composer, which of the last lines are the status bar - and
+     a guess that goes wrong hides something. Most of what it drops is padding
+     and furniture, but not all of it: a caption on a rule directly under
+     another rule is overwritten by it, a line of the agent's own "=" or "."
+     is read as a rule and collapsed, and everything below Claude Code's input
+     box - usage warnings, background tasks, errors - is filed under the status
+     bar and hidden with it. This view is the answer to "the phone is not
+     showing me something": no classification, no collapsing, nothing
+     dropped. */
+  function plainHtml(rows) {
+    return `<div class="t-block t-plain">${rows
+      .map((row) => runsToHtml(row.runs))
+      .join("\n")}</div>`;
+  }
+
   function renderTranscript(text) {
     if (!text) {
       renderLiveInput("");
+      renderNumberKeys(0);
       elHistoryContent.innerHTML =
         '<div class="history-empty">(No output recorded yet)</div>';
       return;
@@ -341,8 +582,17 @@
     // to nothing: an empty input box, or the status bar when hidden.
     const parsed = parseTranscript(text);
     renderLiveInput(parsed.liveInput);
+    renderNumberKeys(parsed.optionCount);
     state.mode = parsed.mode;
     elModeCurrent.textContent = parsed.mode || "unknown";
+
+    /* Parsing still runs in the plain view: the keypad, the mode and the input
+       mirror are read out of it, and they are as useful when the transcript is
+       drawn verbatim as when it is not. Only the drawing changes. */
+    if (state.plainView) {
+      elHistoryContent.innerHTML = plainHtml(parsed.rows);
+      return;
+    }
 
     const visible = [];
     for (const b of parsed.blocks) {
@@ -408,7 +658,10 @@
       setConnected(true);
 
       state.agents = data.agents || [];
+      bleatForFinished(state.agents);
+      sortAgentsByRecency();
       renderAgentBar();
+      updateBadge();
 
       // If no agent selected or active agent no longer exists, select first available
       if (
@@ -431,6 +684,26 @@
     }
   }
 
+  /* iOS freezes the home screen icon at install time, so the badge on it is
+     the only thing that can still change - it counts the agents waiting on
+     you, and clears itself as you answer them. Needs an installed web app and
+     granted notification permission; anywhere else the call is simply absent
+     or a no-op. */
+  const WAITING = ["idle", "done", "blocked"];
+
+  function updateBadge() {
+    if (!("setAppBadge" in navigator)) return;
+    const waiting = state.agents.filter(
+      (a) => a.has_agent && WAITING.includes(a.status)
+    ).length;
+    if (waiting === state.badgeCount) return;
+    state.badgeCount = waiting;
+    const done = waiting > 0 ? navigator.setAppBadge(waiting) : navigator.clearAppBadge();
+    Promise.resolve(done).catch(() => {
+      // Permission not granted: badges stay hidden, nothing else breaks.
+    });
+  }
+
   // Header button showing the current project
   function renderAgentBar() {
     const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
@@ -439,33 +712,145 @@
       : state.agents.length
       ? "Select project"
       : "No agents";
-    elAgentSelectDot.className = `agent-dot ${agent ? agent.status || "unknown" : "unknown"}`;
+    elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
 
     if (!elAgentPicker.classList.contains("hidden")) renderAgentList();
+  }
+
+  /* One sheep per project, the same animal the home screen icon shows. Colour
+     carries the status, but so does the posture: an agent that is working
+     grazes, one that is idle stands with its head up, a blocked one pricks its
+     ear at you, and a finished one lies down to sleep. A pane with no agent is
+     an empty pasture - no sheep at all. Drawn inline so the fleece can inherit
+     the row's colour instead of shipping five copies of the file. */
+  const POSE = {
+    working: "graze",
+    idle: "stand",
+    done: "sleep",
+    blocked: "alert",
+    unknown: "empty",
+  };
+
+  function sheepBody(dy, legs) {
+    return `
+      <g fill="currentColor" transform="translate(0 ${dy})">
+        ${legs ? '<rect x="11" y="21" width="5" height="12" rx="2.5"/>' : ""}
+        ${legs ? '<rect x="23" y="21" width="5" height="12" rx="2.5"/>' : ""}
+        <circle cx="11.5" cy="16" r="7.5"/>
+        <circle cx="18" cy="11" r="8"/>
+        <circle cx="25.5" cy="11.5" r="7.5"/>
+        <circle cx="31" cy="16" r="7"/>
+        <rect x="5" y="13" width="27" height="13" rx="6.5"/>
+      </g>`;
+  }
+
+  const HEADS = {
+    // Head down in the grass.
+    graze: `
+      <ellipse class="sheep-ear" cx="33.2" cy="15.2" rx="3" ry="1.8" transform="rotate(-42 33.2 15.2)"/>
+      <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6"/>
+      <circle class="sheep-eye" cx="38.2" cy="18" r="1.2"/>`,
+    // Head up, ear resting: done, waiting on you.
+    stand: `
+      <ellipse class="sheep-ear" cx="32.4" cy="9" rx="3" ry="1.8" transform="rotate(-38 32.4 9)"/>
+      <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6"/>
+      <circle class="sheep-eye" cx="38.2" cy="11.4" r="1.2"/>`,
+    // Ear pricked straight up: something is asking for an answer.
+    alert: `
+      <ellipse class="sheep-ear" cx="33.6" cy="6.2" rx="3.2" ry="1.7" transform="rotate(-72 33.6 6.2)"/>
+      <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6"/>
+      <circle class="sheep-eye" cx="38.6" cy="8.8" r="1.3"/>`,
+    // Lying down, eye shut, legs folded under.
+    sleep: `
+      <ellipse class="sheep-ear" cx="32.6" cy="20.4" rx="3" ry="1.8" transform="rotate(-30 32.6 20.4)"/>
+      <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6"/>
+      <path class="sheep-lid" d="M36.4 24.2 q1.6 1.4 3.2 0"/>`,
+  };
+
+  /* Nobody home: bare ground where the sheep would stand. Quieter than the
+     animals on purpose - it marks the rows with nothing running. */
+  const EMPTY_PASTURE = `
+      <path d="M2 24 C 10 19, 20 19, 26 22 C 32 25, 38 23, 42 20 L42 32 L2 32 Z"
+            fill="currentColor" opacity="0.32"/>
+      <path d="M2 24 C 10 19, 20 19, 26 22 C 32 25, 38 23, 42 20" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+      <path d="M11 20 q0.6 -3 2.4 -4.4" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+      <path d="M33 20.6 q-0.8 -2.6 -2.4 -3.8" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>`;
+
+  /* The statuses the app has a sheep, a colour and a class for - anything else
+     Herdr grows later reads as unknown rather than an unstyled dot or a sheep
+     that is not there. POSE is a plain object, so ask it what it owns:
+     POSE["constructor"] is truthy and would draw nothing at all. */
+  function knownStatus(status) {
+    return Object.prototype.hasOwnProperty.call(POSE, status) ? status : "unknown";
+  }
+
+  function sheepSvg(status) {
+    const pose = POSE[knownStatus(status)];
+    if (pose === "empty") {
+      return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${EMPTY_PASTURE}</svg>`;
+    }
+    const asleep = pose === "sleep";
+    return `
+      <svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">
+        ${sheepBody(asleep ? 5 : 0, !asleep)}
+        ${HEADS[pose]}
+      </svg>`;
+  }
+
+  /* Everything a row draws. The picker is redrawn on every poll, and replacing
+     its HTML restarts each sheep's graze mid-cycle and throws away the row a
+     swipe is holding open - so redraw only when one of these actually moved. */
+  function agentListSignature() {
+    return state.agents
+      .map((a) =>
+        [
+          a.pane_id,
+          a.workspace_id,
+          a.status,
+          a.name,
+          a.title || a.cwd,
+          agoLabel(a.pane_id),
+          a.pane_id === state.activePaneId ? "1" : "",
+        ].join("\u001f")
+      )
+      .join("\u001e");
   }
 
   // Full-screen project list
   function renderAgentList() {
     if (state.agents.length === 0) {
+      state.listSignature = null;
       elAgentList.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
       return;
     }
 
+    // Never under the thumb: a rebuild would snap a swiped row shut.
+    if (state.swiping || elAgentList.querySelector(".agent-row.swiped")) return;
+    const signature = agentListSignature();
+    if (signature === state.listSignature) return;
+    state.listSignature = signature;
+
     elAgentList.innerHTML = state.agents
       .map((agent) => {
         const isActive = agent.pane_id === state.activePaneId;
-        const status = agent.status || "unknown";
+        const status = knownStatus(agent.status);
         const subtitle = agent.title || agent.cwd || "";
         return `
           <div class="agent-row-wrap">
-            <button class="agent-row-delete" data-workspace-id="${agent.workspace_id}">Close</button>
-            <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${agent.pane_id}">
-              <span class="agent-dot ${status}"></span>
+            <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+            <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
+              <span class="sheep-wrap ${status}">${sheepSvg(status)}</span>
               <span class="agent-row-text">
                 <span class="agent-row-name">${escapeHtml(agent.name || agent.pane_id)}</span>
                 <span class="agent-row-title">${escapeHtml(subtitle)}</span>
               </span>
-              <span class="status-badge status-${status}">${escapeHtml(status)}</span>
+              <span class="agent-row-side">
+                <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
+                <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
+              </span>
             </button>
           </div>
         `;
@@ -533,6 +918,8 @@
       return;
     }
     closePicker();
+    setCtrlCArmed(false);
+    touchAgent(paneId);
     state.activePaneId = paneId;
     state.historyText = "";
     elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
@@ -557,9 +944,9 @@
     elAgentTitle.textContent = agent.title || agent.name || agent.pane_id;
     elAgentCwd.textContent = agent.cwd || "";
 
-    const status = agent.status || "unknown";
+    const status = knownStatus(agent.status);
     elAgentStatus.className = `status-badge status-${status}`;
-    elAgentStatus.textContent = status;
+    elAgentStatus.textContent = agent.status || "unknown";
   }
 
   // Fetch Agent History
@@ -672,9 +1059,12 @@
     }
   }
 
-  // Send Key Action
-  async function sendKey(key) {
-    if (!state.activePaneId) return;
+  /* Send Key Action. A refused key used to fail silently, which on a phone is
+     indistinguishable from a key that landed - so the button that was tapped
+     says so itself. Not an alert(): iOS suppresses those in a home screen web
+     app once the user has dismissed a few. */
+  async function sendKey(key, btn = null) {
+    if (!state.activePaneId) return false;
     triggerHaptic("warning");
 
     try {
@@ -686,10 +1076,21 @@
 
       if (res.ok) {
         setTimeout(() => fetchHistory(true), 300);
+        return true;
       }
+      flashKeyFailed(btn);
+      return false;
     } catch (err) {
       console.error("Failed to send key:", err);
+      flashKeyFailed(btn);
+      return false;
     }
+  }
+
+  function flashKeyFailed(btn) {
+    if (!btn) return;
+    btn.classList.add("key-failed");
+    setTimeout(() => btn.classList.remove("key-failed"), 900);
   }
 
   // Copy visible history text
@@ -827,20 +1228,141 @@
       .replace(/'/g, "&#039;");
   }
 
-  // Preferences that should survive a reload
+  /* Preferences that should survive a reload. The keys were "herdr.*" before
+     the app was called Sheep It, and an install that has been on a home screen
+     since then still holds them - so read the old name where the new one is
+     missing, rather than silently resetting every toggle on upgrade. */
+  function readPref(name) {
+    const value = localStorage.getItem(`sheepit.${name}`);
+    return value === null ? localStorage.getItem(`herdr.${name}`) : value;
+  }
+
   function loadPrefs() {
     try {
-      const lines = parseInt(localStorage.getItem("herdr.lines"), 10);
+      const lines = parseInt(readPref("lines"), 10);
       if (lines) {
         state.linesCount = lines;
         elLinesSelect.value = String(lines);
       }
-      state.showStatusBar = localStorage.getItem("herdr.statusbar") === "1";
+      state.showStatusBar = readPref("statusbar") === "1";
       elToggleStatusBar.checked = state.showStatusBar;
-      setKeysBar(localStorage.getItem("herdr.keys") !== "0");
+      state.plainView = readPref("plain") === "1";
+      elTogglePlain.checked = state.plainView;
+      syncStatusBarRow();
+      setKeysBar(readPref("keys") !== "0");
+      state.activity = loadActivity();
+      state.bleat = readPref("bleat") !== "0";
+      elToggleBleat.checked = state.bleat;
     } catch (err) {
       /* localStorage unavailable in private mode; defaults are fine */
     }
+  }
+
+  /* Recency ordering. Herdr has no timestamps, but every pane carries a
+     state_change_seq that only ever grows, so watching it across polls tells us
+     when a project last did something - and opening one here counts too. Both
+     land as wall-clock stamps in localStorage, which is why the order survives
+     a reload and follows this phone rather than the server's workspace
+     numbering. */
+  const ACTIVITY_KEY = "sheepit.activity";
+
+  function loadActivity() {
+    try {
+      const raw = JSON.parse(readPref("activity") || "{}");
+      return raw && typeof raw === "object" ? raw : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function saveActivity() {
+    savePref(ACTIVITY_KEY, JSON.stringify(state.activity));
+  }
+
+  /* Stamp anything whose sequence moved, forget panes that are gone, and sort
+     newest first. On a first run nothing is known and every pane stamps the
+     same instant, so the sequence itself breaks the tie - the order is right
+     immediately instead of after a day of watching. */
+  // How many polls a pane may be missing from the list before it is forgotten.
+  const FORGET_AFTER_MISSES = 5;
+
+  function sortAgentsByRecency() {
+    const now = Date.now();
+    const next = {};
+    let changed = false;
+
+    for (const a of state.agents) {
+      const id = a.pane_id;
+      if (!id) continue;
+      const seq = Number(a.state_change_seq) || 0;
+      const prev = state.activity[id];
+      if (prev && prev.seq === seq) {
+        next[id] = prev.miss ? { seq: prev.seq, ts: prev.ts, seeded: prev.seeded } : prev;
+        if (prev.miss) changed = true;
+      } else {
+        // A first sighting is not a change: we have no idea when it happened,
+        // so the stamp orders the list but carries no time to show.
+        next[id] = { seq, ts: now, seeded: !prev };
+        changed = true;
+      }
+    }
+
+    /* A pane missing from one poll is the gateway blinking far more often than
+       it is a closed workspace, and rebuilding the map from the current rows
+       alone meant a single empty answer re-seeded every project - every age
+       label blank, for good. Let an absence stand a few polls first. */
+    for (const id of Object.keys(state.activity)) {
+      if (next[id]) continue;
+      const entry = state.activity[id];
+      const miss = (entry.miss || 0) + 1;
+      if (miss >= FORGET_AFTER_MISSES) {
+        changed = true;
+        continue;
+      }
+      next[id] = { seq: entry.seq, ts: entry.ts, seeded: entry.seeded, miss };
+    }
+
+    state.activity = next;
+    if (changed) saveActivity();
+
+    /* Never reshuffle a list somebody is looking at: an agent changing state
+       would slide a row out from under the thumb about to tap it. Hold the
+       last order until the picker closes. */
+    if (!elAgentPicker.classList.contains("hidden") && state.order.length) {
+      const rank = new Map(state.order.map((id, i) => [id, i]));
+      const at = (id) => (rank.has(id) ? rank.get(id) : Number.MAX_SAFE_INTEGER);
+      state.agents.sort((a, b) => at(a.pane_id) - at(b.pane_id));
+      return;
+    }
+
+    state.agents.sort((a, b) => {
+      const x = state.activity[a.pane_id] || { ts: 0, seq: 0 };
+      const y = state.activity[b.pane_id] || { ts: 0, seq: 0 };
+      return y.ts - x.ts || y.seq - x.seq;
+    });
+    state.order = state.agents.map((a) => a.pane_id);
+  }
+
+  // Opening a project is activity too, even when its agent sat still.
+  function touchAgent(paneId) {
+    const rec = state.activity[paneId];
+    state.activity[paneId] = { seq: rec ? rec.seq : 0, ts: Date.now() };
+    saveActivity();
+  }
+
+  /* "3m" - the age of the last change we actually watched happen. Deliberately
+     blank for a project we have only ever seen sitting still, rather than
+     claiming it changed the moment this phone first looked. */
+  function agoLabel(paneId) {
+    const rec = state.activity[paneId];
+    if (!rec || rec.seeded) return "";
+    const secs = Math.max(0, Math.round((Date.now() - rec.ts) / 1000));
+    if (secs < 45) return "now";
+    const mins = Math.round(secs / 60);
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours}h`;
+    return `${Math.round(hours / 24)}d`;
   }
 
   function savePref(key, value) {
@@ -888,6 +1410,7 @@
     if (!row) return;
     if (!row.classList.contains("swiped")) resetSwipe();
     swipe = { row, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, axis: null };
+    state.swiping = true; // hold the redraw until the finger is off the row
   }, { passive: true });
 
   elAgentList.addEventListener("touchmove", (e) => {
@@ -906,6 +1429,7 @@
   }, { passive: true });
 
   elAgentList.addEventListener("touchend", () => {
+    state.swiping = false;
     if (!swipe) return;
     const { row, dx, axis } = swipe;
     swipe = null;
@@ -915,6 +1439,12 @@
     row.classList.toggle("swiped", open);
     row.style.transform = open ? `translateX(${-SWIPE_WIDTH}px)` : "";
     if (open) triggerHaptic();
+  }, { passive: true });
+
+  // A call or a notification cancels the touch: do not hold the redraw for good.
+  elAgentList.addEventListener("touchcancel", () => {
+    state.swiping = false;
+    swipe = null;
   }, { passive: true });
 
   elBtnNewWorkspace.addEventListener("click", createWorkspace);
@@ -965,13 +1495,36 @@
 
   elPromptForm.addEventListener("submit", submitPrompt);
 
-  elBtnCtrlC.addEventListener("click", () => {
-    if (confirm("Send interrupt (Ctrl+C) to agent?")) {
-      sendKey("ctrl+c");
+  /* ^C arms itself before it fires, rather than asking through confirm():
+     iOS stops showing confirm() in a home screen web app after the user has
+     dismissed a few, and a suppressed dialog returns false - so the button
+     quietly sent nothing at all. Arming keeps the same protection against a
+     stray tap and stays live afterwards, because leaving an agent takes two
+     interrupts in a row and a modal between them misses the agent's window. */
+  const CTRL_C_ARM_MS = 4000;
+  let ctrlCArmTimer = null;
+
+  function setCtrlCArmed(armed) {
+    if (ctrlCArmTimer) clearTimeout(ctrlCArmTimer);
+    ctrlCArmTimer = null;
+    elBtnCtrlC.classList.toggle("armed", armed);
+    elBtnCtrlC.textContent = armed ? "^C?" : "^C";
+    if (armed) {
+      ctrlCArmTimer = setTimeout(() => setCtrlCArmed(false), CTRL_C_ARM_MS);
     }
+  }
+
+  elBtnCtrlC.addEventListener("click", () => {
+    if (!elBtnCtrlC.classList.contains("armed")) {
+      triggerHaptic("warning");
+      setCtrlCArmed(true);
+      return;
+    }
+    sendKey("ctrl+c", elBtnCtrlC);
+    setCtrlCArmed(true); // a second tap exits the agent the first one stopped
   });
 
-  elBtnEsc.addEventListener("click", () => sendKey("esc"));
+  elBtnEsc.addEventListener("click", () => sendKey("esc", elBtnEsc));
 
   // Pull the desktop's draft into the composer to carry on editing it here.
   elBtnAdopt.addEventListener("click", () => {
@@ -987,7 +1540,7 @@
 
   elLinesSelect.addEventListener("change", (e) => {
     state.linesCount = parseInt(e.target.value, 10) || 100;
-    savePref("herdr.lines", String(state.linesCount));
+    savePref("sheepit.lines", String(state.linesCount));
     fetchHistory(true);
   });
 
@@ -996,7 +1549,7 @@
     state.showKeys = show;
     elKeysBar.classList.toggle("hidden", !show);
     elBtnKeys.classList.toggle("active", show);
-    savePref("herdr.keys", show ? "1" : "0");
+    savePref("sheepit.keys", show ? "1" : "0");
   }
 
   elBtnKeys.addEventListener("click", () => {
@@ -1006,7 +1559,7 @@
 
   elKeysBar.addEventListener("click", (e) => {
     const btn = e.target.closest(".key-btn");
-    if (btn && btn.dataset.key) sendKey(btn.dataset.key);
+    if (btn && btn.dataset.key) sendKey(btn.dataset.key, btn);
   });
 
   // shift+tab cycles the agent between auto, manual and plan mode.
@@ -1015,9 +1568,32 @@
     setTimeout(() => fetchHistory(true), 400);
   });
 
+  elToggleBleat.addEventListener("change", (e) => {
+    state.bleat = e.target.checked;
+    savePref("sheepit.bleat", state.bleat ? "1" : "0");
+    if (state.bleat) unlockAudio().then(playBleat); // so you hear what you enabled
+  });
+
   elToggleStatusBar.addEventListener("change", (e) => {
     state.showStatusBar = e.target.checked;
-    savePref("herdr.statusbar", state.showStatusBar ? "1" : "0");
+    savePref("sheepit.statusbar", state.showStatusBar ? "1" : "0");
+    renderTranscript(state.historyText);
+    scrollToBottom();
+  });
+
+  /* The plain view already draws the status bar, so the toggle for it has
+     nothing left to say - grey it out rather than leave a switch that does
+     nothing when flicked. */
+  function syncStatusBarRow() {
+    elToggleStatusBar.disabled = state.plainView;
+    const row = elToggleStatusBar.closest(".sheet-row");
+    if (row) row.classList.toggle("row-muted", state.plainView);
+  }
+
+  elTogglePlain.addEventListener("change", (e) => {
+    state.plainView = e.target.checked;
+    savePref("sheepit.plain", state.plainView ? "1" : "0");
+    syncStatusBarRow();
     renderTranscript(state.historyText);
     scrollToBottom();
   });
@@ -1133,7 +1709,18 @@
   if (pushSupported()) {
     navigator.serviceWorker
       .register("/sw.js")
-      .then(refreshPushState)
+      .then((reg) => {
+        refreshPushState();
+        /* A registered worker is only re-checked on navigation, and a push
+           does not count - so a home screen app left open can go on notifying
+           you with last week's wording. Ask on every open, and again whenever
+           it comes back to the foreground. */
+        const check = () => reg.update().catch(() => {});
+        check();
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) check();
+        });
+      })
       .catch(() => setPushHint("service worker failed"));
   } else {
     refreshPushState();
@@ -1151,6 +1738,9 @@
 
   // Init
   loadPrefs();
+  // The first touch anywhere is what buys the page the right to make noise.
+  document.addEventListener("pointerdown", unlockAudio, { once: true });
+  document.addEventListener("touchstart", unlockAudio, { once: true });
   autoResizeTextarea();
   loop();
   startPolling();

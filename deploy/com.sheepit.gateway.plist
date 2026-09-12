@@ -3,23 +3,23 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.herdr.mobile</string>
+    <string>com.sheepit.gateway</string>
 
     <!-- System python3 is in the macOS firewall allowlist; Homebrew python is not. -->
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>HERDR_MOBILE_DIR/server.py</string>
+        <string>SHEEPIT_DIR/gateway/server.py</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>HERDR_MOBILE_DIR</string>
+    <string>SHEEPIT_DIR</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOST</key>
         <string>127.0.0.1</string>
-        <key>PORT</key>
+        <key>SHEEPIT_PORT</key>
         <string>3009</string>
     </dict>
 
@@ -29,8 +29,8 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>HERDR_MOBILE_DIR/herdr-mobile.log</string>
+    <string>SHEEPIT_DIR/sheepit.log</string>
     <key>StandardErrorPath</key>
-    <string>HERDR_MOBILE_DIR/herdr-mobile.log</string>
+    <string>SHEEPIT_DIR/sheepit.log</string>
 </dict>
 </plist>

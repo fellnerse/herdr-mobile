@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="A blue sheep on a moonlit pasture">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#20293c"/>
+      <stop offset="100%" stop-color="#12151d"/>
+    </linearGradient>
+    <linearGradient id="hill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2c4a3a"/>
+      <stop offset="100%" stop-color="#17261f"/>
+    </linearGradient>
+    <!-- User space, or every lobe would carry its own gradient and the seams
+         between them would show. -->
+    <linearGradient id="fleece" gradientUnits="userSpaceOnUse" x1="110" y1="150" x2="380" y2="410">
+      <stop offset="0%" stop-color="#9ecfff"/>
+      <stop offset="100%" stop-color="#2b78e8"/>
+    </linearGradient>
+    <radialGradient id="moonGlow">
+      <stop offset="40%" stop-color="#dfe7ff" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#dfe7ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Full bleed: iOS applies its own rounded mask over the square. -->
+  <rect width="512" height="512" fill="url(#sky)"/>
+
+  <!-- The landscape stays quiet so the sheep is what you see at 60px. -->
+  <circle cx="416" cy="98" r="82" fill="url(#moonGlow)"/>
+  <circle cx="416" cy="98" r="34" fill="#e8edfa" opacity="0.72"/>
+
+  <path d="M0 372 C 96 338, 176 338, 256 358 C 344 380, 424 368, 512 338 L512 512 L0 512 Z" fill="url(#hill)"/>
+  <path d="M0 372 C 96 338, 176 338, 256 358 C 344 380, 424 368, 512 338" fill="none" stroke="#4e8f63" stroke-width="7" opacity="0.4"/>
+
+  <!-- The same sheep the project list draws, one animal blown up to 512. -->
+  <g transform="translate(72 128) scale(8.2)">
+    <g fill="url(#fleece)">
+      <rect x="11" y="21" width="5" height="12" rx="2.5"/>
+      <rect x="23" y="21" width="5" height="12" rx="2.5"/>
+      <circle cx="11.5" cy="16" r="7.5"/>
+      <circle cx="18" cy="11" r="8"/>
+      <circle cx="25.5" cy="11.5" r="7.5"/>
+      <circle cx="31" cy="16" r="7"/>
+      <rect x="5" y="13" width="27" height="13" rx="6.5"/>
+    </g>
+    <ellipse cx="32.6" cy="14.4" rx="2.9" ry="1.7" fill="#e3e9f4" stroke="#131722" stroke-width="0.6" transform="rotate(-44 32.6 14.4)"/>
+    <ellipse cx="36.8" cy="19.6" rx="5" ry="4.3" fill="#e3e9f4" stroke="#131722" stroke-width="0.7"/>
+    <circle cx="38.6" cy="18.5" r="1" fill="#131722"/>
+  </g>
+</svg>

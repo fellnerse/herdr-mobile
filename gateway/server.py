@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-herdr-mobile: Minimal mobile gateway & web server for Herdr.
+SheepIt: the gateway between the phone and a local Herdr server.
 Connects directly to the Herdr UNIX socket and serves a mobile-friendly PWA.
 """
 
@@ -13,7 +13,7 @@ import hashlib
 import threading
 import mimetypes
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, urlsplit, parse_qs, unquote
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -34,8 +34,9 @@ def default_socket_path() -> str:
 
 HERDR_SOCKET_PATH = os.environ.get("HERDR_SOCKET") or default_socket_path()
 HOST = os.environ.get("HOST", "127.0.0.1")
-PORT = int(os.environ.get("PORT", "3009"))
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+PORT = int(os.environ.get("SHEEPIT_PORT") or os.environ.get("PORT", "3009"))
+# The PWA lives beside the gateway, not inside it.
+WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
 
 
 def call_herdr_rpc(method: str, params: dict = None, timeout: float = 5.0) -> dict:
@@ -53,7 +54,7 @@ def call_herdr_rpc(method: str, params: dict = None, timeout: float = 5.0) -> di
     s.settimeout(timeout)
     try:
         s.connect(HERDR_SOCKET_PATH)
-        req = {"id": "herdr-mobile", "method": method, "params": params or {}}
+        req = {"id": "sheepit", "method": method, "params": params or {}}
         payload = json.dumps(req).encode("utf-8") + b"\n"
         s.sendall(payload)
 
@@ -134,6 +135,20 @@ def complete_path(base: str, query: str, limit: int = 20) -> list:
     return out
 
 
+def agent_rows() -> list:
+    """Every row the phone shows, in one call. Driven from workspaces, not
+    agents: a freshly created workspace has no agent yet and would otherwise be
+    invisible. Workspace labels are also what the desktop UI shows ("sheepit",
+    "ib-orbit") - agent.list only carries ids."""
+    res = call_herdr_rpc("agent.list")
+    if "error" in res:
+        raise RuntimeError(res["error"])
+    agents_raw = res.get("result", {}).get("agents", [])
+    ws_list = call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", [])
+    panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
+    return build_agent_rows(ws_list, panes, agents_raw)
+
+
 def build_agent_rows(ws_list: list, panes: list, agents_raw: list) -> list:
     """One row per pane running an agent, grouped under its workspace.
 
@@ -178,66 +193,153 @@ def build_agent_rows(ws_list: list, panes: list, agents_raw: list) -> list:
                 "tab_id": chosen.get("tab_id"),
                 "focused": ws.get("focused", False),
                 "has_agent": pane_id in by_pane,
+                # Monotonic; the client watches it to order projects by
+                # whichever one last did something.
+                "state_change_seq": a.get("state_change_seq", 0),
             })
     return rows
 
 
+# The watcher sees the working -> stopped transition; the push that follows
+# carries no payload, so what it saw is parked here for the service worker to
+# come and read.
+_LAST_FINISHED = {"at": 0.0, "agents": []}
+_LAST_FINISHED_LOCK = threading.Lock()
+
+
+def record_finished(rows: list) -> None:
+    with _LAST_FINISHED_LOCK:
+        _LAST_FINISHED["at"] = time.time()
+        _LAST_FINISHED["agents"] = [
+            {"pane_id": r.get("pane_id"), "name": r.get("name"),
+             "title": r.get("title", ""), "status": r.get("status")}
+            for r in rows
+        ]
+
+
+# How long the parked transition is worth reading. The service worker applies
+# the same rule, but the record should not outlive it here either: it names
+# workspaces and terminal titles, and nothing else ages it out.
+FINISHED_TTL = 120.0
+
+
+def last_finished() -> dict:
+    with _LAST_FINISHED_LOCK:
+        at = _LAST_FINISHED["at"]
+        age = round(time.time() - at, 1) if at else None
+        if age is not None and age > FINISHED_TTL:
+            _LAST_FINISHED["at"] = 0.0
+            _LAST_FINISHED["agents"] = []
+            return {"at": 0.0, "age": None, "agents": []}
+        return {"at": at, "age": age, "agents": list(_LAST_FINISHED["agents"])}
+
+
+# A body large enough to be a mistake or a wedge. Every route here takes a
+# handful of short fields.
+MAX_BODY = 256 * 1024
+
+# The page draws pane output through innerHTML in several places. Nothing
+# here loads from anywhere else, so say so: a script tag that slips through
+# the escaping then has nowhere to phone home to. Inline styles stay allowed -
+# the transcript carries the terminal's own colours as style attributes.
+CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "media-src 'self'",
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+])
+
+
 class HerdrHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # HTTP/1.1 means keep-alive, and without this a connection that goes quiet
+    # holds one of the pool's threads for as long as it likes.
+    timeout = 15
+    # HEAD is GET without the body. Set per request, because one keep-alive
+    # connection carries many and a HEAD must not silence the GET behind it.
+    head_only = False
 
     def send_json(self, data: dict, status_code: int = 200):
         body = json.dumps(data).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.end_headers()
-        self.wfile.write(body)
+        if not self.head_only:
+            self.wfile.write(body)
+
+    def same_origin(self) -> bool:
+        """Is this request the app itself, rather than some other page?
+
+        The gateway has no accounts and no tokens: what protects it is where
+        it sits - loopback, behind `tailscale serve`. A wildcard CORS header
+        gave that away, because any page in any tab could then read the
+        scrollback and type into a pane. There is nothing to hand out to, so
+        nothing is handed out: the PWA is served from this same origin.
+
+        Requests with no Origin and no Sec-Fetch-Site are not from a page -
+        curl, the menu bar app - and are left alone. Tailscale's proxy passes
+        the browser's Host through untouched, so it is what an Origin has to
+        agree with.
+        """
+        site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+        if site in ("cross-site", "same-site"):
+            return False
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        hosts = set()
+        for name in ("Host", "X-Forwarded-Host"):
+            value = self.headers.get(name)
+            if value:
+                hosts.add(value.split(",")[0].strip().lower())
+        return urlsplit(origin).netloc.lower() in hosts
+
+    def guard_origin(self, path: str) -> bool:
+        """Answer nothing but a refusal to a page on another site."""
+        if not path.startswith("/api/") or self.same_origin():
+            return True
+        self.send_json({"ok": False, "error": "Cross-origin request refused"},
+                       HTTPStatus.FORBIDDEN)
+        return False
+
     def do_HEAD(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-        if path.startswith("/api/"):
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-            self.end_headers()
-            return
-        self.serve_static(path, head_only=True)
-
-
-    def do_OPTIONS(self):
-        self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
+        # Mirror GET exactly - status, ETag and all - instead of answering 200
+        # to every /api/ path whether it exists or not.
+        self.do_GET()
 
     def do_GET(self):
+        self.head_only = self.command == "HEAD"
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         qs = parse_qs(parsed.query)
 
+        if not self.guard_origin(path):
+            return
+
         # API: List all active agents
         if path == "/api/agents":
-            res = call_herdr_rpc("agent.list")
-            if "error" in res:
-                self.send_json(res, 500)
+            try:
+                agents = agent_rows()
+            except RuntimeError as e:
+                self.send_json({"error": e.args[0]}, 500)
                 return
-
-            agents_raw = res.get("result", {}).get("agents", [])
-
-            # Drive the list from workspaces, not agents: a freshly created
-            # workspace has no agent yet and would otherwise be invisible.
-            # Workspace labels are also what the desktop UI shows
-            # ("herdr-mobile", "ib-orbit") - agent.list only carries ids.
-            ws_list = call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", [])
-            panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
-
-            agents = build_agent_rows(ws_list, panes, agents_raw)
             self.send_json({"ok": True, "agents": agents})
+            return
+
+        # API: Who stopped working most recently. A push carries no payload, so
+        # the service worker asks this to name the agent in the notification.
+        if path == "/api/push/last":
+            self.send_json({"ok": True, **last_finished()})
             return
 
         # API: VAPID public key + whether this device is already subscribed
@@ -283,7 +385,12 @@ class HerdrHandler(BaseHTTPRequestHandler):
             # ["", "api", "agents", "<pane_id>", "history"]
             if len(parts) == 5:
                 pane_id = unquote(parts[3])
-                lines = int(qs.get("lines", ["100"])[0])
+                try:
+                    lines = int(qs.get("lines", ["100"])[0])
+                except ValueError:
+                    # The clamp below says a wrong number is tolerated; a
+                    # number that is not one should not drop the connection.
+                    lines = 100
                 lines = min(max(lines, 10), 1000)
                 source = qs.get("source", ["recent_unwrapped"])[0]
                 # "ansi" keeps the SGR sequences so the client can mirror the
@@ -316,15 +423,35 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+        # An unknown /api/ path is a mistake, not a deep link: without this it
+        # falls through to the SPA and answers 200 with a page full of HTML,
+        # which every caller then has to sniff for.
+        if path.startswith("/api/"):
+            self.send_json({"ok": False, "error": "Not Found"}, HTTPStatus.NOT_FOUND)
+            return
+
         # Serve static frontend files
-        self.serve_static(path)
+        self.serve_static(path, head_only=self.head_only)
 
     def do_POST(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
-        # Read JSON body
-        content_length = int(self.headers.get("Content-Length", 0))
+        if not self.guard_origin(path):
+            return
+
+        # Read JSON body. Content-Length is the client's claim about it, so it
+        # is checked rather than believed: every route here takes a few short
+        # fields, and reading whatever a header asks for is a way to be held.
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self.send_json({"ok": False, "error": "Invalid Content-Length"}, 400)
+            return
+        if content_length < 0 or content_length > MAX_BODY:
+            self.send_json({"ok": False, "error": "Body too large"},
+                           HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b"{}"
         try:
             body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -447,16 +574,17 @@ class HerdrHandler(BaseHTTPRequestHandler):
         else:
             rel_path = req_path.lstrip("/")
 
-        target_file = (STATIC_DIR / rel_path).resolve()
+        target_file = (WEB_DIR / rel_path).resolve()
 
-        # Prevent directory traversal
-        if not str(target_file).startswith(str(STATIC_DIR)):
+        # Prevent directory traversal. A string prefix is not a path boundary:
+        # it also accepts the sibling "web-backup" next door.
+        if not target_file.is_relative_to(WEB_DIR):
             self.send_error(HTTPStatus.FORBIDDEN, "Access denied")
             return
 
         if not target_file.is_file():
             # SPA fallback: if not an asset, serve index.html
-            target_file = STATIC_DIR / "index.html"
+            target_file = WEB_DIR / "index.html"
             if not target_file.is_file():
                 self.send_error(HTTPStatus.NOT_FOUND, "File not found")
                 return
@@ -485,11 +613,16 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(content)))
             self.send_header("ETag", etag)
             self.send_header("Cache-Control", "no-cache, must-revalidate")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", CSP)
             self.end_headers()
             if not head_only:
                 self.wfile.write(content)
         except Exception as e:
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+            # The message is an absolute path more often than not.
+            print(f"serving {rel_path} failed: {e}", file=sys.stderr)
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not read file")
 
     def log_message(self, format, *args):
         # Terse logging: suppress noisy polling logs
@@ -522,16 +655,24 @@ class StatusWatcher(threading.Thread):
                 current = self.snapshot()
             except Exception:
                 continue
-            if any(
-                pane in self.previous
-                and self.previous[pane] in self.BUSY
-                and status not in self.BUSY
+            stopped = [
+                pane
                 for pane, status in current.items()
-            ) and push.load_subs():
+                if self.previous.get(pane) in self.BUSY and status not in self.BUSY
+            ]
+            if stopped:
+                # Name them before pushing: the notification wants to say which
+                # agent finished, and only this side of the wire knows.
                 try:
-                    push.broadcast()
+                    rows = {r.get("pane_id"): r for r in agent_rows()}
+                    record_finished([rows[p] for p in stopped if p in rows])
                 except Exception as e:
-                    print(f"push failed: {e}", file=sys.stderr)
+                    print(f"naming finished agents failed: {e}", file=sys.stderr)
+                if push.load_subs():
+                    try:
+                        push.broadcast()
+                    except Exception as e:
+                        print(f"push failed: {e}", file=sys.stderr)
             self.previous = current
 
     @staticmethod
@@ -544,11 +685,11 @@ class StatusWatcher(threading.Thread):
 
 
 def run():
-    STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    WEB_DIR.mkdir(parents=True, exist_ok=True)
     server_address = (HOST, PORT)
     httpd = ThreadingHTTPServer(server_address, HerdrHandler)
     StatusWatcher().start()
-    print(f"herdr-mobile listening on http://{HOST}:{PORT}")
+    print(f"SheepIt gateway listening on http://{HOST}:{PORT}")
     print(f"Herdr socket target: {HERDR_SOCKET_PATH}")
     try:
         httpd.serve_forever()

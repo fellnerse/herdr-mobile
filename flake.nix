@@ -1,5 +1,5 @@
 {
-  description = "herdr-mobile development shell";
+  description = "SheepIt development shell";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

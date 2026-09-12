@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.herdr.menubar</string>
+    <string>com.sheepit.menubar</string>
 
     <!-- Launches the menu bar app at login. Scripting System Events to add a
          Login Item needs Automation permission this cannot prompt for, and
@@ -12,7 +12,7 @@
     <array>
         <string>/usr/bin/open</string>
         <string>-a</string>
-        <string>/Applications/HerdrMenuBar.app</string>
+        <string>/Applications/SheepIt.app</string>
     </array>
 
     <key>RunAtLoad</key>

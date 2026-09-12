@@ -1,210 +1,215 @@
-# herdr-mobile 📱
+<div align="center">
 
-A minimal, distraction-free mobile web interface for [Herdr](https://herdr.dev) running on your server, designed specifically for iPhone and Tailscale.
+<img src="web/icon.svg" alt="" width="112" height="112">
 
-## Features
+# SheepIt
 
-- **PWA for iOS**: Add to Home Screen for a native, full-screen iOS app feel without browser chrome.
-- **Native iOS Dictation**: Use native iOS voice-to-text directly from the virtual keyboard microphone into prompts.
-- **Readable Transcript**: The pane's output is parsed into blocks and coloured by speaker, mirroring the terminal's own ANSI colours. Full-width rules collapse to hairlines and tables keep their alignment, so nothing wraps into a wall of dashes.
-- **Project Picker**: A dropdown naming the current project, with a full-screen list of every workspace and live status (🟢 Idle, 🟡 Working, 🔴 Blocked). Create a workspace with **New**; swipe a row left to close one.
-- **Key Palette**: `y`, `n`, `1`-`3`, arrows, tab and enter for the confirmation prompts agents stop on, plus `Esc` and `Ctrl+C`.
-- **Desktop Input Mirror**: Shows what is typed into the pane on the laptop, with one tap to pull it into the phone's composer.
-- **Push Notifications**: Get told when an agent finishes, even off the tailnet with the phone locked. See [Push Notifications](#push-notifications-ios).
-- **Agent Mode**: Cycle auto / manual / plan from settings without reaching for the laptop.
-- **Zero-Dependency Gateway**: Single lightweight Python backend connecting directly to Herdr's UNIX domain socket (`herdr.sock`). Standard library only; `openssl` is used for push signing.
-- **Secure by Default**: Served over your private Tailscale Tailnet with automated HTTPS.
+**Manage your local agent herd remotely on your phone.**
 
----
+</div>
 
-## Architecture
+Your coding agents run on the machine under your desk. SheepIt puts them in
+your pocket: read what an agent is doing, answer the question it is stuck on,
+and start the next one — from the sofa, the kitchen, or the bus.
+
+It is a small web app you add to your iPhone home screen, plus a
+standard-library Python gateway that talks to [Herdr](https://herdr.dev), the
+terminal multiplexer your agents are running in. No accounts, no cloud, no
+dependencies: the phone reaches your own machine over your own
+[Tailscale](https://tailscale.com) network.
+
+| | | |
+|---|---|---|
+| <img src="docs/media/agent.png" alt="An agent's transcript on the phone"> | <img src="docs/media/projects.png" alt="The project list, one sheep per project"> | <img src="docs/media/menubar.png" alt="The macOS menu bar app"> |
+| Read an agent and answer it | Your herd, most recent first | One switch on the Mac |
+
+## Why
+
+An agent works for ten minutes, then stops to ask which of three options you
+want — and until you walk back to the laptop, it waits. SheepIt closes that
+gap. The phone shows the question, the keys to answer it, and a sheep per
+project telling you at a glance who is working and who is waiting.
+
+## What you get
+
+- **Answer prompts from the phone.** Selection prompts render as their own
+  card, with number keys that follow however many options the agent listed.
+  Claude Code and Codex panes are both read, whichever glyphs they draw with.
+- **Your herd at a glance.** One sheep per project, coloured *and* posed by
+  what its agent is doing: grazing while it works, head up when idle, ear
+  pricked when blocked, asleep when done. Sorted by whatever changed last.
+- **Notifications when an agent finishes**, off your network with the phone
+  locked, plus a count on the home screen icon.
+- **A bleat.** A sheep answers when an agent stops, if the app is open.
+- **Native dictation.** Talk to your agent using the iOS keyboard's mic.
+- **A plain view**, one switch away: the pane verbatim when you would rather
+  read the terminal than the phone's reading of it.
+- **A key palette** for the keys agents stop on — `y`, `n`, numbers, arrows,
+  tab, enter, `Esc` and `Ctrl+C`.
+- **Workspace control.** Start a project with **New**, swipe a row left to
+  close one, cycle auto / plan / manual mode without touching the laptop.
+- **A menu bar switch on the Mac** that starts everything the phone needs and
+  keeps the machine awake so notifications can actually arrive.
+
+## How it fits together
 
 ```
-iPhone (Safari PWA)
-      │
-      │ HTTPS (over Tailscale)
+iPhone (home screen web app)
+      │  HTTPS over your tailnet
       ▼
-Tailscale Serve (https://<node>.<tailnet>.ts.net:8443 or :443)
+Tailscale Serve
       │
       ▼
-herdr-mobile gateway (server.py on internal port 3009)
-      │
-      ▼ UNIX domain socket
-Herdr Server (~/.config/herdr/herdr.sock)
+SheepIt gateway  ── gateway/server.py, Python standard library only
+      │  UNIX domain socket
+      ▼
+Herdr server  ── your agents, in their panes
 ```
 
----
+The gateway never reaches the public internet. It reads and writes one UNIX
+socket belonging to Herdr, and serves the `web/` directory to your phone.
 
-## Setup & Running
+## Quick start
 
-### 1. Requirements
-* Python 3.10+ (standard library only, no pip dependencies needed)
-* Running `herdr` session or server on the machine
-* Tailscale (optional, for remote access)
-
-### 2. Run Manually
-```bash
-python3 server.py
-```
-Default internal port: `3009` (configurable via `PORT=3009`), bound to `127.0.0.1`.
-
-The Herdr socket is located automatically: `HERDR_SOCKET` if set, otherwise
-`~/.config/herdr/herdr.sock`, falling back to `/root/.config/herdr/herdr.sock`.
-
-> **fish shell:** `VAR=value python3 server.py` does not set the variable in fish.
-> Use `env PORT=3009 python3 server.py` instead.
-
-### 3a. Autostart on Linux (systemd)
-```bash
-sudo cp herdr-mobile.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now herdr-mobile.service
-```
-
-### 3b. Menu bar app (macOS, recommended)
-
-[`herdr-menubar/`](herdr-menubar) is a small Apple Silicon menu bar app that
-runs the gateway, brings Tailscale up, and holds `caffeinate -s` so the Mac
-stays awake — an asleep Mac cannot send push notifications, so alerts would
-silently never arrive. One toggle drives all three.
+You need Python 3.10+, a running [Herdr](https://herdr.dev), and Tailscale on
+both machines.
 
 ```bash
-make -C herdr-menubar install   # then add it to Login Items
-```
-
-It cannot share the port with the launchd agent below; use one or the other.
-
-### 3c. Autostart on macOS (launchd)
-```bash
-sed "s|HERDR_MOBILE_DIR|$PWD|g" com.herdr.mobile.plist > ~/Library/LaunchAgents/com.herdr.mobile.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.herdr.mobile.plist
-```
-Logs go to `herdr-mobile.log` in the repo directory. To check, restart, or remove:
-```bash
-launchctl print gui/$(id -u)/com.herdr.mobile
-launchctl kickstart -k gui/$(id -u)/com.herdr.mobile
-launchctl bootout gui/$(id -u)/com.herdr.mobile
-```
-
-The plist runs `/usr/bin/python3` (system Python) rather than a Homebrew Python
-deliberately: the macOS application firewall ships with `/usr/bin/python3`
-allowed for incoming connections, while a Homebrew interpreter is not — so a
-Homebrew-launched server can be silently unreachable from other devices.
-
----
-
-## Push Notifications (iOS)
-
-Get a notification when an agent stops working - the same moment the desktop
-chimes.
-
-1. Install the PWA to the iOS home screen (Web Push does not work in Safari
-   tabs, only in an installed PWA, iOS 16.4+).
-2. Open it from the home screen, then **gear -> Notify when an agent finishes**
-   and accept the iOS prompt.
-
-Delivery goes through Apple's push service rather than your tailnet, so alerts
-arrive on cellular with the phone locked. The gateway must be awake to send
-them - on a laptop that sleeps, run `caffeinate -s`.
-
-**Requires** the `openssl` binary (present on macOS and most Linux hosts).
-Python's standard library has no ECDSA, so the VAPID JWT is signed by shelling
-out to it. No pip packages are needed.
-
-VAPID keys and device subscriptions are generated on first use and stored, mode
-`600`, in `~/.config/herdr-mobile/` (override with `HERDR_STATE_DIR`). They are
-outside the repository and must never be committed. `HERDR_PUSH_SUB` sets the
-RFC 8292 contact sent to the push service.
-
-Pushes carry no payload: encrypting one requires ECDH + AES-GCM, which the
-standard library cannot do. Instead `sw.js` fetches `/api/agents` when it wakes
-and names whichever agent stopped, so notifications show the real project name.
-
-```bash
-curl -X POST http://127.0.0.1:3009/api/push/test   # fire a test push
-```
-
-`201` means the push service accepted it; `404`/`410` mean the subscription is
-dead and it is dropped automatically.
-
----
-
-## Exposing Multiple Apps & Dev Servers via Tailscale
-
-When coding agents start local development servers (e.g., Nuxt, Next.js, Vite), they often bind to common ports like `3000` or `5173`. Here is how they coexist cleanly with Herdr Mobile on your Tailnet:
-
-### 1. Internal Port Isolation
-Herdr Mobile defaults to internal port **`3009`** (instead of standard `3000`). This ensures agents starting frameworks that default to `3000` never collide with Herdr Mobile.
-
-### 2. Dedicated HTTPS Port for Herdr Mobile (`:8443`)
-Tailscale Serve supports multiple HTTPS ports with valid automated certificates:
-```bash
+git clone https://github.com/mowolf/herdr-mobile.git sheepit
+cd sheepit
+python3 gateway/server.py                      # http://127.0.0.1:3009
 tailscale serve --bg --https=8443 http://127.0.0.1:3009
 ```
 
-> **Prerequisite:** HTTPS certificates must be enabled for your tailnet
-> (admin console → **DNS** → **HTTPS Certificates** → Enable). Without it,
-> `tailscale serve --https` hangs and writes no config, and `tailscale cert`
-> reports *"your Tailscale account does not support getting TLS certs"*.
-> Verify with `tailscale status --json | grep CertDomains` — it must list your
-> node, not `null`.
+Then open `https://<node>.<tailnet>.ts.net:8443` in Safari on the phone and
+**Share → Add to Home Screen**. On a Mac, `make -C menubar login` replaces all
+of that with one switch in the menu bar.
 
-* **Recommended for iPhone PWA**: Save `https://<node>.<tailnet>.ts.net:8443` to your iPhone home screen
-  (find the exact name with `tailscale status --json | grep DNSName`).
-* This leaves standard port `443` (`https://<node>.<tailnet>.ts.net`) completely free for whatever dev server you or an agent want to proxy!
+Full instructions, autostart units and Tailscale routing live in
+**[docs/gateway.md](docs/gateway.md)**.
 
-### 3. Direct Port Access on the Tailnet (No Proxy Needed)
-Tailscale operates as a secure mesh VPN. The firewall on `tailscale0` allows all incoming traffic from your tailnet. Any dev server bound to `0.0.0.0` is **immediately accessible over plain HTTP** directly from your iPhone browser:
-* Nuxt / Next.js: `http://<node>.<tailnet>.ts.net:3000`
-* Vite / Svelte: `http://<node>.<tailnet>.ts.net:5173`
-* Flask / FastAPI: `http://<node>.<tailnet>.ts.net:8000`
+## Turning the features on
 
-*(Note: Use HTTP for dev servers; only PWAs requiring home-screen installation and mic access need HTTPS via Tailscale Serve).*
+Everything below lives behind the **gear** in the top right, once the app is
+open on your phone.
 
-### 4. Path-Based Routing on Port 443 (Optional)
-Tailscale Serve can also route different URL paths on port 443 to different local services:
-```bash
-# Herdr Mobile on /herdr
-tailscale serve --bg --set-path /herdr http://127.0.0.1:3009
+### Notifications
 
-# Agent dev server on root / or /preview
-tailscale serve --bg --set-path /preview http://127.0.0.1:5173
-```
+The one that needs setting up, because iOS insists.
 
-### 5. Useful Tailscale Serve Commands
-```bash
-# Check active serve rules
-tailscale serve status
+1. **Add the app to your home screen first.** Web Push does not work in a
+   Safari tab — only in an installed web app (iOS 16.4+). Share → *Add to Home
+   Screen*, then open it from there rather than from Safari.
+2. **gear → Notify when an agent finishes**, and accept the iOS prompt.
 
-# View raw JSON routing table
-tailscale serve status --json
+That is it. Alerts name the agent that just finished and count how many are
+now waiting — *"muskelmuskel finished / 3 agents waiting for you"* — and arrive
+through Apple's push service rather than your tailnet, so they reach you on
+cellular with the phone locked. The gateway has
+to be awake to send them: on a laptop that sleeps, use the
+[menu bar app](menubar/README.md) or run `caffeinate -s`.
 
-# Remove a specific port proxy
-tailscale serve --https=8443 off
-tailscale serve --https=443 off
+The same permission drives the **badge** on the home screen icon — the number
+of agents waiting on you, clearing itself as you answer them. There is nothing
+separate to enable.
 
-# Reset all serve rules
-tailscale serve reset
-```
+If the toggle refuses to stay on, the hint beside it says why: *blocked in iOS
+Settings* means the prompt was denied once and iOS will not ask again — clear
+it under **Settings → Notifications**, or remove and re-add the app.
+[More detail, and how to test it](docs/push.md).
 
----
+### The bleat
 
-## Adding to iPhone Home Screen
+**gear → Bleat when an agent finishes.** On by default; toggling it back on
+plays it so you hear what you enabled.
 
-1. Ensure Tailscale VPN is connected on your iPhone.
-2. Open Safari and navigate to:
-   ```text
-   https://<node>.<tailnet>.ts.net:8443
-   ```
-   *(or `https://<node>.<tailnet>.ts.net` if using port 443)*
-3. Tap the **Share** button (box with upward arrow) at the bottom.
-4. Tap **"Add to Home Screen"**.
-5. Launch **Herdr** from your home screen as a standalone, distraction-free app.
+It only sounds while the app is open and in front of you — a notification
+cannot carry a custom sound on iOS, so this is not a replacement for the one
+above. iOS also refuses to let a page make any noise until it has been touched
+once, so the first tap anywhere in the app is what unlocks it.
 
----
+### Dictation
 
-## Technical Notes & Implementation Details
+No setting. Tap the microphone on the iOS keyboard and talk into the composer.
 
-- **Percent-Encoded Pane IDs**: Mobile Safari URL-encodes colons in pane identifiers (e.g. `w1:p2` becomes `w1%3Ap2`). The backend gateway automatically unquotes path components with `urllib.parse.unquote` before passing targets to Herdr's UNIX domain socket.
-- **iOS Virtual Keyboard Handling**: The HTML viewport uses `interactive-widget=resizes-content` and `viewport-fit=cover`. This ensures that on iOS 16.4+, Safari resizes the visual viewport when the on-screen keyboard appears, keeping the prompt input pinned cleanly above the keyboard without UI jumping.
-- **Battery Optimization**: The client listens to the `visibilitychange` event. Polling stops automatically when the iPhone locks or Safari is backgrounded, and resumes with an immediate refresh upon waking.
+### The key palette
+
+The **keyboard icon** in the header shows and hides it: `y`, `n`, the numbers,
+arrows, tab, enter, `Esc` and `Ctrl+C`. The number keys follow whatever the
+prompt on screen actually offers, so a five-option question gets five keys. The
+choice is remembered.
+
+`Ctrl+C` arms on the first tap and sends on the second, so a stray tap cannot
+interrupt a working agent. It stays armed for a few seconds afterwards: leaving
+an agent takes two interrupts in a row, and both agents give you only a moment
+between them.
+
+### Agent mode
+
+**gear → Agent mode** cycles auto / plan / manual — the same `shift+tab` you
+would press on the laptop.
+
+### Projects
+
+Tap the project name at the top for the full list. **New** starts a workspace;
+swiping a row left reveals **Close**, which asks first — closing a workspace
+stops every agent in it, and a stray swipe on a phone is cheap to make and
+expensive to undo. The list is ordered by whatever changed most recently, and
+holds still while you are looking at it.
+
+### Scrollback, the plain view and the status bar
+
+**gear → Scrollback** trades detail for speed: 50 to 400 lines per refresh.
+
+**Plain view** draws the pane verbatim: every line the agent printed, in order,
+in the terminal's own colours, with nothing classified, collapsed or hidden.
+The normal view is a set of guesses about a terminal dump — which glyph starts
+a turn, which rules frame the composer, which of the last lines are the status
+bar — and it earns its keep, but a guess that goes wrong hides something. Turn
+this on when the phone is not showing you something the laptop is.
+
+**Show agent status bar** brings back the agent's own bottom line — mode,
+context left — which is hidden by default because it is noise on a phone. The
+plain view already shows it, and greys the switch out while it is on.
+
+## Repository layout
+
+| | |
+|---|---|
+| `gateway/` | The Python gateway: `server.py` serves the app and proxies Herdr's socket; `push.py` signs Web Push. |
+| `web/` | The phone app — plain HTML, CSS and JavaScript, no build step. |
+| `menubar/` | `SheepIt.app`, the macOS menu bar switch. One `clang` invocation, no Xcode project. |
+| `deploy/` | systemd and launchd units for running the gateway unattended. |
+| `tools/` | The synthesised bleat, and `test-transcript.js` — `node tools/test-transcript.js` checks the pane parser against both agents. |
+| `docs/` | Everything below. |
+
+## Documentation
+
+- **[docs/gateway.md](docs/gateway.md)** — install, run, autostart, ports, and
+  sharing a tailnet with dev servers.
+- **[docs/push.md](docs/push.md)** — notifications on iOS, and what a
+  standard-library push implementation can and cannot do.
+- **[docs/design.md](docs/design.md)** — the sheep, the postures, the bleat,
+  the icons, and the iOS limits that shaped them.
+- **[menubar/README.md](menubar/README.md)** — the macOS app.
+
+## Naming
+
+*Herdr* and *Tailscale* are other people's programs, and are named here only
+where they are meant: Herdr's socket, Tailscale's commands. Everything that
+belongs to this repository is SheepIt — `SHEEPIT_*` environment variables,
+`~/.config/sheepit/`, `com.sheepit.*` services.
+
+## Licence
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md). Use it, change it, share your
+changes — for anything noncommercial. Personal and hobby use, study, charities,
+schools and public institutions are all covered.
+
+Selling it, or using it as part of a commercial product or service, is not.
+For that, open an issue on
+[GitHub](https://github.com/mowolf/herdr-mobile/issues) and ask.
+
+Note this is a *source-available* licence, not an open-source one — the
+noncommercial restriction is exactly what the OSI definition disallows. If you
+need an OSI licence for a policy reason, this is not it.
