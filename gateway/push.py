@@ -23,8 +23,8 @@ import ipaddress
 import threading
 import contextlib
 import subprocess
-import urllib.request
-import urllib.error
+import ssl
+import http.client
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -39,32 +39,46 @@ VAPID_SUB = os.environ.get("SHEEPIT_PUSH_SUB", "https://github.com/mowolf/herdr-
 _LOCK = threading.Lock()
 
 
-def _is_public_host(host: str) -> bool:
-    """Does every address this name resolves to sit on the public internet?
+def _public_addresses(host: str, port: int) -> list:
+    """Every address this name resolves to, or [] if any of them is not on the
+    public internet.
 
     A name is not one address: it can resolve to several, and to different
     ones next time. Rejecting on any private answer is the conservative
-    reading, and a real push service never has one."""
+    reading, and a real push service never has one.
+
+    The addresses are handed back rather than just a verdict because checking
+    a name and then connecting to it resolves it twice: whoever owns the
+    domain can answer the check with a public address and the connection with
+    127.0.0.1. Only an address that was actually checked may be dialled. All
+    of them are kept so a host whose first answer is unreachable - an AAAA on
+    a network with no v6 route - still has the others to fall back on."""
     try:
-        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except OSError:
-        return False
+        return []
     if not infos:
-        return False
+        return []
+    addresses = []
     for info in infos:
+        address = info[4][0]
         try:
-            ip = ipaddress.ip_address(info[4][0])
+            ip = ipaddress.ip_address(address)
         except ValueError:
-            return False
+            return []
         if (ip.is_private or ip.is_loopback or ip.is_link_local
                 or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return False
-    return True
+            return []
+        if address not in addresses:
+            addresses.append(address)
+    return addresses
 
 
-def valid_endpoint(endpoint: str) -> bool:
-    """Endpoints arrive as client JSON and are later fetched by the server, so
-    an unvalidated one is an SSRF primitive: anything that can POST to
+def checked_target(endpoint: str):
+    """The host, path and approved address to send to, or None to refuse.
+
+    Endpoints arrive as client JSON and are later fetched by the server, so an
+    unvalidated one is an SSRF primitive: anything that can POST to
     /api/push/subscribe could aim the gateway at a loopback or LAN address and
     have it fire on every agent completion - and /api/push/test hands back the
     status code it got, which is a port scanner with extra steps.
@@ -75,28 +89,43 @@ def valid_endpoint(endpoint: str) -> bool:
     try:
         parsed = urlparse(endpoint)
     except Exception:
-        return False
-    if parsed.scheme != "https" or not parsed.hostname:
-        return False
-    try:
-        if parsed.port not in (None, 443):
-            return False
-    except ValueError:
-        return False
-    return _is_public_host(parsed.hostname)
-
-
-class _NoRedirects(urllib.request.HTTPRedirectHandler):
-    """A 302 is the way back in: urlopen would follow it without re-checking
-    the target and replay the VAPID Authorization header at whatever it names,
-    including plain http to something on this machine. Push services answer
-    the endpoint they gave us, so nothing legitimate is lost."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port or 443
+    except ValueError:
+        return None
+    if port != 443:
+        return None
+    addresses = _public_addresses(parsed.hostname, port)
+    if not addresses:
+        return None
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    return parsed.hostname, port, path, addresses
 
 
-_OPENER = urllib.request.build_opener(_NoRedirects)
+def valid_endpoint(endpoint: str) -> bool:
+    """Whether an endpoint is one this gateway is willing to fetch."""
+    return checked_target(endpoint) is not None
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Dial the address the check approved, while still presenting the name:
+    the Host header and the SNI stay the push service's, so its certificate
+    verifies as usual, but a second DNS answer never gets a say in where the
+    socket goes."""
+
+    def __init__(self, host: str, address: str, **kwargs):
+        super().__init__(host, **kwargs)
+        self._address = address
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._address, self.port), self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
 
 
 @contextlib.contextmanager
@@ -233,22 +262,36 @@ def send_one(sub: dict, ttl: int = 120) -> int:
     0 means the request never completed, which says nothing about the
     subscription's validity - so it is never treated as a reason to drop it."""
     endpoint = sub.get("endpoint", "")
-    if not valid_endpoint(endpoint):
+    target = checked_target(endpoint)
+    if target is None:
         return 0
-    req = urllib.request.Request(endpoint, data=b"", method="POST")
-    req.add_header("Authorization", _vapid_header(endpoint))
-    req.add_header("TTL", str(ttl))
-    req.add_header("Urgency", "high")
-    req.add_header("Content-Length", "0")
-    try:
-        with _OPENER.open(req, timeout=10) as res:
-            return res.status
-    except urllib.error.HTTPError as e:
-        return e.code
-    except (urllib.error.URLError, TimeoutError, OSError):
-        # An unreachable push service must not abort the whole broadcast and
-        # strand every subscriber queued behind this one.
-        return 0
+    host, port, path, addresses = target
+    headers = {
+        "Authorization": _vapid_header(endpoint),
+        "TTL": str(ttl),
+        "Urgency": "high",
+        "Content-Length": "0",
+    }
+    context = ssl.create_default_context()
+    for address in addresses:
+        conn = _PinnedHTTPSConnection(
+            host, address, port=port, timeout=10, context=context)
+        try:
+            conn.request("POST", path, body=b"", headers=headers)
+            # The response is read here rather than followed: a 302 is the way
+            # back in, and replaying the VAPID header at whatever it names -
+            # plain http to something on this machine, say - is what the
+            # address check above is for. Push services answer the endpoint
+            # they gave us.
+            return conn.getresponse().status
+        except (OSError, http.client.HTTPException, TimeoutError):
+            # An unreachable push service must not abort the whole broadcast
+            # and strand every subscriber queued behind this one. Another
+            # address for the same name might still answer.
+            continue
+        finally:
+            conn.close()
+    return 0
 
 
 def broadcast() -> dict:
