@@ -712,7 +712,7 @@
       : state.agents.length
       ? "Select project"
       : "No agents";
-    elAgentSelectDot.className = `agent-dot ${agent ? agent.status || "unknown" : "unknown"}`;
+    elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
 
     if (!elAgentPicker.classList.contains("hidden")) renderAgentList();
   }
@@ -779,14 +779,16 @@
       <path d="M33 20.6 q-0.8 -2.6 -2.4 -3.8" fill="none" stroke="currentColor"
             stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>`;
 
-  // A status Herdr does not draw a sheep for. POSE is a plain object, so ask
-  // it what it owns: POSE["constructor"] is truthy and draws nothing at all.
-  function poseFor(status) {
+  /* The statuses the app has a sheep, a colour and a class for - anything else
+     Herdr grows later reads as unknown rather than an unstyled dot or a sheep
+     that is not there. POSE is a plain object, so ask it what it owns:
+     POSE["constructor"] is truthy and would draw nothing at all. */
+  function knownStatus(status) {
     return Object.prototype.hasOwnProperty.call(POSE, status) ? status : "unknown";
   }
 
   function sheepSvg(status) {
-    const pose = POSE[poseFor(status)];
+    const pose = POSE[knownStatus(status)];
     if (pose === "empty") {
       return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${EMPTY_PASTURE}</svg>`;
     }
@@ -834,7 +836,7 @@
     elAgentList.innerHTML = state.agents
       .map((agent) => {
         const isActive = agent.pane_id === state.activePaneId;
-        const status = poseFor(agent.status);
+        const status = knownStatus(agent.status);
         const subtitle = agent.title || agent.cwd || "";
         return `
           <div class="agent-row-wrap">
@@ -942,9 +944,9 @@
     elAgentTitle.textContent = agent.title || agent.name || agent.pane_id;
     elAgentCwd.textContent = agent.cwd || "";
 
-    const status = agent.status || "unknown";
+    const status = knownStatus(agent.status);
     elAgentStatus.className = `status-badge status-${status}`;
-    elAgentStatus.textContent = status;
+    elAgentStatus.textContent = agent.status || "unknown";
   }
 
   // Fetch Agent History
