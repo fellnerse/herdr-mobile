@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Terminal access to the SheepIt task queue.
+
+Reads and writes the same SQLite queue the gateway's scheduler drives. There is
+deliberately no `run` command: the dispatcher lives in the gateway, and a second
+one racing it on the same queue would run tasks twice.
+"""
+
+import argparse
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
+
+from scheduler import config as sched_config  # noqa: E402
+from scheduler import db, quota  # noqa: E402
+
+MARK = {
+    "queued": "·",
+    "running": "▸",
+    "paused": "⏸",
+    "blocked": "?",
+    "done": "✓",
+    "failed": "✗",
+}
+
+
+def _rel(when) -> str:
+    if when is None:
+        return "—"
+    delta = (when - datetime.now(timezone.utc)).total_seconds()
+    if delta <= 0:
+        return "now"
+    hours, minutes = divmod(int(delta // 60), 60)
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+
+
+def cmd_quota(args) -> int:
+    cfg = sched_config.load()
+    try:
+        current = quota.fetch()
+    except quota.QuotaError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if current.stale:
+        print(f"(cached at {current.fetched_at:%Y-%m-%d %H:%M} UTC — endpoint unreachable)\n")
+
+    width = max((len(b.name) for b in current.buckets), default=10)
+    for b in current.buckets:
+        filled = min(24, int(b.utilization / 100 * 24))
+        bar = "█" * filled + "░" * (24 - filled)
+        flag = " LOCKED" if b.locked_reason else ""
+        over = " ←" if b.is_blocking(cfg.threshold) else ""
+        print(f"{b.name:<{width}}  {bar} {b.utilization:5.1f}%  "
+              f"resets in {_rel(b.resets_at):>7}{flag}{over}")
+
+    print()
+    if current.blockers(cfg.threshold):
+        print(f"blocked at {cfg.threshold:.0f}% — next window {_rel(current.resume_at(cfg.threshold))}")
+    else:
+        print(f"clear to run (threshold {cfg.threshold:.0f}%)")
+    return 0
+
+
+def cmd_add(args) -> int:
+    repo = Path(args.repo).expanduser().resolve()
+    if not (repo / ".git").exists():
+        print(f"error: {repo} is not a git repository", file=sys.stderr)
+        return 1
+    conn = db.connect()
+    task_id = db.add(conn, prompt=args.prompt, repo_path=str(repo), base_ref=args.base,
+                     branch=args.branch, priority=args.priority)
+    print(f"queued #{task_id}")
+    return 0
+
+
+def cmd_list(args) -> int:
+    conn = db.connect()
+    tasks = db.list_tasks(conn, args.state)
+    if not tasks:
+        print("no tasks")
+        return 0
+    for t in tasks:
+        head = t.prompt.splitlines()[0][:58]
+        extra = f"  [{t.branch}]" if t.branch else ""
+        print(f"{MARK.get(t.state, ' ')} #{t.id:<4} {t.state:<8} {head}{extra}")
+        if t.last_error and t.state in ("failed", "blocked", "paused"):
+            print(f"          └─ {t.last_error}")
+    return 0
+
+
+def cmd_show(args) -> int:
+    conn = db.connect()
+    task = db.get(conn, args.id)
+    if task is None:
+        print(f"error: no task #{args.id}", file=sys.stderr)
+        return 1
+    for key, value in vars(task).items():
+        if value not in (None, ""):
+            print(f"{key:<16} {value}")
+    return 0
+
+
+def cmd_retry(args) -> int:
+    conn = db.connect()
+    if db.get(conn, args.id) is None:
+        print(f"error: no task #{args.id}", file=sys.stderr)
+        return 1
+    db.update(conn, args.id, state="queued", attempts=0, last_error=None, finished_at=None)
+    print(f"requeued #{args.id}")
+    return 0
+
+
+def cmd_rm(args) -> int:
+    conn = db.connect()
+    conn.execute("DELETE FROM task WHERE id=?", (args.id,))
+    conn.commit()
+    print(f"removed #{args.id}")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="sheepit-queue", description=__doc__)
+    sub = p.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("quota", help="show usage windows").set_defaults(func=cmd_quota)
+
+    add = sub.add_parser("add", help="queue a task")
+    add.add_argument("prompt")
+    add.add_argument("--repo", default=".", help="git repository to work in")
+    add.add_argument("--base", help="base ref for the worktree branch")
+    add.add_argument("--branch", help="explicit branch name")
+    add.add_argument("--priority", type=int, default=0)
+    add.set_defaults(func=cmd_add)
+
+    ls = sub.add_parser("list", help="list tasks")
+    ls.add_argument("--state", choices=db.STATES)
+    ls.set_defaults(func=cmd_list)
+
+    show = sub.add_parser("show", help="show one task")
+    show.add_argument("id", type=int)
+    show.set_defaults(func=cmd_show)
+
+    retry = sub.add_parser("retry", help="requeue a task")
+    retry.add_argument("id", type=int)
+    retry.set_defaults(func=cmd_retry)
+
+    rm = sub.add_parser("rm", help="delete a task")
+    rm.add_argument("id", type=int)
+    rm.set_defaults(func=cmd_rm)
+
+    args = p.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

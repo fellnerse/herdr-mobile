@@ -8,7 +8,6 @@ import os
 import sys
 import time
 import json
-import socket
 import hashlib
 import threading
 import mimetypes
@@ -18,67 +17,16 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import push
+from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
+from scheduler import config as sched_config
+from scheduler import db as sched_db
+from scheduler import quota as sched_quota
+from scheduler.dispatch import Scheduler
 
-
-def default_socket_path() -> str:
-    """Locate herdr.sock: explicit env, then the current user's config dir, then root's."""
-    candidates = [
-        Path.home() / ".config/herdr/herdr.sock",
-        Path("/root/.config/herdr/herdr.sock"),
-    ]
-    for c in candidates:
-        if c.exists():
-            return str(c)
-    return str(candidates[0])
-
-
-HERDR_SOCKET_PATH = os.environ.get("HERDR_SOCKET") or default_socket_path()
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("SHEEPIT_PORT") or os.environ.get("PORT", "3009"))
 # The PWA lives beside the gateway, not inside it.
 WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
-
-
-def call_herdr_rpc(method: str, params: dict = None, timeout: float = 5.0) -> dict:
-    """Send JSON-RPC request to Herdr UNIX domain socket and return response."""
-    if not os.path.exists(HERDR_SOCKET_PATH):
-        return {
-            "id": "",
-            "error": {
-                "code": "socket_not_found",
-                "message": f"Herdr socket not found at {HERDR_SOCKET_PATH}",
-            },
-        }
-
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    try:
-        s.connect(HERDR_SOCKET_PATH)
-        req = {"id": "sheepit", "method": method, "params": params or {}}
-        payload = json.dumps(req).encode("utf-8") + b"\n"
-        s.sendall(payload)
-
-        chunks = []
-        while True:
-            chunk = s.recv(16384)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            if b"\n" in chunk:
-                break
-
-        raw_data = b"".join(chunks).decode("utf-8", errors="replace")
-        line = raw_data.split("\n", 1)[0].strip()
-        if not line:
-            return {"id": "", "error": {"code": "empty_response", "message": "Empty response from Herdr"}}
-        return json.loads(line)
-    except socket.timeout:
-        return {"id": "", "error": {"code": "timeout", "message": "Timeout communicating with Herdr"}}
-    except Exception as e:
-        return {"id": "", "error": {"code": "socket_error", "message": str(e)}}
-    finally:
-        s.close()
-
 
 
 
@@ -351,6 +299,22 @@ class HerdrHandler(BaseHTTPRequestHandler):
             })
             return
 
+        # API: usage windows. Free to ask - it is the same endpoint Claude Code
+        # uses for its own limits and costs no tokens.
+        if path == "/api/queue/quota":
+            self.send_json({"ok": True, **quota_payload()})
+            return
+
+        # API: the task queue
+        if path == "/api/queue":
+            conn = sched_db.connect()
+            try:
+                tasks = [vars(t) for t in sched_db.list_tasks(conn, qs.get("state", [None])[0])]
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "tasks": tasks})
+            return
+
         # API: Path completion for a pane, rooted at its working directory
         # /api/agents/{pane_id}/files?q=<prefix>
         if path.startswith("/api/agents/") and path.endswith("/files"):
@@ -479,6 +443,59 @@ class HerdrHandler(BaseHTTPRequestHandler):
         if path == "/api/push/test":
             self.send_json({"ok": True, "sent": push.broadcast()})
             return
+
+        # API: queue a task. The scheduler thread picks it up on its next pass.
+        if path == "/api/queue":
+            prompt = (body.get("prompt") or "").strip()
+            repo = (body.get("repo") or "").strip()
+            if not prompt:
+                self.send_json({"ok": False, "error": "Empty prompt"}, 400)
+                return
+            repo_path = Path(repo).expanduser()
+            if not repo or not (repo_path / ".git").exists():
+                self.send_json({"ok": False, "error": f"Not a git repository: {repo}"}, 400)
+                return
+            conn = sched_db.connect()
+            try:
+                task_id = sched_db.add(
+                    conn,
+                    prompt=prompt,
+                    repo_path=str(repo_path.resolve()),
+                    base_ref=(body.get("base") or None),
+                    branch=(body.get("branch") or None),
+                    priority=int(body.get("priority") or 0),
+                )
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "id": task_id})
+            return
+
+        # API: requeue or drop a task. /api/queue/{id}/{retry|delete}
+        if path.startswith("/api/queue/"):
+            parts = path.strip("/").split("/")
+            # ["api", "queue", "<id>", "<action>"]
+            if len(parts) == 4 and parts[2].isdigit():
+                task_id, action = int(parts[2]), parts[3]
+                conn = sched_db.connect()
+                try:
+                    if sched_db.get(conn, task_id) is None:
+                        self.send_json({"ok": False, "error": "No such task"}, 404)
+                        return
+                    if action == "retry":
+                        sched_db.update(
+                            conn, task_id, state="queued", attempts=0,
+                            last_error=None, finished_at=None,
+                        )
+                    elif action == "delete":
+                        conn.execute("DELETE FROM task WHERE id=?", (task_id,))
+                        conn.commit()
+                    else:
+                        self.send_json({"ok": False, "error": "Unknown action"}, 400)
+                        return
+                finally:
+                    conn.close()
+                self.send_json({"ok": True, "id": task_id, "action": action})
+                return
 
         # API: Create a workspace
         if path == "/api/workspaces":
@@ -684,11 +701,40 @@ class StatusWatcher(threading.Thread):
         }
 
 
+def quota_payload() -> dict:
+    """Usage windows, shaped for the phone."""
+    try:
+        current = sched_quota.fetch()
+    except sched_quota.QuotaError as e:
+        return {"ok": False, "error": str(e), "buckets": []}
+    threshold = sched_config.load().threshold
+    resume_at = current.resume_at(threshold)
+    return {
+        "stale": current.stale,
+        "threshold": threshold,
+        "blocked": bool(current.blockers(threshold)),
+        "resume_at": resume_at.isoformat() if resume_at else None,
+        "buckets": [
+            {
+                "name": b.name,
+                "utilization": b.utilization,
+                "resets_at": b.resets_at.isoformat() if b.resets_at else None,
+                "locked_reason": b.locked_reason,
+                "blocking": b.is_blocking(threshold),
+            }
+            for b in current.buckets
+        ],
+    }
+
+
 def run():
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     server_address = (HOST, PORT)
     httpd = ThreadingHTTPServer(server_address, HerdrHandler)
     StatusWatcher().start()
+    # Config is re-read every pass, so editing scheduler.json takes effect
+    # without a restart.
+    Scheduler(sched_config.load).start()
     print(f"SheepIt gateway listening on http://{HOST}:{PORT}")
     print(f"Herdr socket target: {HERDR_SOCKET_PATH}")
     try:
