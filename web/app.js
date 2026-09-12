@@ -22,6 +22,11 @@
     isSending: false,
     listSignature: null,
     swiping: false,
+    tasks: [],
+    quota: null,
+    quotaAt: 0,
+    queueOpen: false,
+    taskSignature: null,
   };
 
   // DOM Elements
@@ -65,6 +70,20 @@
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
+  const elBtnQueue = document.getElementById("btn-queue");
+  const elQueueBadge = document.getElementById("queue-badge");
+  const elQueueView = document.getElementById("queue-view");
+  const elBtnCloseQueue = document.getElementById("btn-close-queue");
+  const elQuotaStrip = document.getElementById("quota-strip");
+  const elTaskList = document.getElementById("task-list");
+  const elBtnNewTask = document.getElementById("btn-new-task");
+  const elTaskSheet = document.getElementById("task-sheet");
+  const elTaskPrompt = document.getElementById("task-prompt");
+  const elTaskRepo = document.getElementById("task-repo");
+  const elTaskBase = document.getElementById("task-base");
+  const elTaskError = document.getElementById("task-error");
+  const elBtnSubmitTask = document.getElementById("btn-submit-task");
+  const elBtnCancelTask = document.getElementById("btn-cancel-task");
 
   /* The bleat an agent gets when it stops working, while you are looking at
      the app. iOS will not let a page make noise until it has been touched
@@ -1200,10 +1219,261 @@
     elBtnSend.disabled = elPromptInput.value.trim().length === 0;
   }
 
+  /* ------------------------------------------------------------- Queue --- */
+
+  /* Task states are not agent states: a task waits, runs, parks, or ends,
+     and only two of those words overlap with what a sheep does. */
+  const TASK_WORD = {
+    queued: "waiting",
+    running: "working",
+    paused: "paused",
+    blocked: "needs you",
+    done: "done",
+    failed: "failed",
+  };
+
+  // The two states nothing will move off without a person.
+  const WANTS_A_PERSON = new Set(["blocked", "failed"]);
+
+  function quotaIsStale() {
+    return Date.now() - state.quotaAt > 30000;
+  }
+
+  async function fetchTasks() {
+    try {
+      const res = await fetch("/api/queue");
+      const data = await res.json();
+      if (!data.ok) return;
+      state.tasks = data.tasks || [];
+      renderQueueBadge();
+      if (state.queueOpen) renderTaskList();
+    } catch (err) {
+      /* The connection dot already says the gateway is unreachable; a failed
+         queue poll should not also blank the list you were reading. */
+    }
+  }
+
+  async function fetchQuota() {
+    if (!quotaIsStale()) return;
+    try {
+      const res = await fetch("/api/queue/quota");
+      state.quota = await res.json();
+      state.quotaAt = Date.now();
+      if (state.queueOpen) renderQuota();
+    } catch (err) {
+      /* keep the last reading */
+    }
+  }
+
+  function renderQueueBadge() {
+    const n = state.tasks.filter((t) => WANTS_A_PERSON.has(t.state)).length;
+    elQueueBadge.textContent = String(n);
+    elQueueBadge.classList.toggle("hidden", n === 0);
+  }
+
+  function relTime(iso) {
+    if (!iso) return "";
+    const secs = (new Date(iso).getTime() - Date.now()) / 1000;
+    if (secs <= 0) return "now";
+    const mins = Math.round(secs / 60);
+    if (mins < 60) return `${mins}m`;
+    return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}m`;
+  }
+
+  function renderQuota() {
+    const q = state.quota;
+    if (!q) {
+      elQuotaStrip.innerHTML = '<div class="quota-note">Reading usage…</div>';
+      return;
+    }
+    if (q.ok === false) {
+      elQuotaStrip.innerHTML =
+        `<div class="quota-note blocked">${escapeHtml(q.error || "usage unavailable")}</div>`;
+      return;
+    }
+
+    /* Buckets that are empty and have no window carry no information - they
+       are plan slots this account does not use. */
+    const shown = (q.buckets || []).filter((b) => b.utilization > 0 || b.resets_at);
+    const rows = shown
+      .map((b) => {
+        const pct = Math.max(0, Math.min(100, b.utilization));
+        const near = pct >= q.threshold * 0.8;
+        const cls = b.blocking ? "over" : near ? "warn" : "";
+        const name = b.name.replace(/_/g, " ");
+        return `
+          <div class="quota-row ${cls}">
+            <span class="quota-name">${escapeHtml(name)}</span>
+            <span class="quota-track"><span class="quota-fill" style="width:${pct}%"></span></span>
+            <span class="quota-pct">${pct.toFixed(0)}%</span>
+          </div>`;
+      })
+      .join("");
+
+    const note = q.blocked
+      ? `<div class="quota-note blocked">No usage left — next window in ${escapeHtml(relTime(q.resume_at))}</div>`
+      : `<div class="quota-note">Clear to run · pauses at ${q.threshold.toFixed(0)}%</div>`;
+
+    elQuotaStrip.innerHTML = rows + note + (q.stale
+      ? '<div class="quota-note">cached — could not reach the usage endpoint</div>'
+      : "");
+  }
+
+  // Same trick as the project list: only redraw when something actually moved.
+  function taskSignature() {
+    return state.tasks
+      .map((t) => [t.id, t.state, t.branch, t.last_error].join(""))
+      .join("");
+  }
+
+  function renderTaskList() {
+    if (state.tasks.length === 0) {
+      state.taskSignature = null;
+      elTaskList.innerHTML =
+        '<div class="history-empty">Nothing queued. Tap New to add a task.</div>';
+      return;
+    }
+    const signature = taskSignature();
+    if (signature === state.taskSignature) return;
+    state.taskSignature = signature;
+
+    elTaskList.innerHTML = state.tasks
+      .map((t) => {
+        const word = TASK_WORD[t.state] || t.state;
+        const attention = WANTS_A_PERSON.has(t.state);
+        const repo = (t.repo_path || "").split("/").pop();
+        const meta = [repo, t.branch].filter(Boolean).join(" · ");
+        // A paused task is mid-flight: resuming is the scheduler's job, so it
+        // gets no Retry button, only the option to give up on it.
+        const canRetry = attention || t.state === "done";
+        return `
+          <div class="task-row ${attention ? "attention" : ""}">
+            <span class="task-main">
+              <span class="task-prompt">${escapeHtml(t.prompt || "")}</span>
+              ${meta ? `<span class="task-meta">${escapeHtml(meta)}</span>` : ""}
+              ${attention && t.last_error
+                  ? `<span class="task-why">${escapeHtml(t.last_error)}</span>`
+                  : ""}
+            </span>
+            <span class="task-side">
+              <span class="status-badge status-${escapeHtml(t.state)}">${escapeHtml(word)}</span>
+              <span class="task-acts">
+                ${canRetry
+                    ? `<button class="task-act" data-task-retry="${t.id}">Retry</button>`
+                    : ""}
+                <button class="task-act danger" data-task-delete="${t.id}">Delete</button>
+              </span>
+            </span>
+          </div>`;
+      })
+      .join("");
+  }
+
+  async function taskAction(id, action) {
+    triggerHaptic();
+    try {
+      const res = await fetch(`/api/queue/${id}/${action}`, { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "failed");
+      state.taskSignature = null;
+      await fetchTasks();
+    } catch (err) {
+      alert(`Could not ${action} task: ${err.message}`);
+    }
+  }
+
+  function openQueue() {
+    triggerHaptic();
+    state.queueOpen = true;
+    state.taskSignature = null;
+    elQueueView.classList.remove("hidden");
+    renderQuota();
+    renderTaskList();
+    fetchTasks();
+    fetchQuota();
+  }
+
+  function closeQueue() {
+    state.queueOpen = false;
+    elQueueView.classList.add("hidden");
+  }
+
+  function openTaskSheet() {
+    triggerHaptic();
+    elTaskError.classList.add("hidden");
+    // Default to the project already on screen: queueing work for what you
+    // were just looking at is the common case.
+    const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
+    if (!elTaskRepo.value && agent && agent.cwd) elTaskRepo.value = agent.cwd;
+    elSheetBackdrop.classList.add("over-queue");
+    elSheetBackdrop.classList.remove("hidden");
+    elTaskSheet.classList.remove("hidden");
+    elTaskPrompt.focus();
+  }
+
+  function closeTaskSheet() {
+    elTaskSheet.classList.add("hidden");
+    elSheetBackdrop.classList.add("hidden");
+    elSheetBackdrop.classList.remove("over-queue");
+  }
+
+  async function submitTask() {
+    const prompt = elTaskPrompt.value.trim();
+    if (!prompt) {
+      showTaskError("Say what it should do.");
+      return;
+    }
+    elBtnSubmitTask.disabled = true;
+    try {
+      const res = await fetch("/api/queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          repo: elTaskRepo.value.trim(),
+          base: elTaskBase.value.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "could not queue");
+      elTaskPrompt.value = "";
+      elTaskBase.value = "";
+      closeTaskSheet();
+      state.taskSignature = null;
+      await fetchTasks();
+    } catch (err) {
+      showTaskError(err.message);
+    } finally {
+      elBtnSubmitTask.disabled = false;
+    }
+  }
+
+  function showTaskError(message) {
+    elTaskError.textContent = message;
+    elTaskError.classList.remove("hidden");
+  }
+
+  elBtnQueue.addEventListener("click", openQueue);
+  elBtnCloseQueue.addEventListener("click", closeQueue);
+  elBtnNewTask.addEventListener("click", openTaskSheet);
+  elBtnCancelTask.addEventListener("click", closeTaskSheet);
+  elBtnSubmitTask.addEventListener("click", submitTask);
+
+  elTaskList.addEventListener("click", (e) => {
+    const retry = e.target.closest("[data-task-retry]");
+    if (retry) return taskAction(retry.dataset.taskRetry, "retry");
+    const del = e.target.closest("[data-task-delete]");
+    if (del) return taskAction(del.dataset.taskDelete, "delete");
+  });
+
   // Poll loop
   async function loop() {
     await fetchAgents();
     await fetchHistory();
+    // Cheap: a local SQLite read. Keeps the header badge honest even when the
+    // queue is closed.
+    await fetchTasks();
+    if (state.queueOpen) await fetchQuota();
   }
 
   function startPolling() {
@@ -1456,7 +1726,13 @@
 
   elBtnSettings.addEventListener("click", openSheet);
   elBtnCloseSheet.addEventListener("click", closeSheet);
-  elSheetBackdrop.addEventListener("click", closeSheet);
+  /* One backdrop serves both sheets, so it has to dismiss whichever is up -
+     closing only the settings sheet left the task sheet stranded on screen
+     with nothing behind it to tap. */
+  elSheetBackdrop.addEventListener("click", () => {
+    if (!elTaskSheet.classList.contains("hidden")) closeTaskSheet();
+    else closeSheet();
+  });
 
   elHistoryContainer.addEventListener("scroll", onHistoryScroll, { passive: true });
   elBtnScrollBottom.addEventListener("click", () => scrollToBottom(true));

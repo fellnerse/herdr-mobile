@@ -701,8 +701,30 @@ class StatusWatcher(threading.Thread):
         }
 
 
+_quota_cache = {"at": 0.0, "payload": None}
+_quota_lock = threading.Lock()
+QUOTA_TTL = 30.0
+
+
 def quota_payload() -> dict:
-    """Usage windows, shaped for the phone."""
+    """Usage windows, shaped for the phone.
+
+    Cached briefly: every call is an HTTPS round trip to Anthropic, and the
+    phone polls this while the queue is open. Utilization does not move fast
+    enough for 30s to matter.
+    """
+    with _quota_lock:
+        fresh = time.time() - _quota_cache["at"] < QUOTA_TTL
+        if fresh and _quota_cache["payload"] is not None:
+            return _quota_cache["payload"]
+        payload = _build_quota_payload()
+        # Don't cache a failure; the next poll should retry.
+        if payload.get("ok", True):
+            _quota_cache.update(at=time.time(), payload=payload)
+        return payload
+
+
+def _build_quota_payload() -> dict:
     try:
         current = sched_quota.fetch()
     except sched_quota.QuotaError as e:
