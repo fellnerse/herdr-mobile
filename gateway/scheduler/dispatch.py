@@ -232,7 +232,11 @@ def run_task(conn: sqlite3.Connection, herdr: Herdr, task: db.Task, cfg: Config)
 
     try:
         task = _revive(conn, herdr, task, cfg) if resuming else _provision(conn, herdr, task, cfg)
-        prompt = RESUME_PROMPT if resuming else task.prompt
+        # Only a task whose prompt already landed gets told to carry on. One
+        # that stopped on a startup dialog never saw its instructions, so it
+        # needs the real thing.
+        prompt = RESUME_PROMPT if task.prompted else task.prompt
+        db.update(conn, task.id, prompted=1)
         herdr.agent_prompt(task.pane_id, prompt, timeout_ms=cfg.task_timeout_ms)
     except BlockedOnHuman as e:
         # Leave the pane alive so the question is still there to answer.
@@ -297,6 +301,49 @@ def _fail(conn: sqlite3.Connection, herdr: Herdr, task: db.Task, cfg: Config, er
     herdr.notify(f"task #{task.id} failed", error[:120])
     _push("failed")
     log.error("task %s failed: %s", task.id, error)
+
+
+def requeue(conn: sqlite3.Connection, herdr: Herdr, task: db.Task) -> str:
+    """Put a stalled task back in play, reusing its agent where one survives.
+
+    A task blocked on a dialog you have since answered still owns a live pane,
+    a worktree and a branch. Sending it round the fresh-provision path would
+    ask Herdr for a branch that already exists and fail every time, so if the
+    agent is still there it resumes into it instead.
+
+    Returns the state the task was put into, for the caller to report.
+    """
+    alive = False
+    if task.pane_id:
+        try:
+            alive = herdr.status(task.pane_id) is not None
+        except HerdrError:
+            alive = False
+
+    if alive:
+        db.update(conn, task.id, state="paused", last_error=None, finished_at=None)
+        return "paused"
+
+    # Nothing left to go back to: drop the stale worktree and start over.
+    if task.workspace_id:
+        try:
+            herdr.worktree_remove(task.workspace_id, force=True)
+        except HerdrError:
+            pass
+    db.update(
+        conn,
+        task.id,
+        state="queued",
+        attempts=0,
+        prompted=0,
+        last_error=None,
+        finished_at=None,
+        pane_id=None,
+        workspace_id=None,
+        worktree_path=None,
+        session_uuid=None,
+    )
+    return "queued"
 
 
 def tick(conn: sqlite3.Connection, herdr: Herdr, cfg: Config) -> float:

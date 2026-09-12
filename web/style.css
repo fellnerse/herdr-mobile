@@ -1216,3 +1216,28 @@ html, body {
    inside it, so both it and its backdrop have to clear that. */
 #task-sheet { z-index: 41; }
 .sheet-backdrop.over-queue { z-index: 40; }
+
+/* Pickers in the task sheet. Native selects so iOS gives its own wheel
+   rather than something hand-rolled that fights the keyboard. */
+.task-select {
+  width: 100%;
+  padding: 11px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23949eb2' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  padding-right: 34px;
+}
+
+.task-select:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+.task-act.accent { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }

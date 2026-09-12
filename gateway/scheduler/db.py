@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS task (
     pane_id       TEXT,
     agent_name    TEXT,
     attempts      INTEGER NOT NULL DEFAULT 0,
+    -- Whether this task's own prompt ever reached the agent. One stopped on a
+    -- startup dialog never got it, so resuming has to send the real prompt
+    -- instead of telling it to carry on from nothing.
+    prompted      INTEGER NOT NULL DEFAULT 0,
     last_error    TEXT,
     created_at    TEXT NOT NULL,
     started_at    TEXT,
@@ -46,6 +50,9 @@ CREATE TABLE IF NOT EXISTS task (
 );
 CREATE INDEX IF NOT EXISTS task_state_idx ON task(state, priority DESC, id);
 """
+
+# Columns added after the first release, applied to an existing table.
+MIGRATIONS = (("prompted", "INTEGER NOT NULL DEFAULT 0"),)
 
 
 def now() -> str:
@@ -68,6 +75,7 @@ class Task:
     pane_id: str | None
     agent_name: str | None
     attempts: int
+    prompted: int
     last_error: str | None
     created_at: str
     started_at: str | None
@@ -85,6 +93,13 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    # CREATE TABLE IF NOT EXISTS leaves an older table as it was, so new
+    # columns have to be added to it explicitly.
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(task)")}
+    for column, spec in MIGRATIONS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE task ADD COLUMN {column} {spec}")
+    conn.commit()
     return conn
 
 

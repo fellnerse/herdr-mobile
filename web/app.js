@@ -27,6 +27,8 @@
     quotaAt: 0,
     queueOpen: false,
     taskSignature: null,
+    repos: [],
+    editingId: null,
   };
 
   // DOM Elements
@@ -84,6 +86,8 @@
   const elTaskError = document.getElementById("task-error");
   const elBtnSubmitTask = document.getElementById("btn-submit-task");
   const elBtnCancelTask = document.getElementById("btn-cancel-task");
+  const elTaskSheetTitle = document.getElementById("task-sheet-title");
+  const elTaskBaseHint = document.getElementById("task-base-hint");
 
   /* The bleat an agent gets when it stops working, while you are looking at
      the app. iOS will not let a page make noise until it has been touched
@@ -1346,6 +1350,13 @@
         // A paused task is mid-flight: resuming is the scheduler's job, so it
         // gets no Retry button, only the option to give up on it.
         const canRetry = attention || t.state === "done";
+        // Editing only makes sense before a worktree has been cut from a base.
+        const canEdit = ["queued", "blocked", "failed"].includes(t.state);
+        /* A blocked task is usually stopped on a question in its own pane, and
+           the answer is a keypress. Jumping to that pane puts the transcript
+           and the key palette in front of you instead of leaving the task
+           stuck with no way in from the phone. */
+        const canOpen = t.pane_id && (attention || t.state === "running" || t.state === "paused");
         return `
           <div class="task-row ${attention ? "attention" : ""}">
             <span class="task-main">
@@ -1358,6 +1369,12 @@
             <span class="task-side">
               <span class="status-badge status-${escapeHtml(t.state)}">${escapeHtml(word)}</span>
               <span class="task-acts">
+                ${canOpen
+                    ? `<button class="task-act accent" data-task-open="${escapeHtml(t.pane_id)}">Open</button>`
+                    : ""}
+                ${canEdit
+                    ? `<button class="task-act" data-task-edit="${t.id}">Edit</button>`
+                    : ""}
                 ${canRetry
                     ? `<button class="task-act" data-task-retry="${t.id}">Retry</button>`
                     : ""}
@@ -1398,17 +1415,90 @@
     elQueueView.classList.add("hidden");
   }
 
-  function openTaskSheet() {
+  async function loadRepos() {
+    try {
+      const res = await fetch("/api/queue/repos");
+      const data = await res.json();
+      if (data.ok) state.repos = data.repos || [];
+    } catch (err) {
+      /* leave whatever was listed before */
+    }
+  }
+
+  /* Fill the project picker. A path that is not among the discovered repos -
+     an edited task pointing somewhere else, say - is added so selecting it
+     does not silently rewrite the task to a different project. */
+  function fillRepoSelect(selected) {
+    const repos = state.repos.slice();
+    if (selected && !repos.some((r) => r.path === selected)) {
+      repos.unshift({ path: selected, name: selected.split("/").pop(), branch: "" });
+    }
+    elTaskRepo.innerHTML = repos
+      .map(
+        (r) =>
+          `<option value="${escapeHtml(r.path)}"${r.path === selected ? " selected" : ""}>` +
+          `${escapeHtml(r.name)}</option>`
+      )
+      .join("");
+    if (!repos.length) {
+      elTaskRepo.innerHTML = '<option value="">no repositories found</option>';
+    }
+  }
+
+  /* Branches for whichever project is selected. The repo's current branch is
+     listed first and chosen by default, because that is what you would get
+     working in it by hand. */
+  async function fillBranchSelect(preferred) {
+    const repo = elTaskRepo.value;
+    if (!repo) {
+      elTaskBase.innerHTML = "";
+      return;
+    }
+    elTaskBase.innerHTML = '<option value="">loading…</option>';
+    let data = { branches: [], current: "" };
+    try {
+      const res = await fetch(`/api/queue/branches?repo=${encodeURIComponent(repo)}`);
+      data = await res.json();
+    } catch (err) {
+      /* fall through to the empty list below */
+    }
+    const list = data.branches || [];
+    const want = preferred && list.includes(preferred) ? preferred : data.current;
+    elTaskBase.innerHTML = list.length
+      ? list
+          .map(
+            (b) =>
+              `<option value="${escapeHtml(b)}"${b === want ? " selected" : ""}>` +
+              `${escapeHtml(b)}</option>`
+          )
+          .join("")
+      : '<option value="">no branches found</option>';
+    elTaskBaseHint.textContent = list.length
+      ? `the task's sheep/ branch is cut from this`
+      : "";
+  }
+
+  async function openTaskSheet(task) {
     triggerHaptic();
+    state.editingId = task ? task.id : null;
     elTaskError.classList.add("hidden");
+    elTaskSheetTitle.textContent = task ? `Edit task #${task.id}` : "Queue a task";
+    elBtnSubmitTask.textContent = task ? "Save" : "Queue it";
+    elTaskPrompt.value = task ? task.prompt || "" : "";
+
     // Default to the project already on screen: queueing work for what you
     // were just looking at is the common case.
     const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
-    if (!elTaskRepo.value && agent && agent.cwd) elTaskRepo.value = agent.cwd;
+    const repo = task ? task.repo_path : agent && agent.cwd;
+
     elSheetBackdrop.classList.add("over-queue");
     elSheetBackdrop.classList.remove("hidden");
     elTaskSheet.classList.remove("hidden");
-    elTaskPrompt.focus();
+
+    if (!state.repos.length) await loadRepos();
+    fillRepoSelect(repo || "");
+    await fillBranchSelect(task ? task.base_ref : null);
+    if (!task) elTaskPrompt.focus();
   }
 
   function closeTaskSheet() {
@@ -1423,21 +1513,26 @@
       showTaskError("Say what it should do.");
       return;
     }
+    if (!elTaskRepo.value) {
+      showTaskError("Pick a project to work in.");
+      return;
+    }
+    const editing = state.editingId;
+    const url = editing ? `/api/queue/${editing}/update` : "/api/queue";
     elBtnSubmitTask.disabled = true;
     try {
-      const res = await fetch("/api/queue", {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt,
-          repo: elTaskRepo.value.trim(),
-          base: elTaskBase.value.trim() || null,
+          repo: elTaskRepo.value,
+          base: elTaskBase.value || null,
         }),
       });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "could not queue");
+      if (!data.ok) throw new Error(data.error || "could not save");
       elTaskPrompt.value = "";
-      elTaskBase.value = "";
       closeTaskSheet();
       state.taskSignature = null;
       await fetchTasks();
@@ -1453,13 +1548,37 @@
     elTaskError.classList.remove("hidden");
   }
 
+  /* Hand a task's pane to the main view, so its question can be answered with
+     the key palette that is already there. */
+  function openTaskPane(paneId) {
+    closeQueue();
+    if (state.agents.some((a) => a.pane_id === paneId)) {
+      selectAgent(paneId);
+    } else {
+      /* The pane exists but Herdr has not listed it yet, or it is gone. Select
+         it anyway: the transcript fetch will say which. */
+      state.activePaneId = paneId;
+      state.historyText = "";
+      fetchHistory(true);
+    }
+  }
+
   elBtnQueue.addEventListener("click", openQueue);
   elBtnCloseQueue.addEventListener("click", closeQueue);
-  elBtnNewTask.addEventListener("click", openTaskSheet);
+  elBtnNewTask.addEventListener("click", () => openTaskSheet(null));
   elBtnCancelTask.addEventListener("click", closeTaskSheet);
   elBtnSubmitTask.addEventListener("click", submitTask);
+  elTaskRepo.addEventListener("change", () => fillBranchSelect(null));
 
   elTaskList.addEventListener("click", (e) => {
+    const open = e.target.closest("[data-task-open]");
+    if (open) return openTaskPane(open.dataset.taskOpen);
+    const edit = e.target.closest("[data-task-edit]");
+    if (edit) {
+      const task = state.tasks.find((t) => String(t.id) === edit.dataset.taskEdit);
+      if (task) openTaskSheet(task);
+      return;
+    }
     const retry = e.target.closest("[data-task-retry]");
     if (retry) return taskAction(retry.dataset.taskRetry, "retry");
     const del = e.target.closest("[data-task-delete]");

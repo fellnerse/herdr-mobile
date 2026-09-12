@@ -17,10 +17,12 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import push
-from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
+from herdr_rpc import HERDR_SOCKET_PATH, Herdr, call_herdr_rpc
 from scheduler import config as sched_config
 from scheduler import db as sched_db
 from scheduler import quota as sched_quota
+from scheduler import dispatch as sched_dispatch
+from scheduler import repos as sched_repos
 from scheduler.dispatch import Scheduler
 
 HOST = os.environ.get("HOST", "127.0.0.1")
@@ -305,6 +307,24 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, **quota_payload()})
             return
 
+        # API: repositories worth queueing work in
+        if path == "/api/queue/repos":
+            cwds = [
+                a.get("cwd")
+                for a in call_herdr_rpc("agent.list").get("result", {}).get("agents", [])
+            ]
+            self.send_json({"ok": True, "repos": sched_repos.discover(sched_config.load(), cwds)})
+            return
+
+        # API: branches in one repository, to pick a base
+        if path == "/api/queue/branches":
+            repo = (qs.get("repo", [""])[0] or "").strip()
+            if not repo:
+                self.send_json({"ok": False, "error": "No repo given"}, 400)
+                return
+            self.send_json({"ok": True, **sched_repos.branches(Path(repo).expanduser())})
+            return
+
         # API: the task queue
         if path == "/api/queue":
             conn = sched_db.connect()
@@ -470,7 +490,7 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "id": task_id})
             return
 
-        # API: requeue or drop a task. /api/queue/{id}/{retry|delete}
+        # API: act on a task. /api/queue/{id}/{retry|delete|update}
         if path.startswith("/api/queue/"):
             parts = path.strip("/").split("/")
             # ["api", "queue", "<id>", "<action>"]
@@ -478,17 +498,47 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 task_id, action = int(parts[2]), parts[3]
                 conn = sched_db.connect()
                 try:
-                    if sched_db.get(conn, task_id) is None:
+                    task = sched_db.get(conn, task_id)
+                    if task is None:
                         self.send_json({"ok": False, "error": "No such task"}, 404)
                         return
                     if action == "retry":
-                        sched_db.update(
-                            conn, task_id, state="queued", attempts=0,
-                            last_error=None, finished_at=None,
-                        )
+                        # Resumes into the existing agent when one is still
+                        # alive; only reprovisions when there is nothing left.
+                        sched_dispatch.requeue(conn, Herdr(), task)
                     elif action == "delete":
                         conn.execute("DELETE FROM task WHERE id=?", (task_id,))
                         conn.commit()
+                    elif action == "update":
+                        # Only before it starts. A running or paused task already
+                        # has a worktree cut from its base and an agent holding
+                        # the conversation, so changing either would describe
+                        # something that no longer matches what is on disk.
+                        if task.state not in ("queued", "blocked", "failed"):
+                            self.send_json(
+                                {"ok": False, "error": f"Cannot edit a {task.state} task"}, 409
+                            )
+                            return
+                        fields = {}
+                        if "prompt" in body:
+                            prompt = (body.get("prompt") or "").strip()
+                            if not prompt:
+                                self.send_json({"ok": False, "error": "Empty prompt"}, 400)
+                                return
+                            fields["prompt"] = prompt
+                        if "repo" in body:
+                            repo_path = Path((body.get("repo") or "").strip()).expanduser()
+                            if not (repo_path / ".git").exists():
+                                self.send_json(
+                                    {"ok": False, "error": f"Not a git repository: {repo_path}"}, 400
+                                )
+                                return
+                            fields["repo_path"] = str(repo_path.resolve())
+                        if "base" in body:
+                            fields["base_ref"] = (body.get("base") or None)
+                        if "priority" in body:
+                            fields["priority"] = int(body.get("priority") or 0)
+                        sched_db.update(conn, task_id, **fields)
                     else:
                         self.send_json({"ok": False, "error": "Unknown action"}, 400)
                         return

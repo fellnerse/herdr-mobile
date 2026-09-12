@@ -46,6 +46,11 @@ class Config:
 
     branch_prefix: str = "sheep/"
 
+    repo_roots: list[str] = field(default_factory=lambda: ["~/projects"])
+    """Where to look for repositories to offer in the queue's project picker.
+    Each root is scanned one level deep, and counts itself if it is a repo.
+    Whatever Herdr already has open is offered regardless of the roots."""
+
     keep_worktree_on_success: bool = True
     """Leave the branch in place for review rather than auto-committing away."""
 
