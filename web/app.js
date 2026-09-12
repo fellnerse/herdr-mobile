@@ -12,6 +12,7 @@
     numberKeys: 3,
     badgeCount: -1,
     activity: {},
+    drafts: {},
     order: [],
     bleat: true,
     statuses: null,
@@ -934,8 +935,11 @@
     }
     closePicker();
     setCtrlCArmed(false);
+    // What is in the composer was written for the pane being left.
+    rememberDraft(state.activePaneId);
     touchAgent(paneId);
     state.activePaneId = paneId;
+    restoreDraft(paneId);
     state.historyText = "";
     elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
     triggerHaptic();
@@ -1056,7 +1060,8 @@
         return;
       }
 
-      // Success
+      // Success: the draft has become the agent's problem.
+      clearDraft(state.activePaneId);
       elPromptInput.value = "";
       hideCompletions();
       autoResizeTextarea();
@@ -1267,6 +1272,7 @@
       syncStatusBarRow();
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
+      state.drafts = loadDrafts();
       state.bleat = readPref("bleat") !== "0";
       elToggleBleat.checked = state.bleat;
     } catch (err) {
@@ -1281,6 +1287,99 @@
      a reload and follows this phone rather than the server's workspace
      numbering. */
   const ACTIVITY_KEY = "sheepit.activity";
+
+  /* Half-written prompts, one per pane.
+
+     A prompt on a phone is written in the gaps - a sentence now, the rest
+     after the bus stop - and switching to another project to see what it is
+     doing used to throw the sentence away. So the composer's text belongs to
+     the pane it was typed for: leave, come back, and it is still there, still
+     where the caret was. It lives in localStorage, so it survives the app
+     being closed and the phone being locked, and it is this phone's - nothing
+     is sent anywhere until you send it.
+
+     Drafts are dropped when their prompt is sent, and the oldest are dropped
+     when there are more than a phone will ever need. Panes that vanish are
+     deliberately not pruned against the agent list: a poll can blink and come
+     back, and losing a half-written prompt to that would be worse than
+     keeping a few dead keys. */
+  const DRAFTS_KEY = "sheepit.drafts";
+  const MAX_DRAFTS = 40;
+
+  function loadDrafts() {
+    try {
+      const raw = JSON.parse(readPref("drafts") || "{}");
+      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function saveDrafts() {
+    const entries = Object.entries(state.drafts);
+    if (entries.length > MAX_DRAFTS) {
+      // Oldest first: the map is written in touch order, so the tail is the
+      // recently used end.
+      state.drafts = Object.fromEntries(entries.slice(-MAX_DRAFTS));
+    }
+    try {
+      savePref(DRAFTS_KEY, JSON.stringify(state.drafts));
+    } catch (err) {
+      // A full or disabled localStorage must not stop anybody typing.
+    }
+  }
+
+  /* Remember what is in the composer now, against the pane it belongs to.
+     Called as you type, and again before the pane changes under it. */
+  function rememberDraft(paneId) {
+    const id = paneId || state.activePaneId;
+    if (!id) return;
+    const text = elPromptInput.value;
+    if (text.trim()) {
+      // Re-inserting keeps the key at the recent end of the map.
+      delete state.drafts[id];
+      state.drafts[id] = { text, caret: elPromptInput.selectionStart ?? text.length };
+    } else if (state.drafts[id]) {
+      delete state.drafts[id];
+    } else {
+      return;
+    }
+    saveDrafts();
+  }
+
+  function restoreDraft(paneId) {
+    const draft = state.drafts[paneId];
+    elPromptInput.value = draft ? draft.text : "";
+    autoResizeTextarea();
+    if (!draft) return;
+    // Put the caret back where it was, so a half-typed word can be finished
+    // rather than found.
+    const caret = Math.min(draft.caret ?? draft.text.length, draft.text.length);
+    try {
+      elPromptInput.setSelectionRange(caret, caret);
+    } catch (err) {
+      // Not focused, or a browser that refuses: the text is what matters.
+    }
+  }
+
+  function clearDraft(paneId) {
+    if (!paneId || !state.drafts[paneId]) return;
+    delete state.drafts[paneId];
+    saveDrafts();
+  }
+
+  function loadActivity() {
+    try {
+      const raw = JSON.parse(readPref("activity") || "{}");
+      return raw && typeof raw === "object" ? raw : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function saveActivity() {
+    savePref(ACTIVITY_KEY, JSON.stringify(state.activity));
+  }
 
   /* Stamp anything whose sequence moved, forget panes that are gone, and sort
      newest first. On a first run nothing is known and every pane stamps the
@@ -1467,6 +1566,7 @@
   elPromptInput.addEventListener("input", () => {
     autoResizeTextarea();
     scheduleCompletion();
+    rememberDraft();
   });
   // Tapping a chip blurs the textarea, so the bar must outlive the blur long
   // enough for the click to land on it.
