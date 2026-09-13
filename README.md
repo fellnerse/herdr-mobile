@@ -42,8 +42,18 @@ project telling you at a glance who is working and who is waiting.
   locked, plus a count on the home screen icon.
 - **A bleat.** A sheep answers when an agent stops, if the app is open.
 - **Native dictation.** Talk to your agent using the iOS keyboard's mic.
+- **Drafts that stay put.** A half-written prompt belongs to the project it
+  was typed for: switch away to check on another agent, come back, and it is
+  still there with the caret where you left it. Kept on the phone, sent
+  nowhere until you send it.
 - **A plain view**, one switch away: the pane verbatim when you would rather
   read the terminal than the phone's reading of it.
+- **A console.** The pane's own terminal, live, in the browser - for the
+  full-screen editor an agent opened, the installer drawing a progress bar, or
+  anything else that is a terminal rather than a transcript.
+- **The changed files.** What the agent actually did to the working tree, read
+  from git: a file list with its counts, and each file's diff unified or side
+  by side.
 - **A key palette** for the keys agents stop on — `y`, `n`, numbers, arrows,
   tab, enter, `Esc` and `Ctrl+C`.
 - **Workspace control.** Start a project with **New**, swipe a row left to
@@ -66,8 +76,10 @@ SheepIt gateway  ── gateway/server.py, Python standard library only
 Herdr server  ── your agents, in their panes
 ```
 
-The gateway never reaches the public internet. It reads and writes one UNIX
-socket belonging to Herdr, and serves the `web/` directory to your phone.
+The gateway never reaches the public internet. It reads and writes two UNIX
+sockets belonging to Herdr - `herdr.sock` for the JSON-RPC everything else
+uses, and `herdr-client.sock` for the console's live terminal - and serves the
+`web/` directory to your phone.
 
 ## Quick start
 
@@ -92,6 +104,25 @@ Full instructions, autostart units and Tailscale routing live in
 
 Everything below lives behind the **gear** in the top right, once the app is
 open on your phone.
+
+### The console and the changed files
+
+Both live behind the two icons beside the gear, and neither needs setting up.
+
+The **console** attaches to the pane's own terminal over Herdr's client
+socket - the same one a desktop Herdr uses - so it is the terminal, not a
+reading of it: colours, redraws, full-screen programs, and keystrokes going
+back. The key row underneath carries what a touch keyboard has no room for
+(`esc`, `tab`, `^C`, the arrows). One thing to know: **attaching sets the
+pane's size**, and the pane runtime is shared with whatever is showing it on
+the desktop, so the window over there changes shape too. **Fit** re-asks for
+the size that suits the phone after a rotation.
+
+The **changed files** view runs git in the agent's own directory: a list of
+what it touched with the lines added and removed, and a tap for the diff.
+**Split** puts the old and new versions side by side, each half scrolling the
+other. Untracked files are shown as what they are - all addition, against
+nothing.
 
 ### Notifications
 
@@ -177,10 +208,11 @@ plain view already shows it, and greys the switch out while it is on.
 | | |
 |---|---|
 | `gateway/` | The Python gateway: `server.py` serves the app and proxies Herdr's socket; `push.py` signs Web Push. |
-| `web/` | The phone app — plain HTML, CSS and JavaScript, no build step. |
+| `web/` | The phone app — plain HTML, CSS and JavaScript, no build step. `web/vendor/` holds xterm.js, the one third-party file it loads. |
 | `menubar/` | `SheepIt.app`, the macOS menu bar switch. One `clang` invocation, no Xcode project. |
 | `deploy/` | systemd and launchd units for running the gateway unattended. |
-| `tools/` | The synthesised bleat, and `test-transcript.js` — `node tools/test-transcript.js` checks the pane parser against both agents. |
+| `tools/` | The synthesised bleat, and the tests: `node tools/test-transcript.js` (the pane parser, both agents), `node tools/test-diff.js` (the diff rendering), `node tools/test-drafts.js` (the per-project drafts), `python3 tools/test-gateway.py` (the Herdr codec, the WebSocket framing, git against a real repository). |
+| `LICENSES/` | The licences of the code this one borrowed from. |
 | `docs/` | Everything below. |
 
 ## Documentation
@@ -209,6 +241,19 @@ schools and public institutions are all covered.
 Selling it, or using it as part of a commercial product or service, is not.
 For that, open an issue on
 [GitHub](https://github.com/mowolf/herdr-mobile/issues) and ask.
+
+### Other people's code
+
+Two things here are somebody else's, both MIT, both carried with their notices
+in [`LICENSES/`](LICENSES):
+
+- **[xterm.js](https://xtermjs.org)** — the terminal the console draws with,
+  vendored unchanged into `web/vendor/`.
+- **[herdr-studio](https://github.com/powerfooI/herdr-studio)** by Arthur — the
+  Herdr client protocol this gateway speaks (the bincode codec, the handshake,
+  the variant numbering and the 0.8.2/0.9.0 differences) and the shape of the
+  git reading behind the changed-files view were worked out there first and
+  ported to Python here. The files that carry the port say so at the top.
 
 Note this is a *source-available* licence, not an open-source one — the
 noncommercial restriction is exactly what the OSI definition disallows. If you
