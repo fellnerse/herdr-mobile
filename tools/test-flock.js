@@ -36,7 +36,15 @@ function loadRows() {
     const agoLabel = () => "";
     const wantsInput = (a) => a.status === "blocked";
   `;
-  return new Function(`${PRELUDE}${src.slice(from, to)} return { state, agentRowHtml, queuedByPane, queuedLabel };`)();
+  // What a tab is called is tested on its own further down; a row is asked
+  // here with the real thing rather than a stub that could agree with nothing.
+  const { tabName, tabNumber } = loadFlock();
+  return new Function(
+    "tabName",
+    "tabNumber",
+    `${PRELUDE}${src.slice(from, to)}
+     return { state, agentRowHtml, queuedByPane, queuedLabel };`
+  )(tabName, tabNumber);
 }
 
 /* The markings that tell two sheep on one project apart. Sliced on its own so
@@ -57,13 +65,17 @@ function loadFlock(pickerHidden = true) {
   const to = src.indexOf(TO);
   if (from < 0 || to < 0) throw new Error(`anchors moved in ${SRC}`);
   const PRELUDE = `
-    const state = { agents: [], groups: [], order: [] };
+    const state = { agents: [], groups: [], order: [], customOrder: [] };
     const elAgentPicker = { hidden: ${pickerHidden},
                             classList: { contains(name) { return name === "hidden" && elAgentPicker.hidden; } } };
+    const store = {};
+    const readPref = (name) => (name in store ? store[name] : null);
+    const savePref = (key, value) => { store[key.replace("sheepit.", "")] = value; };
   `;
   return new Function(
     `${PRELUDE}${src.slice(from, to)}
-     return { state, elAgentPicker, orderAgents, groupByProject, bornAt, wantsInput, projectKey };`
+     return { state, store, elAgentPicker, orderAgents, groupByProject, bornAt, wantsInput,
+              projectKey, tabName, tabNumber, reorder, insertIndexFor, loadOrder, saveOrder };`
   )();
 }
 
@@ -91,10 +103,11 @@ function row(pane, ws, project, status, extra = {}) {
   };
 }
 
-function order(agents, pickerHidden = true, held = []) {
+function order(agents, pickerHidden = true, held = [], custom = []) {
   const f = loadFlock(pickerHidden);
   f.state.agents = agents;
   f.state.order = held;
+  f.state.customOrder = custom;
   f.orderAgents();
   return f;
 }
@@ -277,6 +290,159 @@ function order(agents, pickerHidden = true, held = []) {
     "api");
   check("a titleless pane falls back to its name", text(fresh, "agent-row-name"), "api");
   check("and says where it is", text(fresh, "agent-row-title"), "/p/api");
+}
+
+// -- an order a finger gave --------------------------------------------------
+
+/* Everything above is what the phone does when left to itself. A list somebody
+   arranged by hand is a different promise: the project stays where it was put,
+   and it is worth more than the rules that would otherwise move it. */
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wB:p1", 2, "/p/web", "working"),
+    row("wC:p1", 3, "/p/cli", "working"),
+  ], true, [], ["/p/cli", "/p/api", "/p/web"]);
+  check("a dragged order outranks creation order",
+        f.state.groups.map((g) => g.key), ["/p/cli", "/p/api", "/p/web"]);
+}
+
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wB:p1", 2, "/p/web", "blocked"),
+  ], true, [], ["/p/api", "/p/web"]);
+  check("and a question no longer drags a project to the front",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web"]);
+  check("though it still rises inside its own project",
+        f.state.groups[1].agents.map((a) => a.pane_id), ["wB:p1"]);
+}
+
+// A project made since the last drag is in no saved order at all; it goes
+// where Herdr has just put it, which is the end.
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wZ:p1", 9, "/p/new", "blocked"),
+    row("wB:p1", 2, "/p/web", "working"),
+  ], true, [], ["/p/web", "/p/api"]);
+  check("a project the order has never seen lands last",
+        f.state.groups.map((g) => g.key), ["/p/web", "/p/api", "/p/new"]);
+}
+
+// A project that has since been closed is skipped rather than leaving a hole.
+{
+  const f = order([
+    row("wB:p1", 2, "/p/web", "working"),
+    row("wA:p1", 1, "/p/api", "working"),
+  ], true, [], ["/p/web", "/p/gone", "/p/api"]);
+  check("a closed project leaves no gap",
+        f.state.groups.map((g) => g.key), ["/p/web", "/p/api"]);
+}
+
+// -- what a drag reports back -------------------------------------------------
+
+/* Herdr counts the workspace being moved when it resolves insert_index, so an
+   insertion below where it started is one slot further along. Checked against
+   what actually happens to the list: inserting before the entry at that index.
+   Off by one here is a project that creeps a place every time it is moved. */
+{
+  const f = loadFlock();
+  const ids = ["a", "b", "c", "d"];
+  const herdr = (from, index) => {
+    const moved = ids[from];
+    const before = ids.slice(0, index).filter((id) => id !== moved);
+    const after = ids.slice(index).filter((id) => id !== moved);
+    return [...before, moved, ...after];
+  };
+  for (let from = 0; from < ids.length; from++) {
+    for (let to = 0; to < ids.length; to++) {
+      check(
+        `moving ${ids[from]} to slot ${to} tells Herdr the same thing`,
+        herdr(from, f.insertIndexFor(from, to)),
+        f.reorder(ids, from, to)
+      );
+    }
+  }
+  check("the phone's own reorder", f.reorder(ids, 0, 2), ["b", "c", "a", "d"]);
+  check("and back the other way", f.reorder(ids, 3, 1), ["a", "d", "b", "c"]);
+}
+
+// -- the order as it is kept --------------------------------------------------
+
+{
+  const f = loadFlock();
+  f.state.customOrder = ["/p/web", "/p/api"];
+  f.saveOrder();
+  check("the order survives a reload", f.loadOrder(), ["/p/web", "/p/api"]);
+
+  f.store.order = "{not json";
+  check("and nonsense in storage is no order at all", f.loadOrder(), []);
+  f.store.order = JSON.stringify(["/p/api", 7, null]);
+  check("nor is anything in it that is not a project", f.loadOrder(), ["/p/api"]);
+}
+
+// -- what a tab is called -----------------------------------------------------
+
+/* Herdr numbers a tab before anybody names it, and the phone should agree with
+   the laptop's tab bar - which draws the label, not the internal number. */
+{
+  const f = loadFlock();
+  check("a name somebody typed is a name", f.tabName({ tab_label: "deploy" }), "deploy");
+  check("a number is not", f.tabName({ tab_label: "2" }), "");
+  check("and neither is Herdr's own wording", f.tabName({ tab_label: "Tab 3" }), "");
+  check("a tab nobody has touched has no name", f.tabName({}), "");
+
+  check("the number is the one the tab bar draws",
+        f.tabNumber({ tab_label: "2", tab_number: 3 }), "2");
+  check("falling back to Herdr's own when the label is a name",
+        f.tabNumber({ tab_label: "deploy", tab_number: 3 }), "3");
+  check("and to nothing at all when there is nothing",
+        f.tabNumber({}), "");
+}
+
+// -- what a tab's row says ----------------------------------------------------
+
+/* Every tab is a row now, shells included - which is the point: the row you
+   want at 11pm is often the one running the dev server, and it has no agent,
+   no title and nothing to say for itself but its name. */
+{
+  const { agentRowHtml } = loadRows();
+  const text = (html, cls) => {
+    const m = new RegExp(`<span class="${cls}">([^<]*)</span>`).exec(html);
+    return m ? m[1] : null;
+  };
+  const tab = (extra) => ({
+    ...row("wA:p2", 1, "/p/api", "unknown", { has_agent: false, name: "api", title: "" }),
+    ...extra,
+  });
+
+  const shell = agentRowHtml(tab({ tab_label: "2", tab_number: 2, cwd: "/p/api" }), "api");
+  check("a tab with no agent is called what the laptop calls it",
+        text(shell, "agent-row-name"), "tab 2");
+  check("and says so instead of a status it does not have",
+        /<span class="agent-row-ago">shell<\/span>/.test(shell), true);
+  check("with no status badge on it", /status-badge/.test(shell), false);
+
+  const named = agentRowHtml(tab({ tab_label: "dev server", tab_number: 2 }), "api");
+  check("a tab somebody named is called that", text(named, "agent-row-name"), "dev server");
+
+  const busy = agentRowHtml(
+    tab({ tab_label: "dev server", tab_number: 2, has_agent: true, status: "working",
+          title: "Rewrite the importer" }),
+    "api");
+  check("an agent's own headline still leads", text(busy, "agent-row-name"),
+        "Rewrite the importer");
+  check("and the tab's name is the small line", text(busy, "agent-row-title"), "dev server");
+  check("a tab with an agent says what it is doing", /status-working/.test(busy), true);
+
+  // Each row draws its own sheep, so two tabs of one project are two animals.
+  const other = agentRowHtml(
+    tab({ pane_id: "wA:p3", tab_label: "3", tab_number: 3, has_agent: true, status: "blocked",
+          title: "Which of these three?" }),
+    "api");
+  check("and each row wears the status of its own tab",
+        [/sheep-wrap working/.test(busy), /sheep-wrap blocked/.test(other)], [true, true]);
 }
 
 // -- telling two sheep apart -------------------------------------------------

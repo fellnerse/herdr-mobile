@@ -387,6 +387,111 @@ with tempfile.TemporaryDirectory() as tmp:
     check("no repository", gitdiff.changed_files(tmp)["repo"], False)
     check("nowhere at all", gitdiff.changed_files("/nonexistent/path")["repo"], False)
 
+# -- the rows the phone lists -----------------------------------------------
+
+# Three calls to Herdr become one list, and the shape of it is what the phone
+# draws: a project per workspace, a row per tab, in the order the desktop is
+# showing at the same moment.
+
+
+def ws(wid, number, label, focused=False):
+    return {"workspace_id": wid, "number": number, "label": label,
+            "focused": focused, "active_tab_id": f"{wid}:t1"}
+
+
+def tab(wid, number, label=None):
+    return {"tab_id": f"{wid}:t{number}", "workspace_id": wid,
+            "number": number, "label": label if label is not None else str(number)}
+
+
+def pane(pid, wid, tid, cwd="/repos/x", focused=False):
+    return {"pane_id": pid, "workspace_id": wid, "tab_id": f"{wid}:t{tid}",
+            "cwd": cwd, "focused": focused}
+
+
+def agent(pid, wid, tid, status="working", seq=1):
+    return {"pane_id": pid, "workspace_id": wid, "tab_id": f"{wid}:t{tid}",
+            "agent": "claude", "agent_status": status, "state_change_seq": seq,
+            "terminal_title_stripped": "doing a thing", "cwd": "/repos/x"}
+
+
+WORKSPACES = [ws("wC", 2, "second"), ws("w3", 1, "first")]
+TABS = [tab("w3", 1), tab("w3", 3, "build"), tab("wC", 1)]
+PANES = [pane("w3:p1", "w3", 1), pane("w3:p3", "w3", 3), pane("wC:p1", "wC", 1)]
+AGENTS = [agent("w3:p1", "w3", 1)]
+
+rows = server.build_agent_rows(WORKSPACES, TABS, PANES, AGENTS)
+
+check("a row per tab, whether or not an agent is in it", len(rows), 3)
+check("workspaces come in the desktop's own order",
+      [r["name"] for r in rows], ["first", "first", "second"])
+check("and a workspace's tabs in theirs",
+      [r["tab_id"] for r in rows[:2]], ["w3:t1", "w3:t3"])
+check("the agent's tab carries the agent", rows[0]["has_agent"], True)
+check("with what it is doing", rows[0]["status"], "working")
+check("and what it is called", rows[0]["title"], "doing a thing")
+check("a tab with no agent is still a row", rows[1]["has_agent"], False)
+check("which says nothing about an agent", rows[1]["status"], "unknown")
+check("the tab's own label is passed on, numbered or not",
+      [r["tab_label"] for r in rows[:2]], ["1", "build"])
+check("as is its number", [r["tab_number"] for r in rows[:2]], [1, 3])
+
+# A split tab runs two agents at once. Listing one of them would hide the
+# other entirely, which is the failure this shape exists to prevent.
+split_panes = PANES + [pane("w3:p7", "w3", 1)]
+split_agents = AGENTS + [agent("w3:p7", "w3", 1, status="blocked")]
+split = server.build_agent_rows(WORKSPACES, TABS, split_panes, split_agents)
+first_tab = [r for r in split if r["tab_id"] == "w3:t1"]
+check("both agents of a split tab get a row", len(first_tab), 2)
+check("and say so", [r["split"] for r in first_tab], [True, True])
+check("one tab is still one tab elsewhere",
+      [r["split"] for r in split if r["tab_id"] != "w3:t1"], [False, False])
+
+# A tab with several panes but no agent is one row, not one per pane.
+quiet_panes = [pane("wC:p1", "wC", 1), pane("wC:p4", "wC", 1, focused=True)]
+quiet = server.build_agent_rows([ws("wC", 1, "second")], [tab("wC", 1)], quiet_panes, [])
+check("a split with no agent is a single row", len(quiet), 1)
+check("on the pane the tab is actually on", quiet[0]["pane_id"], "wC:p4")
+
+# A workspace with no pane at all is mid-creation, not a row.
+check("a workspace with nothing in it is skipped",
+      server.build_agent_rows([ws("wZ", 1, "new")], [], [], []), [])
+
+# An older Herdr that does not answer tab.list still has to be usable: the
+# panes know which tab they are in, and that is enough to group them.
+no_tabs = server.build_agent_rows(WORKSPACES, [], PANES, AGENTS)
+check("tabs are recovered from the panes when tab.list is silent",
+      [r["tab_id"] for r in no_tabs], ["w3:t1", "w3:t3", "wC:t1"])
+check("and the agent is still found", no_tabs[0]["has_agent"], True)
+
+# A row's name is the project's, because that is how the list draws it. Anything
+# reading the rows flat - the notification naming what just finished - has to be
+# able to tell two agents in one project apart.
+check("one agent per project is named after the project",
+      [r["display_name"] for r in rows], ["first", "first", "second"])
+check("two agents in one project say which tab",
+      [r["display_name"] for r in first_tab],
+      ["first \u00b7 tab 1 \u00b7 p1", "first \u00b7 tab 1 \u00b7 p7"])
+named = server.build_agent_rows(
+    WORKSPACES,
+    [tab("w3", 1, "build"), tab("w3", 3, "ship")],
+    [pane("w3:p1", "w3", 1), pane("w3:p3", "w3", 3)],
+    [agent("w3:p1", "w3", 1), agent("w3:p3", "w3", 3)],
+)
+check("and a named tab is named, not numbered",
+      [r["display_name"] for r in named], ["first \u00b7 build", "first \u00b7 ship"])
+
+# -- labels typed on a phone ------------------------------------------------
+
+# A label goes into the laptop's workspace strip, so what arrives is trimmed
+# rather than passed on whole.
+check("a label is trimmed", server.clean_label("  build  "), "build")
+check("newlines are not labels", server.clean_label("one\ntwo"), "one two")
+check("a label is capped", len(server.clean_label("x" * 500)), server.MAX_LABEL)
+check("nothing is not a label", server.clean_label("   "), "")
+check("and neither is a number", server.clean_label(7), "")
+check("or nothing at all", server.clean_label(None), "")
+
 # ---------------------------------------------------------------------------
 # What the phone groups the flock by: the repository a workspace belongs to,
 # so the scheduler's worktrees land under the project they were cut from
@@ -423,7 +528,7 @@ panes = [
     pane("wN:p1", "wN", ""),
 ]
 agents = [{"pane_id": p["pane_id"], "agent_status": "idle"} for p in panes]
-rows = {r["pane_id"]: r for r in server.build_agent_rows(ws_list, panes, agents)}
+rows = {r["pane_id"]: r for r in server.build_agent_rows(ws_list, [], panes, agents)}
 
 check("a checkout is its own repository", rows["wA:p1"]["project"], "/p/api")
 check("a worktree belongs to the repository it came from",
