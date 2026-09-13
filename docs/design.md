@@ -19,16 +19,20 @@ is who, the row is what**.
 | Unknown ⚪ | grey spine | no sheep — empty pasture |
 
 The spine is five pixels down the left edge of the card, drawn as an inset
-shadow so the corner radius clips it and the swipe-to-close underneath does not
-have to know about it. It is louder than a coloured animal ever was, and it
-stays scannable down a list of projects rather than needing you to look at one
-sheep.
+shadow so the corner radius clips it and the swipe underneath does not have to
+know about it. It is louder than a coloured animal ever was, and it stays
+scannable down a list of projects rather than needing you to look at one sheep.
 
 Blocked gets the card tinted as well. Posture carries a lot, but posture alone
 is weaker than colour for the one state that must never be missed — and with
 status off the fleece, a sleeping black sheep and a working black sheep differ
 only in pose and in the row around them. That edge has to be unmissable, not a
 hairline.
+
+Idle stands rather than sleeps on purpose: it is the state that most wants
+answering, so it must not look like the dormant one. The pane with no agent in
+it at all is the empty pasture — which is what a project's plain shell tab
+draws, beside its siblings' sheep.
 
 Every animation stops under `prefers-reduced-motion`.
 
@@ -144,6 +148,66 @@ phone stamps a wall-clock time whenever it moves — or whenever you open a
 project — and that is what the "3m" on a row means. A first sighting is not a
 change, so a row seen only sitting still shows no age rather than claiming it
 happened the moment the app first looked.
+
+## A finger's own order
+
+The stillness above is a rule about what the *phone* does on its own. Somebody
+who wants a different order can hold a row for a moment: the project lifts off
+the list to be carried somewhere else, and where it lands is kept in
+`localStorage` so the list is right before the next poll rather than after it.
+
+An order made by hand outranks both rules above it — a project put third stays
+third, and a question no longer pulls it to the front, because a list somebody
+arranged and a list that rearranges itself cannot both be true. Inside a
+project the question still rises: the project is not going anywhere either way.
+A project the saved order has never seen — made since the last drag — falls
+back to when it was created, which is the end.
+
+Herdr is told too, with `workspace.move`, so the laptop's workspace strip
+follows the phone instead of arguing with it. It is told only when the project
+is a single workspace: a project here is a repository and Herdr reorders
+workspaces, and the two line up exactly while nothing has been cut into
+worktrees. The rest keep their order on the phone alone rather than have one
+drag rewrite a strip nobody asked it to.
+
+One detail that is easy to get backwards: `workspace.move` inserts before
+whatever sits at `insert_index` *counting the workspace being moved*, so a
+project dropped below where it started lands one slot further along than the
+index it ends up at. Off by one there is a project that creeps a place every
+time somebody moves it, which is why the arithmetic is a function of its own
+with the whole four-by-four of it checked in `tools/test-flock.js`.
+
+## Tabs
+
+A workspace has tabs — the laptop shows them in its tab bar, and the phone used
+to show whichever of them had an agent in it. Now every tab is a row, including
+the ones running nothing but a shell, which is what you want when the thing you
+need is the `npm run dev` two tabs over. A row with no agent says `shell` where
+the others say what their agent is doing, and draws the bare ground it has
+always drawn for a pane with nobody in it.
+
+Each row is its own sheep, so a project with one agent working and another
+waiting on an answer draws both rather than averaging them into one animal.
+
+Herdr keeps two numbers for a tab, and the phone wants the one the desktop's
+tab bar draws — which is the label, not `number`. A tab somebody has named is
+called that; a tab Herdr has only numbered is called what the laptop calls it,
+and lets its pane's title lead instead.
+
+## Renaming
+
+Both labels are Herdr's own — `workspace.rename` writes the name in the
+desktop's workspace strip, `tab.rename` the one in its tab bar — so a project
+named on the sofa is named on the laptop a moment later. The phone deliberately
+keeps no private nickname of its own: a name the machine under the desk knows
+nothing about is a name that disagrees with every other way of looking at the
+same workspace.
+
+Swipe a row left to reach Rename and Close. A row is a tab, so Rename is
+`tab.rename` — except on a workspace holding a single tab, where the name the
+row is showing is the workspace's own and renaming the tab would leave the row
+saying exactly what it said before. The row is dragged aside by however wide
+those buttons actually are rather than by a number written down twice.
 
 ## Reading the pane
 
