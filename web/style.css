@@ -222,7 +222,35 @@ html, body {
 /* One project, its sheep beneath it. The heading sticks to the top of the
    list while you scroll past a project with a lot of them, so the flock you
    are looking at always says whose it is. */
-.agent-group { margin-bottom: 14px; }
+.agent-group {
+  position: relative;
+  margin-bottom: 14px;
+  /* A project carried to a new slot, and the ones sliding out of its way. */
+  transition: transform 0.18s ease;
+}
+
+/* Off the list and under the finger. The shadow is the whole trick - it is
+   what says this project is above the others rather than among them. */
+.agent-group.dragging {
+  z-index: 3;
+  transition: none;
+}
+
+.agent-group.dragging .agent-row {
+  transform: scale(1.02);
+  border-color: var(--accent-primary);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.45);
+}
+
+/* Nothing selects or scrolls under a project being carried. The list holds
+   still because the touchmove handler says so, and this says the same thing
+   where a compositor would otherwise start scrolling before it hears it. */
+.agent-list.dragging,
+.agent-list.dragging .agent-row {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 .agent-group-head {
   position: sticky;
@@ -265,7 +293,7 @@ html, body {
   color: var(--status-blocked);
 }
 
-/* Row sits in a clipping wrapper so the Close action can hide behind it. */
+/* Row sits in a clipping wrapper so its actions can hide behind it. */
 .agent-row-wrap {
   position: relative;
   overflow: hidden;
@@ -273,14 +301,20 @@ html, body {
   margin-bottom: 8px;
 }
 
-.agent-row-delete {
+/* What a swipe reveals: Rename and Close on a project, Rename on a tab. The
+   row is dragged aside by exactly this width, which is measured off the
+   element rather than assumed, so one button or two both work. */
+.agent-row-actions {
   position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
+  display: flex;
+}
+
+.agent-row-action {
   width: 92px;
   border: none;
-  background: var(--status-blocked);
   color: #fff;
   font-family: var(--font-sans);
   font-size: 15px;
@@ -288,7 +322,9 @@ html, body {
   cursor: pointer;
 }
 
-.agent-row-delete:active { filter: brightness(0.88); }
+.agent-row-action.rename { background: var(--accent-primary); }
+.agent-row-action.close { background: var(--status-blocked); }
+.agent-row-action:active { filter: brightness(0.88); }
 
 /* The row carries the status now, because the sheep carries who it is.
 
@@ -365,8 +401,8 @@ html, body {
   text-overflow: ellipsis;
 }
 
-/* The flock: one sheep per project, and the colour on the wrapper is whose
-   sheep it is - the breed's own fleece - rather than what it is doing. The
+/* One sheep per row - which is one per tab - and the colour on the wrapper is
+   whose sheep it is, the breed's own fleece, rather than what it is doing. The
    fleece is currentColor, so that one colour drives the whole animal. */
 /* Bigger than it was: the markings that tell one sheep from another are the
    whole point of drawing an animal rather than a dot, and at 34px they were

@@ -14,6 +14,7 @@
     activity: {},
     drafts: {},
     order: [],
+    customOrder: [],
     groups: [],
     pickerOpen: false,
     bleat: true,
@@ -714,8 +715,11 @@
         !state.activePaneId ||
         !state.agents.some((a) => a.pane_id === state.activePaneId)
       ) {
-        if (state.agents.length > 0) {
-          selectAgent(state.agents[0].pane_id);
+        // The first agent on screen, or failing that the first row there is:
+        // a project whose tabs are all plain shells is still worth opening.
+        const first = state.agents.find((a) => a.has_agent) || state.agents[0];
+        if (first) {
+          selectAgent(first.pane_id);
         } else {
           state.activePaneId = null;
           renderActiveAgentMeta();
@@ -754,11 +758,25 @@
     });
   }
 
+  /* The project, and which of its tabs this is - but only when it has more
+     than one, because "sheepit \u00b7 1" on a project with a single tab is a
+     detail nobody needed and the header has no width to spare. */
+  function agentBarName(row) {
+    const name = row.workspace_label || row.name || row.pane_id;
+    const tabs = new Set(
+      state.agents
+        .filter((a) => a.workspace_id === row.workspace_id)
+        .map((a) => a.tab_id)
+    );
+    if (tabs.size < 2) return name;
+    return `${name} \u00b7 ${tabName(row) || "tab " + tabNumber(row)}`;
+  }
+
   // Header button showing the current project
   function renderAgentBar() {
     const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
     elAgentSelectName.textContent = agent
-      ? agent.name || agent.pane_id
+      ? agentBarName(agent)
       : state.agents.length
       ? "Select project"
       : "No agents";
@@ -767,7 +785,7 @@
     if (!elAgentPicker.classList.contains("hidden")) renderAgentList();
   }
 
-  /* One sheep per project, the same animal the home screen icon shows. Colour
+  /* A sheep per tab, the same animal the home screen icon shows. Colour
      carries the status, but so does the posture: an agent that is working
      grazes, one that is idle stands with its head up, a blocked one pricks its
      ear at you, and a finished one lies down to sleep. A pane with no agent is
@@ -1098,7 +1116,9 @@
 
   /* Everything a row draws. The picker is redrawn on every poll, and replacing
      its HTML restarts each sheep's graze mid-cycle and throws away the row a
-     swipe is holding open - so redraw only when one of these actually moved. */
+     swipe is holding open - so redraw only when one of these actually moved.
+     The projects' order is in here too, because it is the one thing that can
+     change without any single row changing at all. */
   function agentListSignature() {
     const queued = queuedByPane();
     return state.groups
@@ -1110,8 +1130,11 @@
             [
               a.pane_id,
               a.workspace_id,
+              a.tab_id,
               a.status,
+              a.has_agent ? "a" : "",
               a.name,
+              tabName(a),
               a.title || a.cwd,
               agoLabel(a.pane_id),
               queuedLabel(queued.get(a.pane_id)),
@@ -1125,10 +1148,15 @@
 
   /* A row under a heading that already names the project should not spend its
      biggest line saying the project again. What you are looking for is which
-     of this project's agents this one is - so the terminal title leads, since
-     it is whatever you asked it to do, and the workspace label drops to the
-     small line, and only when it says something the heading did not: "sheep
-     #5", or a name you set by hand. */
+     of this project's tabs this one is - so the terminal title leads, since it
+     is whatever you asked it to do, and the rest drops to the small line, and
+     only when it says something the heading did not: the tab's name, "sheep
+     #5", or a name you set by hand.
+
+     A tab with no agent in it has no title to lead with. It is called what the
+     laptop's tab bar calls it, which is a name if anybody typed one and a
+     number otherwise - and that is the whole point of listing it: the row you
+     want at 11pm is often the one running the dev server. */
   /* What is still owed to each pane: prompts holding for a window or a busy
      chat, and anything that failed on the way in. Both are things you queued
      and neither has happened yet, so the overview says so rather than making
@@ -1156,7 +1184,11 @@
     const isActive = agent.pane_id === state.activePaneId;
     const status = knownStatus(agent.status);
     const label = agent.name || agent.pane_id;
-    const headline = agent.title || label;
+    const named = tabName(agent);
+    // Herdr's own number for the tab, when it has one: a pane the gateway
+    // could not place has nothing but the project's name to fall back on.
+    const numbered = tabNumber(agent) ? `tab ${tabNumber(agent)}` : "";
+    const headline = agent.title || named || numbered || label;
     /* The fleece is whose sheep it is. An empty pasture has no sheep and so no
        breed - it keeps the muted colour the stylesheet gives it, which an
        inline one would quietly win against. */
@@ -1164,11 +1196,15 @@
       ? ""
       : ` style="color:${sheepMarks(agent.pane_id).breed.fleece}"`;
     let sub = "";
-    if (label !== headline && label !== groupName) sub = label;
+    if (named && named !== headline) sub = named;
+    else if (label !== headline && label !== groupName) sub = label;
     else if (!agent.title) sub = agent.cwd || "";
     return `
       <div class="agent-row-wrap">
-        <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+        <div class="agent-row-actions">
+          <button class="agent-row-action rename" data-action="rename" data-pane-id="${escapeHtml(agent.pane_id)}">Rename</button>
+          <button class="agent-row-action close" data-action="close" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+        </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
           <span class="sheep-wrap ${status}"${fleece}>${sheepSvg(status, agent.pane_id)}</span>
           <span class="agent-row-text">
@@ -1176,7 +1212,11 @@
             ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
           </span>
           <span class="agent-row-side">
-            <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
+            ${
+              agent.has_agent
+                ? `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`
+                : `<span class="agent-row-ago">shell</span>`
+            }
             <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
             ${queued
                 ? `<span class="agent-row-queued${queued.failed ? " failed" : ""}">${escapeHtml(queuedLabel(queued))}</span>`
@@ -1191,13 +1231,14 @@
      under it. The heading counts the ones asking you something, because that
      is the number the list was opened to find. */
   function renderAgentList() {
-    if (state.agents.length === 0) {
+    if (state.groups.length === 0) {
       state.listSignature = null;
       elAgentList.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
       return;
     }
 
-    // Never under the thumb: a rebuild would snap a swiped row shut.
+    // Never under the thumb: a rebuild would snap a swiped row shut, or pull
+    // the floor out from under a project being carried somewhere else.
     if (state.swiping || elAgentList.querySelector(".agent-row.swiped")) return;
     const signature = agentListSignature();
     if (signature === state.listSignature) return;
@@ -1220,7 +1261,7 @@
           ? `<span class="agent-group-queued">${owed} queued</span>`
           : "";
         return `
-          <section class="agent-group">
+          <section class="agent-group" data-project="${escapeHtml(group.key)}">
             <h2 class="agent-group-head">
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
               ${owedChip}
@@ -1232,6 +1273,94 @@
           </section>`;
       })
       .join("");
+  }
+
+  /* Renaming happens on the laptop as well. These are Herdr's own labels - the
+     ones the desktop draws in its workspace strip and its tab bar - so a
+     project named here is named there a moment later, and the phone is not
+     keeping a private nickname the machine under the desk knows nothing of.
+
+     A row is a tab, so Rename is tab.rename - except on a workspace that has
+     only the one tab, where the name the row is showing is the workspace's own
+     and renaming the tab would leave the row saying what it said before. */
+  async function renameRow(paneId) {
+    const row = state.agents.find((a) => a.pane_id === paneId);
+    if (!row) return;
+    const tabs = new Set(
+      state.agents
+        .filter((a) => a.workspace_id === row.workspace_id)
+        .map((a) => a.tab_id)
+    );
+    if (tabs.size > 1) await renameTab(row);
+    else await renameWorkspace(row);
+  }
+
+  async function renameWorkspace(row) {
+    const current = row.workspace_label || "";
+    const label = prompt("Rename project", current);
+    resetSwipe();
+    if (label === null) return;
+    const trimmed = label.trim();
+    if (!trimmed || trimmed === current) return;
+    triggerHaptic();
+    try {
+      await sendRename(
+        `/api/workspaces/${encodeURIComponent(row.workspace_id)}/rename`,
+        trimmed
+      );
+      // Show it now rather than at the next poll.
+      for (const r of state.agents) {
+        if (r.workspace_id !== row.workspace_id) continue;
+        r.workspace_label = trimmed;
+        r.name = trimmed;
+      }
+      redrawNames();
+    } catch (err) {
+      alert("Could not rename project: " + err.message);
+    }
+  }
+
+  async function renameTab(row) {
+    /* Offer the name somebody gave this tab, not the one it is displaying: a
+       tab called "2" shows its pane's title, and prefilling the box with that
+       would turn the agent's own headline into the tab's name on the first
+       tap of OK. */
+    const current = tabName(row);
+    const label = prompt("Rename tab", current);
+    resetSwipe();
+    if (label === null) return;
+    const trimmed = label.trim();
+    if (!trimmed || trimmed === current) return;
+    triggerHaptic();
+    try {
+      await sendRename(`/api/tabs/${encodeURIComponent(row.tab_id)}/rename`, trimmed);
+      for (const r of state.agents) {
+        if (r.tab_id === row.tab_id) r.tab_label = trimmed;
+      }
+      redrawNames();
+    } catch (err) {
+      alert("Could not rename tab: " + err.message);
+    }
+  }
+
+  function redrawNames() {
+    state.listSignature = null;
+    renderAgentBar();
+    renderAgentList();
+  }
+
+  async function sendRename(url, label) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      const error = data.error;
+      throw new Error((error && error.message) || error || "refused");
+    }
+    return data;
   }
 
   async function createWorkspace() {
@@ -2184,6 +2313,7 @@
       syncStatusBarRow();
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
+      state.customOrder = loadOrder();
       state.drafts = loadDrafts();
       state.bleat = readPref("bleat") !== "0";
       elToggleBleat.checked = state.bleat;
@@ -2314,7 +2444,7 @@
         if (prev.miss) changed = true;
       } else {
         // A first sighting is not a change: we have no idea when it happened,
-        // so the stamp orders the list but carries no time to show.
+        // so the stamp carries no time to show.
         next[id] = { seq, ts: now, seeded: !prev };
         changed = true;
       }
@@ -2353,7 +2483,9 @@
    *
    * The single exception is an agent stopped on a question. It is the only
    * state that goes nowhere at all without you, so it rises to the top of its
-   * project and carries its project to the top of the list.
+   * project and carries its project to the top of the list - until a finger
+   * says otherwise, because an order somebody made by hand is a promise that
+   * the project stays where it was put.
    * ------------------------------------------------------------------------ */
 
   /* When a row was created, as a number that only ever grows. Herdr numbers
@@ -2393,6 +2525,81 @@
     return [...groups.values()];
   }
 
+  /* Herdr numbers a tab before anybody names it, and "2" is not a name worth
+     spending a row on - the pane's own title says more. Only a label somebody
+     actually typed counts as a name here. */
+  const RE_TAB_NUMBERED = /^(?:tab )?\d+$/i;
+
+  function tabName(row) {
+    const label = (row.tab_label || "").trim();
+    return label && !RE_TAB_NUMBERED.test(label) ? label : "";
+  }
+
+  /* Which number the tab answers to. Herdr keeps two: `number`, its place in
+     the workspace's own bookkeeping, and the label it has not been renamed
+     from, which is the one the desktop's tab bar draws. The phone should agree
+     with the tab bar, so an unrenamed tab is called what the laptop calls it -
+     the third tab ever made in a workspace is "2" if one of the others is
+     gone. */
+  function tabNumber(row) {
+    const label = (row.tab_label || "").trim();
+    const digits = label.replace(/^tab /i, "");
+    if (digits && /^\d+$/.test(digits)) return digits;
+    return String(row.tab_number || "");
+  }
+
+  /* The order a finger gave the projects.
+
+     Held here so the list is right before the next poll rather than after it,
+     and pushed back to Herdr with workspace.move so the laptop follows the
+     phone instead of arguing with it. A project this order has never seen -
+     made since the last drag - falls back to when it was created, which is
+     the end of the list. */
+  const ORDER_KEY = "sheepit.order";
+
+  function loadOrder() {
+    try {
+      const raw = JSON.parse(readPref("order") || "[]");
+      return Array.isArray(raw) ? raw.filter((key) => typeof key === "string") : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function saveOrder() {
+    savePref(ORDER_KEY, JSON.stringify(state.customOrder));
+  }
+
+  // A project carried from one slot to another, as a list of keys.
+  function reorder(keys, from, to) {
+    const next = keys.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next;
+  }
+
+  /* Herdr inserts a workspace before whatever is at insert_index *counting the
+     one being moved*, so a project dropped below where it started lands one
+     slot further along than the index it ends up at. Off by one here is a
+     project that creeps a place every time it is moved. */
+  function insertIndexFor(from, to) {
+    return to > from ? to + 1 : to;
+  }
+
+  /* A hand-made order wins over both rules above it: a project put third stays
+     third even when one of its agents starts asking something. Inside a
+     project the question still rises - that costs nothing, since a project
+     stays where the finger left it either way. */
+  function sortGroups(groups) {
+    const rank = new Map(state.customOrder.map((key, i) => [key, i]));
+    if (rank.size) {
+      const at = (key) => (rank.has(key) ? rank.get(key) : Number.MAX_SAFE_INTEGER);
+      groups.sort((a, b) => at(a.key) - at(b.key) || a.born - b.born);
+      return;
+    }
+    groups.sort((a, b) => Number(b.wants) - Number(a.wants) || a.born - b.born);
+  }
+
   function orderAgents() {
     /* Never reshuffle a list somebody is looking at: an agent changing state
        would slide a row out from under the thumb about to tap it. Hold the
@@ -2416,7 +2623,7 @@
       group.wants = group.agents.some(wantsInput);
       group.born = Math.min(...group.agents.map(bornAt));
     }
-    groups.sort((a, b) => Number(b.wants) - Number(a.wants) || a.born - b.born);
+    sortGroups(groups);
 
     state.groups = groups;
     state.agents = groups.flatMap((g) => g.agents);
@@ -2436,7 +2643,11 @@
   function agoLabel(paneId) {
     const rec = state.activity[paneId];
     if (!rec || rec.seeded) return "";
-    const secs = Math.max(0, Math.round((Date.now() - rec.ts) / 1000));
+    return agoText(Date.now() - rec.ts);
+  }
+
+  function agoText(ms) {
+    const secs = Math.max(0, Math.round(ms / 1000));
     if (secs < 45) return "now";
     const mins = Math.round(secs / 60);
     if (mins < 60) return `${mins}m`;
@@ -2458,9 +2669,10 @@
   elBtnClosePicker.addEventListener("click", closePicker);
 
   elAgentList.addEventListener("click", (e) => {
-    const del = e.target.closest(".agent-row-delete");
-    if (del) {
-      closeWorkspace(del.dataset.workspaceId);
+    const action = e.target.closest("[data-action]");
+    if (action) {
+      if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
+      else if (action.dataset.action === "rename") renameRow(action.dataset.paneId);
       return;
     }
     const row = e.target.closest(".agent-row");
@@ -2470,13 +2682,43 @@
       resetSwipe();
       return;
     }
+    /* The finger that just carried this project somewhere is still on it: the
+       lift was the gesture, and opening the project was not part of it. The
+       flag is cleared by the click it swallows, or by the next touch if
+       preventing the drag's default swallowed the click as well. */
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
     if (row.dataset.paneId) selectAgent(row.dataset.paneId);
   });
 
-  /* Swipe a row left to reveal Close, iOS style. The reveal is the
-     confirmation step, so the second tap acts immediately. */
+  /* Two gestures share these rows, and which one it is only becomes clear
+     after the finger has been down a moment.
+
+     Sideways is a swipe, revealing what the row can do: Rename and Close.
+     Still is a lift: hold a row for a moment and its whole project comes up
+     off the list to be carried somewhere else. Either one rules the other
+     out, so the first few pixels of movement decide, and a project picked up
+     is a project no longer being swiped. */
   const SWIPE_WIDTH = 92;
+  const SWIPE_SLOP = 8;
+  const LIFT_MS = 420;
+  const LIFT_SLOP = 10;
+  // How close to an end of the list a carried project starts scrolling it, and
+  // how fast: a nine-project list is taller than a phone.
+  const DRAG_EDGE = 56;
+  const DRAG_SPEED = 9;
+
   let swipe = null;
+  let drag = null;
+  let liftTimer = null;
+  let suppressClick = false;
+
+  function cancelLift() {
+    if (liftTimer) clearTimeout(liftTimer);
+    liftTimer = null;
+  }
 
   function resetSwipe() {
     elAgentList.querySelectorAll(".agent-row.swiped").forEach((r) => {
@@ -2488,44 +2730,241 @@
   elAgentList.addEventListener("touchstart", (e) => {
     const row = e.target.closest(".agent-row");
     if (!row) return;
+    suppressClick = false;
     if (!row.classList.contains("swiped")) resetSwipe();
-    swipe = { row, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, axis: null };
+    const touch = e.touches[0];
+    const actions = row.parentElement.querySelector(".agent-row-actions");
+    swipe = {
+      row,
+      width: (actions && actions.offsetWidth) || SWIPE_WIDTH,
+      x: touch.clientX,
+      y: touch.clientY,
+      dx: 0,
+      axis: null,
+    };
     state.swiping = true; // hold the redraw until the finger is off the row
+    // The project is what gets carried, whichever of its rows the finger is
+    // on - and there is nothing to reorder in a list of one.
+    if (state.groups.length > 1) {
+      cancelLift();
+      liftTimer = setTimeout(() => startDrag(row, touch.clientY), LIFT_MS);
+    }
   }, { passive: true });
 
+  /* Not passive, because a project being carried has to hold the list still
+     underneath it - which is a preventDefault, which a passive listener is not
+     allowed to make. */
   elAgentList.addEventListener("touchmove", (e) => {
+    const touch = e.touches[0];
+    if (drag) {
+      e.preventDefault();
+      dragTo(touch.clientY);
+      return;
+    }
     if (!swipe) return;
-    const dx = e.touches[0].clientX - swipe.x;
-    const dy = e.touches[0].clientY - swipe.y;
+    const dx = touch.clientX - swipe.x;
+    const dy = touch.clientY - swipe.y;
+    if (Math.abs(dx) > LIFT_SLOP || Math.abs(dy) > LIFT_SLOP) cancelLift();
     if (swipe.axis === null) {
-      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dx) < SWIPE_SLOP && Math.abs(dy) < SWIPE_SLOP) return;
       swipe.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
     if (swipe.axis !== "x") return; // let the list scroll
-    const base = swipe.row.classList.contains("swiped") ? -SWIPE_WIDTH : 0;
-    swipe.dx = Math.max(-SWIPE_WIDTH, Math.min(0, base + dx));
+    const base = swipe.row.classList.contains("swiped") ? -swipe.width : 0;
+    swipe.dx = Math.max(-swipe.width, Math.min(0, base + dx));
     swipe.row.style.transition = "none";
     swipe.row.style.transform = `translateX(${swipe.dx}px)`;
-  }, { passive: true });
+  }, { passive: false });
 
   elAgentList.addEventListener("touchend", () => {
+    cancelLift();
+    if (drag) {
+      endDrag();
+      return;
+    }
     state.swiping = false;
     if (!swipe) return;
-    const { row, dx, axis } = swipe;
+    const { row, dx, axis, width } = swipe;
     swipe = null;
     if (axis !== "x") return;
     row.style.transition = "";
-    const open = dx < -SWIPE_WIDTH / 2;
+    const open = dx < -width / 2;
     row.classList.toggle("swiped", open);
-    row.style.transform = open ? `translateX(${-SWIPE_WIDTH}px)` : "";
+    row.style.transform = open ? `translateX(${-width}px)` : "";
     if (open) triggerHaptic();
   }, { passive: true });
 
-  // A call or a notification cancels the touch: do not hold the redraw for good.
+  // A call or a notification cancels the touch: do not hold the redraw for
+  // good, and put down whatever was being carried where it now is.
   elAgentList.addEventListener("touchcancel", () => {
+    cancelLift();
+    if (drag) {
+      endDrag();
+      return;
+    }
     state.swiping = false;
     swipe = null;
   }, { passive: true });
+
+  /* Carrying a project.
+
+     Every position is measured once, when the project comes up, and in the
+     list's own coordinates rather than the screen's - so the arithmetic still
+     holds when the list scrolls itself at the edges. Nothing is reordered
+     while the finger is down: the rows in between slide by the height of the
+     one being carried, which is a transform and costs nothing, and the list is
+     only rebuilt once it is put down. */
+  function startDrag(row, y) {
+    const group = row.closest(".agent-group");
+    if (!group) return;
+    swipe = null; // this finger is lifting, not swiping
+    resetSwipe();
+    suppressClick = true;
+
+    const groups = Array.from(elAgentList.querySelectorAll(".agent-group"));
+    const listTop = elAgentList.getBoundingClientRect().top;
+    const scroll = elAgentList.scrollTop;
+    const tops = groups.map((g) => g.getBoundingClientRect().top - listTop + scroll);
+    const heights = groups.map((g) => g.getBoundingClientRect().height);
+    const from = groups.indexOf(group);
+    if (from < 0) return;
+
+    drag = {
+      group,
+      groups,
+      tops,
+      heights,
+      from,
+      to: from,
+      listTop,
+      // The gap the CSS leaves between projects, read off the layout rather
+      // than written down twice.
+      gap: groups.length > 1 ? tops[1] - (tops[0] + heights[0]) : 0,
+      grab: y - listTop + scroll - tops[from],
+      y,
+    };
+    group.classList.add("dragging");
+    elAgentList.classList.add("dragging");
+    triggerHaptic("warning");
+    dragTo(y);
+    requestAnimationFrame(edgeScroll);
+  }
+
+  function dragTo(y) {
+    drag.y = y;
+    const top = y - drag.listTop + elAgentList.scrollTop - drag.grab;
+    drag.group.style.transform = `translateY(${top - drag.tops[drag.from]}px)`;
+
+    // Where it would land: the first slot whose middle the carried project has
+    // passed, in whichever direction it is going.
+    const center = top + drag.heights[drag.from] / 2;
+    let to = drag.from;
+    for (let i = 0; i < drag.groups.length; i++) {
+      if (i === drag.from) continue;
+      const middle = drag.tops[i] + drag.heights[i] / 2;
+      if (i < drag.from && center < middle) to = Math.min(to, i);
+      else if (i > drag.from && center > middle) to = Math.max(to, i);
+    }
+    if (to === drag.to) return;
+    drag.to = to;
+    shiftGroups();
+    triggerHaptic();
+  }
+
+  function shiftGroups() {
+    const step = drag.heights[drag.from] + drag.gap;
+    drag.groups.forEach((g, i) => {
+      if (i === drag.from) return;
+      let shift = 0;
+      if (drag.to > drag.from && i > drag.from && i <= drag.to) shift = -step;
+      else if (drag.to < drag.from && i >= drag.to && i < drag.from) shift = step;
+      g.style.transform = shift ? `translateY(${shift}px)` : "";
+    });
+  }
+
+  function edgeScroll() {
+    if (!drag) return;
+    const box = elAgentList.getBoundingClientRect();
+    let by = 0;
+    if (drag.y < box.top + DRAG_EDGE) by = -DRAG_SPEED;
+    else if (drag.y > box.bottom - DRAG_EDGE) by = DRAG_SPEED;
+    if (by) {
+      const before = elAgentList.scrollTop;
+      elAgentList.scrollTop += by;
+      if (elAgentList.scrollTop !== before) dragTo(drag.y);
+    }
+    requestAnimationFrame(edgeScroll);
+  }
+
+  function endDrag() {
+    const { groups, group, from, to } = drag;
+    for (const g of groups) g.style.transform = "";
+    group.classList.remove("dragging");
+    elAgentList.classList.remove("dragging");
+    drag = null;
+    state.swiping = false;
+    if (to === from) return;
+
+    const before = groups.map((g) => g.dataset.project);
+    const after = reorder(before, from, to);
+    state.customOrder = after;
+    saveOrder();
+    triggerHaptic();
+    /* The held order exists to stop the list shuffling itself while somebody
+       reads it; this is somebody rearranging it on purpose, so let go of it
+       and sort afresh. */
+    state.order = [];
+    orderAgents();
+    renderAgentList();
+    moveProject(before[from], before, after);
+  }
+
+  /* Tell the laptop, when there is something unambiguous to tell it. A project
+     is a repository and Herdr reorders workspaces, so the two only line up
+     while the project holds a single workspace - which is every project that
+     has not been cut into worktrees. The rest keep their order on this phone
+     alone, because moving one of several workspaces would leave Herdr's strip
+     saying something nobody asked for. */
+  function moveProject(key, before, after) {
+    const ids = [
+      ...new Set(
+        state.agents.filter((a) => projectKey(a) === key).map((a) => a.workspace_id)
+      ),
+    ];
+    if (ids.length !== 1) return;
+    const from = workspaceOrder(before).indexOf(ids[0]);
+    const to = workspaceOrder(after).indexOf(ids[0]);
+    if (from < 0 || to < 0 || from === to) return;
+    moveWorkspace(ids[0], insertIndexFor(from, to));
+  }
+
+  // The workspaces behind a list of projects, in that list's order: what
+  // Herdr's own strip would look like if it agreed with the phone.
+  function workspaceOrder(keys) {
+    const ids = [];
+    for (const key of keys) {
+      for (const agent of state.agents) {
+        if (projectKey(agent) !== key) continue;
+        if (!ids.includes(agent.workspace_id)) ids.push(agent.workspace_id);
+      }
+    }
+    return ids;
+  }
+
+  /* Failing here is survivable: the phone keeps the order the finger gave it,
+     and only the laptop is left disagreeing. */
+  async function moveWorkspace(workspaceId, insertIndex) {
+    try {
+      const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ insert_index: insertIndex }),
+      });
+      if (!res.ok) throw new Error("move refused");
+    } catch (err) {
+      console.warn("moveWorkspace:", err);
+    }
+  }
 
   elBtnNewWorkspace.addEventListener("click", createWorkspace);
 
