@@ -102,17 +102,19 @@ def complete_path(base: str, query: str, limit: int = 20) -> list:
 
 
 def agent_rows() -> list:
-    """Every row the phone shows, in one call. Driven from workspaces, not
-    agents: a freshly created workspace has no agent yet and would otherwise be
-    invisible. Workspace labels are also what the desktop UI shows ("sheepit",
-    "ib-orbit") - agent.list only carries ids."""
+    """Every row the phone shows, in one call. Driven from workspaces and their
+    tabs, not from agents: a freshly created workspace has no agent yet, and a
+    tab the agent is not in would otherwise be invisible from the phone even
+    though the laptop shows it. Workspace labels are also what the desktop UI
+    shows ("sheepit", "ib-orbit") - agent.list only carries ids."""
     res = call_herdr_rpc("agent.list")
     if "error" in res:
         raise RuntimeError(res["error"])
     agents_raw = res.get("result", {}).get("agents", [])
     ws_list = call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", [])
     panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
-    return build_agent_rows(ws_list, panes, agents_raw)
+    tabs = call_herdr_rpc("tab.list").get("result", {}).get("tabs", [])
+    return build_agent_rows(ws_list, tabs, panes, agents_raw)
 
 
 def project_of(ws: dict, pane: dict) -> tuple:
@@ -137,59 +139,126 @@ def project_of(ws: dict, pane: dict) -> tuple:
     return "", ws.get("label") or "elsewhere"
 
 
-def build_agent_rows(ws_list: list, panes: list, agents_raw: list) -> list:
-    """One row per pane running an agent, grouped under its workspace.
+def tabs_from_panes(ws_id: str, ws_panes: list) -> list:
+    """Stand-in tabs for a Herdr that did not answer tab.list, built from the
+    tab ids the panes carry. They keep the order pane.list gave them rather
+    than being sorted by id, because "t10" sorts before "t3" and a fallback
+    that reorders the tabs is worse than one that only loses their labels."""
+    seen = []
+    for pane in ws_panes:
+        tab_id = pane.get("tab_id")
+        if tab_id and tab_id not in seen:
+            seen.append(tab_id)
+    return [
+        {"tab_id": tab_id, "workspace_id": ws_id, "number": i + 1, "label": ""}
+        for i, tab_id in enumerate(seen)
+    ]
 
-    A workspace can hold several agents at once; listing only the first hides
-    the rest entirely. When a workspace has no agent running, it still gets a
-    single row for its active tab's pane so it stays reachable - that is what
-    makes a freshly created workspace visible.
+
+def build_agent_rows(ws_list: list, tabs: list, panes: list, agents_raw: list) -> list:
+    """One row per tab, grouped under its workspace and ordered the way the
+    desktop orders them - `number` is the workspace's place in Herdr's own
+    strip, which is where a workspace lands when it is created and where it
+    moves when anybody reorders it.
+
+    A tab is the unit the phone picks, but a tab can be split across several
+    panes and each of those can be running its own agent. Listing only the
+    first would hide the rest entirely, so a split tab contributes one row per
+    agent pane and says so; a tab with no agent at all still gets a single row
+    for its own pane, which is what keeps an empty workspace reachable.
     """
     by_pane = {a.get("pane_id"): a for a in agents_raw}
+    tabs_by_ws = {}
+    for tab in tabs:
+        tabs_by_ws.setdefault(tab.get("workspace_id"), []).append(tab)
     rows = []
 
-    for ws in ws_list:
+    for ws in sorted(ws_list, key=lambda w: (w.get("number") or 0, w.get("workspace_id") or "")):
         ws_id = ws.get("workspace_id")
         ws_panes = [p for p in panes if p.get("workspace_id") == ws_id]
         if not ws_panes:
             continue
+        ws_tabs = tabs_by_ws.get(ws_id) or tabs_from_panes(ws_id, ws_panes)
+        ws_tabs = sorted(ws_tabs, key=lambda t: (t.get("number") or 0, t.get("tab_id") or ""))
 
-        active_tab = ws.get("active_tab_id")
-        chosen_panes = [p for p in ws_panes if p.get("pane_id") in by_pane]
-        if not chosen_panes:
-            chosen_panes = [
-                next((p for p in ws_panes if p.get("tab_id") == active_tab), ws_panes[0])
-            ]
+        for tab in ws_tabs:
+            tab_id = tab.get("tab_id")
+            tab_panes = [p for p in ws_panes if p.get("tab_id") == tab_id]
+            if not tab_panes:
+                continue
+            # The agents first; failing that, whichever pane the tab is on.
+            chosen_panes = [p for p in tab_panes if p.get("pane_id") in by_pane]
+            if not chosen_panes:
+                chosen_panes = [next((p for p in tab_panes if p.get("focused")), tab_panes[0])]
 
-        for chosen in chosen_panes:
-            pane_id = chosen.get("pane_id") or ""
-            a = by_pane.get(pane_id, {})
-            label = ws.get("label") or ""
-            # Disambiguate only when this workspace contributes several rows.
-            if label and len(chosen_panes) > 1:
-                label = f"{label} \u00b7{pane_id.rsplit(':p', 1)[-1]}"
-            project, project_name = project_of(ws, chosen)
-            rows.append({
-                "pane_id": pane_id,
-                "name": label or a.get("name") or pane_id,
-                "workspace_label": ws.get("label") or "",
-                "workspace_number": ws.get("number"),
-                # What the phone groups the flock by, and the heading it draws.
-                "project": project,
-                "project_name": project_name,
-                "agent": a.get("agent"),
-                "status": a.get("agent_status", "unknown"),
-                "title": a.get("terminal_title_stripped") or a.get("terminal_title") or "",
-                "cwd": a.get("cwd") or chosen.get("cwd", ""),
-                "workspace_id": ws_id,
-                "tab_id": chosen.get("tab_id"),
-                "focused": ws.get("focused", False),
-                "has_agent": pane_id in by_pane,
-                # Monotonic; the client watches it to date the last thing a
-                # project actually did.
-                "state_change_seq": a.get("state_change_seq", 0),
-            })
+            for chosen in chosen_panes:
+                pane_id = chosen.get("pane_id") or ""
+                a = by_pane.get(pane_id, {})
+                project, project_name = project_of(ws, chosen)
+                rows.append({
+                    "pane_id": pane_id,
+                    "name": ws.get("label") or a.get("name") or pane_id,
+                    "workspace_label": ws.get("label") or "",
+                    "workspace_number": ws.get("number"),
+                    # What the phone groups the flock by, and the heading it
+                    # draws: the repository, so a workspace cut as a worktree
+                    # sits under the project it came from.
+                    "project": project,
+                    "project_name": project_name,
+                    "workspace_id": ws_id,
+                    "tab_id": tab_id,
+                    "tab_label": tab.get("label") or "",
+                    "tab_number": tab.get("number"),
+                    # A tab drawing more than one row is a split, and the rows
+                    # need telling apart by something the tab cannot give them.
+                    "split": len(chosen_panes) > 1,
+                    "agent": a.get("agent"),
+                    "status": a.get("agent_status", "unknown"),
+                    "title": a.get("terminal_title_stripped") or a.get("terminal_title") or "",
+                    "cwd": a.get("cwd") or chosen.get("cwd", ""),
+                    "focused": ws.get("focused", False),
+                    "has_agent": pane_id in by_pane,
+                    # Monotonic; the client watches it to tell when a project
+                    # last did something.
+                    "state_change_seq": a.get("state_change_seq", 0),
+                })
+    name_agent_rows(rows)
     return rows
+
+
+# A tab label Herdr has only numbered is not a name, and neither is the number
+# on its own: "sheepit \u00b7 tab 2" says where to look, "sheepit \u00b7 2" reads
+# like a count.
+def tab_name(row: dict) -> str:
+    label = (row.get("tab_label") or "").strip()
+    plain = label[4:].strip() if label.lower().startswith("tab ") else label
+    if label and not plain.isdigit():
+        return label
+    return f"tab {plain or row.get('tab_number') or '?'}"
+
+
+def name_agent_rows(rows: list) -> None:
+    """Give every row a name that means something on its own.
+
+    The list on the phone draws a project once and its tabs underneath, so the
+    row's `name` is the project's. Anything reading the rows flat - a
+    notification naming what just finished, most of all - needs to tell two
+    agents in the same project apart, and "sheepit, sheepit" tells nobody
+    anything. So a project running more than one agent says which tab, and a
+    split tab says which pane.
+    """
+    busy = {}
+    for row in rows:
+        if row.get("has_agent"):
+            busy[row["workspace_id"]] = busy.get(row["workspace_id"], 0) + 1
+
+    for row in rows:
+        name = row["name"]
+        if row.get("has_agent") and busy.get(row["workspace_id"], 0) > 1:
+            name = f"{name} \u00b7 {tab_name(row)}"
+            if row.get("split"):
+                name = f"{name} \u00b7 {row['pane_id'].rsplit(':', 1)[-1]}"
+        row["display_name"] = name
 
 
 # The watcher sees the working -> stopped transition; the push that follows
@@ -203,7 +272,8 @@ def record_finished(rows: list) -> None:
     with _LAST_FINISHED_LOCK:
         _LAST_FINISHED["at"] = time.time()
         _LAST_FINISHED["agents"] = [
-            {"pane_id": r.get("pane_id"), "name": r.get("name"),
+            {"pane_id": r.get("pane_id"),
+             "name": r.get("display_name") or r.get("name"),
              "title": r.get("title", ""), "status": r.get("status")}
             for r in rows
         ]
@@ -242,6 +312,19 @@ def clamp_int(value, low: int, high: int, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return min(max(number, low), high)
+
+
+# A label is typed on a phone and lands in the laptop's workspace strip, so it
+# is trimmed and capped rather than passed on whole: a newline or a thousand
+# characters would be the desktop's problem, not this one's.
+MAX_LABEL = 80
+
+
+def clean_label(value) -> str:
+    """What the phone typed, fit to be a Herdr label - or "" if it is not one."""
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:MAX_LABEL]
 
 
 def last_finished() -> dict:
@@ -899,6 +982,63 @@ class HerdrHandler(BaseHTTPRequestHandler):
                     self.send_json(res, 400)
                     return
                 self.send_json({"ok": True})
+                return
+
+        # API: Rename a workspace, on the laptop as well as here
+        # /api/workspaces/{workspace_id}/rename
+        if path.startswith("/api/workspaces/") and path.endswith("/rename"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                label = clean_label(body.get("label"))
+                if not label:
+                    self.send_json({"ok": False, "error": "Empty label"}, 400)
+                    return
+                res = call_herdr_rpc("workspace.rename", {
+                    "workspace_id": unquote(parts[3]),
+                    "label": label,
+                })
+                if "error" in res:
+                    self.send_json(res, 400)
+                    return
+                self.send_json({"ok": True, "label": label})
+                return
+
+        # API: Move a workspace to a new place in Herdr's own order
+        # /api/workspaces/{workspace_id}/move
+        if path.startswith("/api/workspaces/") and path.endswith("/move"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                index = body.get("insert_index")
+                if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+                    self.send_json({"ok": False, "error": "insert_index must be a non-negative integer"}, 400)
+                    return
+                res = call_herdr_rpc("workspace.move", {
+                    "workspace_id": unquote(parts[3]),
+                    "insert_index": index,
+                })
+                if "error" in res:
+                    self.send_json(res, 400)
+                    return
+                self.send_json({"ok": True})
+                return
+
+        # API: Rename a tab
+        # /api/tabs/{tab_id}/rename
+        if path.startswith("/api/tabs/") and path.endswith("/rename"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                label = clean_label(body.get("label"))
+                if not label:
+                    self.send_json({"ok": False, "error": "Empty label"}, 400)
+                    return
+                res = call_herdr_rpc("tab.rename", {
+                    "tab_id": unquote(parts[3]),
+                    "label": label,
+                })
+                if "error" in res:
+                    self.send_json(res, 400)
+                    return
+                self.send_json({"ok": True, "label": label})
                 return
 
         # Prompts do not have a direct route any more: everything the phone
