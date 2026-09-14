@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
 
 import bincode  # noqa: E402
 import gitdiff  # noqa: E402
+import server  # noqa: E402
 import terminal  # noqa: E402
 import wsproto  # noqa: E402
 
@@ -385,6 +386,96 @@ with tempfile.TemporaryDirectory() as tmp:
     # Somewhere that is not a repository is an answer, not an error.
     check("no repository", gitdiff.changed_files(tmp)["repo"], False)
     check("nowhere at all", gitdiff.changed_files("/nonexistent/path")["repo"], False)
+
+# ---------------------------------------------------------------------------
+# What the phone groups the flock by: the repository a workspace belongs to,
+# so the scheduler's worktrees land under the project they were cut from
+# rather than in a project each.
+
+def workspace(ws_id, number, label, repo_root=None, checkout=None):
+    ws = {"workspace_id": ws_id, "number": number, "label": label,
+          "active_tab_id": f"{ws_id}:t1"}
+    if repo_root:
+        ws["worktree"] = {
+            "repo_root": repo_root,
+            "repo_name": repo_root.rsplit("/", 1)[-1],
+            "checkout_path": checkout or repo_root,
+            "is_linked_worktree": bool(checkout) and checkout != repo_root,
+        }
+    return ws
+
+
+def pane(pane_id, ws_id, cwd):
+    return {"pane_id": pane_id, "workspace_id": ws_id,
+            "tab_id": f"{ws_id}:t1", "cwd": cwd}
+
+
+ws_list = [
+    workspace("wA", 1, "api", "/p/api"),
+    workspace("wS", 2, "sheep #4", "/p/api", "/root/.herdr/worktrees/api/sheep-task-4"),
+    workspace("wH", 3, "api"),  # opened by hand: Herdr knows of no worktree
+    workspace("wN", 4, "notes"),
+]
+panes = [
+    pane("wA:p1", "wA", "/p/api"),
+    pane("wS:p1", "wS", "/root/.herdr/worktrees/api/sheep-task-4"),
+    pane("wH:p1", "wH", "/p/api"),
+    pane("wN:p1", "wN", ""),
+]
+agents = [{"pane_id": p["pane_id"], "agent_status": "idle"} for p in panes]
+rows = {r["pane_id"]: r for r in server.build_agent_rows(ws_list, panes, agents)}
+
+check("a checkout is its own repository", rows["wA:p1"]["project"], "/p/api")
+check("a worktree belongs to the repository it came from",
+      rows["wS:p1"]["project"], "/p/api")
+check("and is named after it", rows["wS:p1"]["project_name"], "api")
+check("a hand-opened workspace falls back to its directory",
+      rows["wH:p1"]["project"], "/p/api")
+check("a pane with nowhere to be still has a heading",
+      rows["wN:p1"]["project_name"], "notes")
+
+# ---------------------------------------------------------------------------
+# Who gets a notification. The phone buzzing for things that are not waiting on
+# anybody is worse than it sounds: it teaches you to ignore the ones that are.
+
+def sweeps(*states):
+    """Run a watcher over successive snapshots of one pane, and report the
+    sweeps it would have pushed for."""
+    watcher = server.StatusWatcher()
+    watcher.observe({"p1": states[0]}, tell=False)
+    return [bool(watcher.observe({"p1": s})) for s in states[1:]]
+
+check("a finished turn is worth saying",
+      sweeps("working", "working", "done"), [False, True])
+check("a question is worth saying",
+      sweeps("working", "blocked"), [True])
+check("the prompt box is not",
+      sweeps("working", "idle"), [False])
+check("and neither is losing sight of the agent",
+      sweeps("working", "unknown"), [False])
+check("still done is not done again",
+      sweeps("working", "done", "done", "done"), [True, False, False])
+check("idling after a finished turn says nothing further",
+      sweeps("working", "done", "idle", "done"), [True, False, False])
+check("the next piece of work earns the next notification",
+      sweeps("working", "done", "working", "done"), [True, False, True])
+check("a question answered on the desktop, then another",
+      sweeps("working", "blocked", "working", "blocked"), [True, False, True])
+check("an agent that was already waiting when we started up is not news",
+      sweeps("done", "done"), [False])
+# Herdr can report the prompt box for a sweep on its way to marking the turn
+# finished, so the work is remembered across an idle rather than dropped there:
+# a missed notification is the one failure with no way to notice it.
+check("a turn that idles on its way to finishing still counts",
+      sweeps("working", "idle", "done"), [False, True])
+check("but being interrupted into the prompt box never does",
+      sweeps("working", "idle", "idle"), [False, False])
+
+# A pane that closes takes its history with it.
+watcher = server.StatusWatcher()
+watcher.observe({"p1": "working"}, tell=False)
+watcher.observe({})
+check("a closed pane is forgotten", watcher.busy_since_told, set())
 
 # ---------------------------------------------------------------------------
 

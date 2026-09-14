@@ -21,7 +21,7 @@ dependencies: the phone reaches your own machine over your own
 | | | |
 |---|---|---|
 | <img src="docs/media/agent.png" alt="An agent's transcript on the phone"> | <img src="docs/media/projects.png" alt="The project list, one sheep per project"> | <img src="docs/media/menubar.png" alt="The macOS menu bar app"> |
-| Read an agent and answer it | Your herd, most recent first | One switch on the Mac |
+| Read an agent and answer it | Your herd, by project | One switch on the Mac |
 
 ## Why
 
@@ -37,10 +37,18 @@ project telling you at a glance who is working and who is waiting.
   Claude Code and Codex panes are both read, whichever glyphs they draw with.
 - **Your herd at a glance.** One sheep per project, coloured *and* posed by
   what its agent is doing: grazing while it works, head up when idle, ear
-  pricked when blocked, asleep when done. Sorted by whatever changed last.
-- **Notifications when an agent finishes**, off your network with the phone
-  locked, plus a count on the home screen icon.
-- **A bleat.** A sheep answers when an agent stops, if the app is open.
+  pricked when blocked, asleep when done. Every sheep also wears its own ear
+  tag and markings, hashed from its pane, so two agents on one project are not
+  the same animal twice. Grouped under the repository they work in — worktrees
+  included — in the order they were started, with whoever is asking you a
+  question on top.
+- **What is left to spend**, above the flock: the same usage windows the queue
+  runs on, so you can see the wall coming before you start three more agents.
+- **Notifications when an agent actually wants you** — a turn that finished, a
+  question on screen — off your network with the phone locked, plus a count on
+  the home screen icon.
+- **A bleat.** A sheep answers when an agent stops and needs you, if the app is
+  open.
 - **Native dictation.** Talk to your agent using the iOS keyboard's mic.
 - **Drafts that stay put.** A half-written prompt belongs to the project it
   was typed for: switch away to check on another agent, come back, and it is
@@ -131,14 +139,17 @@ The one that needs setting up, because iOS insists.
 1. **Add the app to your home screen first.** Web Push does not work in a
    Safari tab — only in an installed web app (iOS 16.4+). Share → *Add to Home
    Screen*, then open it from there rather than from Safari.
-2. **gear → Notify when an agent finishes**, and accept the iOS prompt.
+2. **gear → Notify when an agent needs you**, and accept the iOS prompt.
 
-That is it. Alerts name the agent that just finished and count how many are
-now waiting — *"muskelmuskel finished / 3 agents waiting for you"* — and arrive
-through Apple's push service rather than your tailnet, so they reach you on
-cellular with the phone locked. The gateway has
-to be awake to send them: on a laptop that sleeps, use the
-[menu bar app](menubar/README.md) or run `caffeinate -s`.
+That is it. An alert names the agent that just stopped and what it was doing —
+*"muskelmuskel finished / Rewrite the importer"* — and arrives through Apple's
+push service rather than your tailnet, so it reaches you on cellular with the
+phone locked. The gateway has to be awake to send it: on a laptop that sleeps,
+use the [menu bar app](menubar/README.md) or run `caffeinate -s`.
+
+Only two things earn one: a turn that finished with nobody having looked at it
+yet, and an agent stopped on a question. A pane going quiet at its prompt —
+a `/clear`, an interrupt, a pane you opened and never used — does not.
 
 The same permission drives the **badge** on the home screen icon — the number
 of agents waiting on you, clearing itself as you answer them. There is nothing
@@ -151,8 +162,9 @@ it under **Settings → Notifications**, or remove and re-add the app.
 
 ### The bleat
 
-**gear → Bleat when an agent finishes.** On by default; toggling it back on
-plays it so you hear what you enabled.
+**gear → Bleat when an agent needs you.** On by default; toggling it back on
+plays it so you hear what you enabled. It follows the same rule as the
+notification: a finished turn or a question, nothing else.
 
 It only sounds while the app is open and in front of you — a notification
 cannot carry a custom sound on iOS, so this is not a replacement for the one
@@ -185,8 +197,15 @@ would press on the laptop.
 Tap the project name at the top for the full list. **New** starts a workspace;
 swiping a row left reveals **Close**, which asks first — closing a workspace
 stops every agent in it, and a stray swipe on a phone is cheap to make and
-expensive to undo. The list is ordered by whatever changed most recently, and
-holds still while you are looking at it.
+expensive to undo.
+
+The list is one heading per project — the repository Herdr says the workspace
+belongs to, so the queue's `sheep/` worktrees sit under the project they were
+cut from rather than in a project each. Under a heading, sheep stay in the
+order they were started; the one exception is an agent stopped on a question,
+which rises to the top of its project and takes its project to the top of the
+list. Nothing else moves, and nothing moves at all while you are looking at it.
+Above the list is what is left of the usage window.
 
 ### Scrollback, the plain view and the status bar
 
@@ -211,7 +230,7 @@ plain view already shows it, and greys the switch out while it is on.
 | `web/` | The phone app — plain HTML, CSS and JavaScript, no build step. `web/vendor/` holds xterm.js, the one third-party file it loads. |
 | `menubar/` | `SheepIt.app`, the macOS menu bar switch. One `clang` invocation, no Xcode project. |
 | `deploy/` | systemd and launchd units for running the gateway unattended. |
-| `tools/` | The synthesised bleat, and the tests: `node tools/test-transcript.js` (the pane parser, both agents), `node tools/test-diff.js` (the diff rendering), `node tools/test-drafts.js` (the per-project drafts), `python3 tools/test-gateway.py` (the Herdr codec, the WebSocket framing, git against a real repository). |
+| `tools/` | The synthesised bleat, and the tests: `node tools/test-transcript.js` (the pane parser, both agents), `node tools/test-diff.js` (the diff rendering), `node tools/test-drafts.js` (the per-project drafts), `node tools/test-flock.js` (the overview's grouping and order), `python3 tools/test-gateway.py` (the Herdr codec, the WebSocket framing, git against a real repository, who earns a notification). |
 | `LICENSES/` | The licences of the code this one borrowed from. |
 | `docs/` | Everything below. |
 

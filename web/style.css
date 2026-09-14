@@ -219,6 +219,52 @@ html, body {
   padding: 8px 12px max(12px, var(--safe-bottom)) 12px;
 }
 
+/* One project, its sheep beneath it. The heading sticks to the top of the
+   list while you scroll past a project with a lot of them, so the flock you
+   are looking at always says whose it is. */
+.agent-group { margin-bottom: 14px; }
+
+.agent-group-head {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 2px 6px;
+  padding: 6px 2px;
+  background: var(--bg-base);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.agent-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* The only thing in a heading worth colouring: somebody is waiting on you. */
+.agent-group-waiting {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--status-blocked);
+}
+
 /* Row sits in a clipping wrapper so the Close action can hide behind it. */
 .agent-row-wrap {
   position: relative;
@@ -277,12 +323,17 @@ html, body {
   gap: 2px;
 }
 
+/* The row's headline is what the agent is doing, which is a sentence rather
+   than a word - so it gets two lines before the ellipsis rather than one. */
 .agent-row-name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
-  white-space: nowrap;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .agent-row-title {
@@ -323,6 +374,14 @@ html, body {
 .sheep-ear { stroke-width: 1; }
 .sheep-eye { fill: var(--bg-card); }
 
+/* The ear tag: this sheep's own colour, hashed from its pane, so two agents
+   on the same project are not the same animal twice. Outlined like the ear it
+   hangs from, or it reads as a stray pixel rather than a tag. */
+.sheep-tag {
+  stroke: var(--bg-card);
+  stroke-width: 1.1;
+}
+
 /* A shut eye for a sleeping sheep: the lid takes the card's colour so it reads
    as a closed lid rather than a stray mark on the face. */
 .sheep-lid {
@@ -333,6 +392,7 @@ html, body {
 }
 
 .agent-row.active .sheep-face,
+.agent-row.active .sheep-tag,
 .agent-row.active .sheep-ear { stroke: var(--bg-hover); }
 
 .agent-row.active .sheep-eye { fill: var(--bg-hover); }
@@ -1049,13 +1109,18 @@ html, body {
 }
 
 .quota-track {
+  display: block;
   height: 6px;
   border-radius: 3px;
   background: var(--bg-hover);
   overflow: hidden;
 }
 
+/* Both of these are spans, and a span is inline until told otherwise: the
+   fill carried a width and a height that a browser had no reason to apply,
+   so every bar read as empty however much of the window was gone. */
 .quota-fill {
+  display: block;
   height: 100%;
   border-radius: 3px;
   background: var(--status-idle);

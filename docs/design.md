@@ -25,18 +25,56 @@ The sheep is inline SVG so the fleece can inherit each row's colour, which is
 also why the face and ear are pale with a card-coloured outline: a dark muzzle
 disappears into the dark card and leaves a headless blob.
 
-## Sorting by recency
+### Telling two of them apart
 
-Herdr exposes no timestamps, but every pane carries a `state_change_seq` that
-only grows. The gateway passes it through and the phone stamps a wall-clock
-time whenever it moves — or whenever you open a project. Both live in
-`localStorage`, so the order is *this phone's* rather than the server's
-workspace numbering, and it survives a reload.
+Status is a colour and a posture, so two agents working on the same project are
+the same animal twice — and the overview groups them into exactly that
+situation. Shepherds have the problem too, and solved it long before software
+did: every sheep wears a numbered ear tag, and you learn the markings on the
+ones you see daily.
 
-A first sighting is not a change. Rows seen only sitting still sort by
-sequence but show no age, rather than claiming everything happened the moment
-the app first looked. The order is also held steady while the list is open, so
-a state change cannot slide a row out from under the thumb about to tap it.
+So each pane gets its own, hashed out of its pane id: a tag colour from twelve,
+a patch of darker fleece from eight layouts, and one of three face shades. That
+is 288 sheep, and a herd of a dozen panes comes out all-distinct — the test
+asserts it over the pane ids Herdr actually hands out, which differ in one
+character (`wE:p1`, `wJ:p1`) and are exactly where a weaker hash than FNV-1a
+gives the whole flock the same tag.
+
+The markings live in the space status does not use. The fleece colour and the
+pose stay status; identity is the small stuff — a pip on the ear, a dark patch,
+the shade of a muzzle — and neither can be read off the other. Because the seed
+is the pane id, a sheep is the same animal across a reload, a gateway restart,
+and the phone's whole life, and a new pane is a new sheep.
+
+## The order of the flock
+
+The overview used to follow whatever moved last. With five agents on one
+project, each finishing a tool call, that list rearranged itself every few
+seconds — and the row you were reaching for was somewhere else by the time
+your thumb arrived.
+
+So the list is grouped and it is still. The group is the project: the gateway
+reads `worktree.repo_root` off the workspace, which is what puts the
+scheduler's `sheep/` worktrees under the repository they were cut from instead
+of in a project each; a workspace opened by hand has no worktree record, so its
+directory stands in. Inside a project, rows sort by when they were created —
+Herdr numbers workspaces as they are opened and never renumbers them, and a
+pane's own index orders the several agents one workspace can hold.
+
+One thing overrides that: an agent stopped on a question. It is the only state
+that goes nowhere without you, so it rises to the top of its project and
+carries its project to the top of the list. Two waiting projects do not fight —
+creation order breaks the tie.
+
+None of it moves while the list is open. A state change that reorders rows
+under a thumb about to tap one is the failure this whole section is about, so
+the last drawn order is held until the picker closes.
+
+Herdr still exposes no timestamps, and `state_change_seq` is still watched: the
+phone stamps a wall-clock time whenever it moves — or whenever you open a
+project — and that is what the "3m" on a row means. A first sighting is not a
+change, so a row seen only sitting still shows no age rather than claiming it
+happened the moment the app first looked.
 
 ## Reading the pane
 
@@ -92,10 +130,12 @@ line, in order, byte for byte.
 
 ## The bleat
 
-`web/bleat.wav` is a synthesised "määäh", played once when an agent stops
-working while the app is open. Several agents finishing in one sweep still get
-one bleat; eight sheep at once is a farmyard, not a notification. Turn it off
-under **gear → Bleat when an agent finishes**.
+`web/bleat.wav` is a synthesised "määäh", played once when an agent stops and
+wants you — a finished turn or a question — while the app is open. Several
+agents finishing in one sweep still get one bleat; eight sheep at once is a
+farmyard, not a notification. It reads the same two statuses the push does, so
+a pane merely returning to its prompt makes no sound. Turn it off under
+**gear → Bleat when an agent needs you**.
 
 There is no sample to license or lose — the sound is generated, and the
 generator is committed beside it:
@@ -143,7 +183,10 @@ anything:
   installed home-screen app (iOS 16.4+) and is the one part of the icon that
   still updates, so it carries the number of agents waiting on you — set while
   the app is open, and again from the push handler while it is closed. It needs
-  granted notification permission.
+  granted notification permission. Waiting means the same two states a
+  notification fires for: a finished turn nobody has looked at, and a question
+  on screen. Counting `idle` too kept a number on the icon all day, for panes
+  that wanted nothing.
 
 The icon is drawn full bleed with no rounded corners of its own, because iOS
 applies its own mask on top.

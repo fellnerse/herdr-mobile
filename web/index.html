@@ -171,6 +171,9 @@
         </svg>
       </button>
     </header>
+    <!-- The same usage windows the queue shows: what is left to spend on the
+         herd, above the herd itself -->
+    <div id="picker-quota" class="quota-strip"></div>
     <div id="agent-list" class="agent-list"></div>
   </section>
 
@@ -317,15 +320,15 @@
 
     <div class="sheet-row">
       <label for="toggle-bleat">
-        Bleat when an agent finishes
-        <span class="sheet-hint">only while the app is open</span>
+        Bleat when an agent needs you
+        <span class="sheet-hint">a finished turn or a question, while the app is open</span>
       </label>
       <input type="checkbox" id="toggle-bleat">
     </div>
 
     <div class="sheet-row">
       <label for="toggle-push">
-        Notify when an agent finishes
+        Notify when an agent needs you
         <span id="push-hint" class="sheet-hint"></span>
       </label>
       <input type="checkbox" id="toggle-push">
