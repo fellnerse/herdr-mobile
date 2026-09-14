@@ -109,7 +109,7 @@ class Dispatcher:
         whatever the subscription looks like by the time it gets there, which is
         the entire thing this queue exists to decide.
         """
-        ready = []
+        ready = {}
         for pane_id in db.waiting_panes(conn):
             self.herdr.report_queued(pane_id, db.count_waiting(conn, pane_id))
             # A stalled pane is not asked about at all: it is waiting out a
@@ -126,27 +126,45 @@ class Dispatcher:
                 continue
             self.reported.discard(pane_id)
             if status in READY:
-                ready.append(pane_id)
+                # Grouped by which agent is in the pane: a Claude window says
+                # nothing about what a Codex pane may spend, and holding one on
+                # the other's wall is how a working agent ends up waiting for
+                # a limit that was never its own.
+                ready.setdefault(self.herdr.agent_kind(pane_id) or "", []).append(pane_id)
 
         if not ready:
             return
 
-        # Only now, once something could actually go out: every check is an
-        # HTTPS round trip, memoised but not free.
+        # Only now, once something could actually go out: every reading is an
+        # HTTPS round trip or a walk of a session directory, memoised but not
+        # free.
+        for agent, panes in ready.items():
+            if self.held_on_quota(agent, panes, cfg):
+                continue
+            for pane_id in panes:
+                if (prompt := db.next_for_pane(conn, pane_id)) is not None:
+                    self.deliver(conn, prompt)
+
+    def held_on_quota(self, agent: str, panes: list, cfg: Config) -> bool:
+        """Whether this agent's panes have to wait for a window to reopen.
+
+        Only a reading that actually says "full" holds anything. Not knowing is
+        not the same as knowing there is nothing left, and treating it as such
+        is how every prompt on a machine ends up parked for good because one
+        credential moved. An agent nobody can price delivers, and the wall
+        detection is what catches it if that was optimistic.
+        """
         try:
-            current = quota.current()
+            current = quota.current(agent)
         except quota.QuotaError as e:
-            log.warning("cannot read quota, holding: %s", e)
-            return
+            log.info("no usage reading for %s, delivering anyway: %s", agent or "?", e)
+            return False
         if blockers := current.blockers(cfg.threshold):
             names = ", ".join(f"{b.name} {b.utilization:.0f}%" for b in blockers)
-            log.info("holding %d pane(s) on quota (%s); next window at %s",
-                     len(ready), names, current.resume_at(cfg.threshold))
-            return
-
-        for pane_id in ready:
-            if (prompt := db.next_for_pane(conn, pane_id)) is not None:
-                self.deliver(conn, prompt)
+            log.info("holding %d %s pane(s) on quota (%s); next window at %s",
+                     len(panes), agent or "?", names, current.resume_at(cfg.threshold))
+            return True
+        return False
 
     def report_blocked(self, conn: sqlite3.Connection, pane_id: str) -> None:
         """Say that a pane has stopped on a question with work stacked behind it.
@@ -228,7 +246,7 @@ class Dispatcher:
 
         resume_at = None
         try:
-            current = quota.current()
+            current = quota.current(self.herdr.agent_kind(pane_id) or "")
             if not current.blockers(cfg.threshold):
                 log.debug("limit banner on %s but the window is open; ignoring", pane_id)
                 return

@@ -35,31 +35,42 @@ def _rel(when) -> str:
 
 
 def cmd_quota(args) -> int:
+    """Every agent's windows, since each spends its own subscription."""
     cfg = sched_config.load()
-    try:
-        current = quota.fetch()
-    except quota.QuotaError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
+    agents = args.agent and [args.agent] or list(quota.SOURCES)
+    failed = 0
 
-    if current.stale:
-        print(f"(cached at {current.fetched_at:%Y-%m-%d %H:%M} UTC — endpoint unreachable)\n")
+    for i, agent in enumerate(agents):
+        if len(agents) > 1:
+            print(f"{'' if i == 0 else chr(10)}{agent}")
+        try:
+            current = quota.current(agent, ttl=0.0)
+        except quota.QuotaError as e:
+            print(f"  no reading: {e}", file=sys.stderr)
+            failed += 1
+            continue
 
-    width = max((len(b.name) for b in current.buckets), default=10)
-    for b in current.buckets:
-        filled = min(24, int(b.utilization / 100 * 24))
-        bar = "█" * filled + "░" * (24 - filled)
-        flag = " LOCKED" if b.locked_reason else ""
-        over = " ←" if b.is_blocking(cfg.threshold) else ""
-        print(f"{b.name:<{width}}  {bar} {b.utilization:5.1f}%  "
-              f"resets in {_rel(b.resets_at):>7}{flag}{over}")
+        if current.source == "observed":
+            print(f"(as {agent} last saw it, {current.fetched_at:%Y-%m-%d %H:%M} UTC)")
+        elif current.stale:
+            print(f"(cached at {current.fetched_at:%Y-%m-%d %H:%M} UTC — endpoint unreachable)")
 
-    print()
-    if current.blockers(cfg.threshold):
-        print(f"blocked at {cfg.threshold:.0f}% — next window {_rel(current.resume_at(cfg.threshold))}")
-    else:
-        print(f"clear to run (threshold {cfg.threshold:.0f}%)")
-    return 0
+        width = max((len(b.name) for b in current.buckets), default=10)
+        for b in current.buckets:
+            filled = min(24, int(b.utilization / 100 * 24))
+            bar = "█" * filled + "░" * (24 - filled)
+            flag = " LOCKED" if b.locked_reason else ""
+            over = " ←" if b.is_blocking(cfg.threshold) else ""
+            print(f"{b.name:<{width}}  {bar} {b.utilization:5.1f}%  "
+                  f"resets in {_rel(b.resets_at):>7}{flag}{over}")
+
+        if current.blockers(cfg.threshold):
+            print(f"blocked at {cfg.threshold:.0f}% — "
+                  f"next window {_rel(current.resume_at(cfg.threshold))}")
+        else:
+            print(f"clear to run (threshold {cfg.threshold:.0f}%)")
+
+    return 1 if failed == len(agents) else 0
 
 
 def _chats() -> dict:
@@ -151,7 +162,10 @@ def main() -> int:
     p = argparse.ArgumentParser(prog="sheepit-queue", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("quota", help="show usage windows").set_defaults(func=cmd_quota)
+    p_quota = sub.add_parser("quota", help="show usage windows")
+    p_quota.add_argument("agent", nargs="?", choices=sorted(quota.SOURCES),
+                         help="just this agent's windows")
+    p_quota.set_defaults(func=cmd_quota)
     sub.add_parser("chats", help="list chats you can queue against").set_defaults(func=cmd_chats)
 
     add = sub.add_parser("add", help="queue a prompt for a chat")

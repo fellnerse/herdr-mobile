@@ -710,9 +710,15 @@ check("a fresh reading is never expired",
 class FakePane:
     """One pane with an agent in it, and a record of what was done to it."""
 
-    def __init__(self, status="idle", session="sess-abc"):
+    def __init__(self, status="idle", session="sess-abc", agent="claude"):
         self.status_value, self.session, self.keys, self.sent, self.typed = \
             status, session, [], [], []
+        # Which agent is in the pane decides whose usage window it spends, so
+        # the wall has to ask before it can price what it saw.
+        self.agent = agent
+
+    def agent_kind(self, pane_id):
+        return self.agent
 
     def agents_by_pane(self):
         return {"wA:p1": {"pane_id": "wA:p1", "workspace_id": "wA", "cwd": "/root/x",

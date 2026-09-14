@@ -1231,25 +1231,47 @@ class StatusWatcher(threading.Thread):
         }
 
 
-def quota_payload() -> dict:
-    """Usage windows, shaped for the phone.
+def agents_running() -> list:
+    """Which kinds of agent are on this machine right now.
 
-    `current` memoises the round trip to Anthropic, which matters here: the
-    phone polls this while the queue is open.
+    The strip has no business drawing a Codex window on a machine running none,
+    and no way to know Codex is there except that an agent of that kind is in a
+    pane. In the order they should be drawn: whatever Herdr lists, stably.
     """
-    try:
-        current = sched_quota.current()
-    except sched_quota.QuotaError as e:
-        return {"ok": False, "error": str(e), "buckets": []}
+    kinds = []
+    for agent in call_herdr_rpc("agent.list").get("result", {}).get("agents", []):
+        kind = agent.get("agent")
+        if kind and kind not in kinds:
+            kinds.append(kind)
+    return sorted(kinds)
+
+
+def agent_quota(agent: str) -> dict:
+    """One agent's windows, shaped for the phone.
+
+    `current` memoises the reading, which matters here: the phone polls this
+    while the queue is open.
+    """
     threshold = sched_config.load().threshold
+    try:
+        current = sched_quota.current(agent)
+    except sched_quota.QuotaError as e:
+        # Not knowing is its own state, and not a blocked one: the queue
+        # delivers to an agent it cannot price.
+        return {"agent": agent, "ok": False, "error": str(e), "buckets": [],
+                "blocked": False}
     resume_at = current.resume_at(threshold)
     return {
+        "agent": agent,
+        "ok": True,
         "stale": current.stale,
         "reason": current.reason,
         # The bars still show the last reading, because it is the only one
         # there is. This is what says not to believe them.
         "expired": current.expired,
-        "threshold": threshold,
+        # `api` was asked and told; `observed` is what the agent wrote down
+        # itself, which is as fresh as its last turn.
+        "source": current.source,
         "blocked": bool(current.blockers(threshold)),
         "resume_at": resume_at.isoformat() if resume_at else None,
         "buckets": [
@@ -1262,6 +1284,18 @@ def quota_payload() -> dict:
             }
             for b in current.buckets
         ],
+    }
+
+
+def quota_payload() -> dict:
+    """What every agent on this machine has left to spend."""
+    agents = agents_running() or ["claude"]
+    readings = [agent_quota(agent) for agent in agents]
+    return {
+        "threshold": sched_config.load().threshold,
+        "agents": readings,
+        # One line for the whole machine, for anything that wants a yes or no.
+        "blocked": all(r["blocked"] for r in readings) if readings else False,
     }
 
 

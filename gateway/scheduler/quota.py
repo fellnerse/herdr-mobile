@@ -1,13 +1,25 @@
-"""Live Claude subscription usage, read from the same endpoint Claude Code uses.
+"""What a subscription has left, per agent, from whoever will say.
 
 Claude Code resolves its own limits via `fetchUtilization: GET /api/oauth/usage`.
 Calling it costs no tokens, so we can poll it freely and schedule against real
 reset timestamps instead of inferring windows from failures.
+
+That endpoint needs a token, and a token is the one thing that may be missing:
+on a Mac it lives in the Keychain rather than a file, and Codex has no such
+endpoint at all. But both agents already write their own usage down --
+Claude Code caches its last reading in `.claude.json`, Codex records the rate
+limits of every turn in its session rollout -- and reading that costs nothing
+and needs no credentials. So each agent has two sources: what it was told, and
+what it wrote down. The first is authoritative, the second always available,
+and a reading says which it is.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -18,6 +30,24 @@ from pathlib import Path
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CREDENTIALS = Path.home() / ".claude" / ".credentials.json"
+# On macOS Claude Code keeps the same JSON in the login Keychain and writes no
+# credentials file at all, so reading only the file holds every prompt on a Mac
+# forever: the sweep cannot price the window, so it never delivers.
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+# Where Claude Code parks its own last reading. It carries the account it
+# belongs to, which is what makes it worth reading rather than guessing.
+CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR")
+CLAUDE_STATE = (Path(CLAUDE_CONFIG_DIR) if CLAUDE_CONFIG_DIR else Path.home()) / ".claude.json"
+# Codex writes a line per event; the ones we want carry `rate_limits`.
+CODEX_HOME = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+# How far back to look for the session that is running now. A rollout lands in
+# the directory of the day it started, so a session opened last night and still
+# going is not in today's.
+CODEX_DAYS = 4
+# The last of a rollout worth reading to find the newest rate limit line.
+CODEX_TAIL = 256 * 1024
+
+AGENTS = ("claude", "codex")
 from . import STATE_DIR
 
 CACHE = STATE_DIR / "quota-cache.json"
@@ -60,7 +90,15 @@ class Quota:
     buckets: tuple[Bucket, ...]
     fetched_at: datetime
     stale: bool
-    """True when served from cache because the API was unreachable."""
+    """True when nobody asked the API just now: a cache, or the agent's own note."""
+
+    agent: str = "claude"
+    source: str = "api"
+    """`api` asked and was told; `cache` is our own last answer; `observed` is
+    what the agent itself wrote down, which is as fresh as its last turn."""
+
+    account: str | None = None
+    """Which account the reading is about, when the source says so."""
 
     reason: str | None = None
     """Why the live read failed, when `stale`. Worth showing: the usual cause is
@@ -131,13 +169,45 @@ def _parse_ts(raw: str | None) -> datetime | None:
         return None
 
 
+def _keychain_credentials() -> str:
+    """The credentials blob out of the login Keychain.
+
+    `security` is the one doing the reading, so the first attempt raises a
+    Keychain prompt; answering "Always Allow" is what makes this unattended.
+    Until it is answered the read simply times out, which holds the queue for a
+    sweep rather than failing it.
+    """
+    try:
+        found = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise QuotaError("the Keychain did not answer; allow access to "
+                         f"{KEYCHAIN_SERVICE!r}") from e
+    except OSError as e:
+        raise QuotaError(f"cannot run security(1): {e}") from e
+    if found.returncode != 0 or not found.stdout.strip():
+        raise QuotaError(f"no Claude credentials in {CREDENTIALS} or the "
+                         f"Keychain item {KEYCHAIN_SERVICE!r}; run `claude` to sign in")
+    return found.stdout
+
+
+def _credentials() -> str:
+    """Wherever Claude Code put its OAuth token on this machine."""
+    try:
+        return CREDENTIALS.read_text()
+    except FileNotFoundError:
+        if sys.platform == "darwin":
+            return _keychain_credentials()
+        raise QuotaError(f"no Claude credentials at {CREDENTIALS}") from None
+
+
 def _access_token() -> str:
     try:
-        creds = json.loads(CREDENTIALS.read_text())
-    except FileNotFoundError as e:
-        raise QuotaError(f"no Claude credentials at {CREDENTIALS}") from e
+        creds = json.loads(_credentials())
     except json.JSONDecodeError as e:
-        raise QuotaError(f"malformed credentials at {CREDENTIALS}") from e
+        raise QuotaError("malformed credentials; run `claude` to sign in") from e
 
     token = creds.get("claudeAiOauth", {}).get("accessToken")
     if not token:
@@ -170,6 +240,142 @@ def _parse(payload: dict) -> tuple[Bucket, ...]:
     return tuple(buckets)
 
 
+def _claude_observed(path: Path | None = None) -> Quota:
+    """Claude Code's own last reading, out of `.claude.json`.
+
+    It keeps `cachedUsageUtilization` in the same shape the endpoint answers
+    with, stamped with the account it belongs to and when it was taken, and
+    refreshes it as the session works. No token, no request, no Keychain.
+    """
+    path = path or CLAUDE_STATE
+    try:
+        blob = json.loads(path.read_text())
+    except FileNotFoundError as e:
+        raise QuotaError(f"no Claude state at {path}") from e
+    except json.JSONDecodeError as e:
+        raise QuotaError(f"unreadable Claude state at {path}") from e
+
+    cached = blob.get("cachedUsageUtilization")
+    if not isinstance(cached, dict) or not isinstance(cached.get("utilization"), dict):
+        raise QuotaError("Claude has written down no usage yet")
+
+    ms = cached.get("fetchedAtMs")
+    fetched = (datetime.fromtimestamp(ms / 1000, timezone.utc)
+               if isinstance(ms, (int, float)) else _now())
+    return Quota(_parse(cached["utilization"]), fetched, stale=True,
+                 agent="claude", source="observed", account=cached.get("accountUuid"))
+
+
+# Codex measures in minutes; these are the two windows a subscription has, and
+# naming them the way Claude's buckets are named keeps one vocabulary on screen.
+CODEX_WINDOWS = {300: "five_hour", 10080: "seven_day"}
+
+
+def _codex_window_name(minutes) -> str:
+    if not isinstance(minutes, (int, float)) or minutes <= 0:
+        return "window"
+    minutes = int(minutes)
+    if minutes in CODEX_WINDOWS:
+        return CODEX_WINDOWS[minutes]
+    if minutes % 1440 == 0:
+        return f"{minutes // 1440}_day"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}_hour"
+    return f"{minutes}_minute"
+
+
+def _codex_buckets(limits: dict) -> tuple[Bucket, ...]:
+    buckets = []
+    for key in ("primary", "secondary"):
+        window = limits.get(key)
+        if not isinstance(window, dict):
+            continue
+        used = window.get("used_percent")
+        if not isinstance(used, (int, float)):
+            continue
+        resets = window.get("resets_at")
+        buckets.append(Bucket(
+            name=_codex_window_name(window.get("window_minutes")),
+            utilization=float(used),
+            resets_at=(datetime.fromtimestamp(resets, timezone.utc)
+                       if isinstance(resets, (int, float)) else None),
+            # Codex says what kind of wall it hit rather than that it is locked;
+            # the percentage is what decides, so nothing is read as a lock.
+            locked_reason=None,
+        ))
+    return tuple(buckets)
+
+
+def _codex_rollouts(home: Path, days: int = CODEX_DAYS) -> list[Path]:
+    """The rollouts worth looking in, newest first.
+
+    A rollout is filed under the day its session started, so a session opened
+    last night and still running is not in today's directory. Walking the whole
+    tree would be thousands of files, so this walks back a few days and sorts
+    what it finds by when it was last written to."""
+    sessions = home / "sessions"
+    found = []
+    for day in sorted((d for d in sessions.glob("*/*/*") if d.is_dir()), reverse=True)[:days]:
+        found.extend(f for f in day.glob("*.jsonl") if f.is_file())
+    return sorted(found, key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+def _last_rate_limits(path: Path) -> tuple[dict, datetime] | None:
+    """The newest `rate_limits` in a rollout, with the file's own timestamp.
+
+    Read from the end: a long session is megabytes, and the line wanted is
+    always near the bottom."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > CODEX_TAIL:
+                fh.seek(size - CODEX_TAIL)
+                fh.readline()  # drop the half line the seek landed in
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+
+    for line in reversed(tail.splitlines()):
+        if '"rate_limits"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        limits = _find_rate_limits(event)
+        if limits:
+            return limits, datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    return None
+
+
+def _find_rate_limits(event):
+    """`rate_limits` moved between Codex versions, so look for it rather than
+    knowing where it is."""
+    if isinstance(event, dict):
+        if isinstance(event.get("rate_limits"), dict):
+            return event["rate_limits"]
+        for value in event.values():
+            found = _find_rate_limits(value)
+            if found:
+                return found
+    return None
+
+
+def _codex_observed(home: Path | None = None) -> Quota:
+    """What Codex was told on its last turn, out of its session rollout."""
+    home = home or CODEX_HOME
+    for rollout in _codex_rollouts(home):
+        found = _last_rate_limits(rollout)
+        if not found:
+            continue
+        limits, written = found
+        buckets = _codex_buckets(limits)
+        if buckets:
+            return Quota(buckets, written, stale=True, agent="codex",
+                         source="observed", account=limits.get("limit_id"))
+    raise QuotaError("no Codex session has reported a usage window yet")
+
+
 def _write_cache(payload: dict) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     body = {"fetched_at": _now().isoformat(), "payload": payload}
@@ -184,7 +390,8 @@ def _read_cache(reason: str | None = None) -> Quota | None:
     except (FileNotFoundError, json.JSONDecodeError):
         return None
     fetched = _parse_ts(body.get("fetched_at")) or _now()
-    return Quota(_parse(body.get("payload", {})), fetched, stale=True, reason=reason)
+    return Quota(_parse(body.get("payload", {})), fetched, stale=True,
+                 reason=reason, agent="claude", source="cache")
 
 
 def fetch(timeout: float = 10.0) -> Quota:
@@ -229,26 +436,53 @@ def fetch(timeout: float = 10.0) -> Quota:
         return cached
 
     _write_cache(payload)
-    return Quota(_parse(payload), _now(), stale=False)
+    return Quota(_parse(payload), _now(), stale=False, agent="claude", source="api")
 
 
-_memo: tuple[float, Quota] | None = None
+def claude() -> Quota:
+    """Ask Anthropic; fall back to what Claude Code wrote down.
+
+    The endpoint is worth the round trip - it is current to the second and it
+    is what the agent itself is priced against. But a missing token is not a
+    reason to know nothing: Claude Code's own cached reading is the same
+    numbers, as fresh as that account's last turn."""
+    try:
+        return fetch()
+    except QuotaError as api_error:
+        try:
+            return _claude_observed()
+        except QuotaError:
+            raise api_error
+
+
+def codex() -> Quota:
+    """Codex publishes no usage endpoint, so its own rollout is the source."""
+    return _codex_observed()
+
+
+SOURCES = {"claude": claude, "codex": codex}
+
+_memo: dict[str, tuple[float, Quota]] = {}
 _memo_lock = threading.Lock()
 MEMO_TTL = 30.0
 
 
-def current(ttl: float = MEMO_TTL) -> Quota:
-    """`fetch` with a short in-process memo.
+def current(agent: str = "claude", ttl: float = MEMO_TTL) -> Quota:
+    """One agent's usage, with a short in-process memo.
 
-    Every fetch is an HTTPS round trip. The phone polls this while the queue is
-    open and the dispatcher asks before every delivery, so without a memo an
-    active queue would hammer the endpoint. Utilization does not move fast
-    enough for 30s to matter.
+    Every reading is an HTTPS round trip or a walk of a session directory. The
+    phone polls this while the queue is open and the dispatcher asks before
+    every delivery, so without a memo an active queue would hammer both.
+    Utilization does not move fast enough for 30s to matter.
     """
-    global _memo
+    source = SOURCES.get(agent)
+    if source is None:
+        raise QuotaError(f"no usage to read for {agent or 'this agent'}")
     with _memo_lock:
-        if _memo is not None and time.monotonic() - _memo[0] < ttl:
-            return _memo[1]
-        quota = fetch()
-        _memo = (time.monotonic(), quota)
-        return quota
+        memo = _memo.get(agent)
+        if memo is not None and time.monotonic() - memo[0] < ttl:
+            return memo[1]
+    quota = source()
+    with _memo_lock:
+        _memo[agent] = (time.monotonic(), quota)
+    return quota
