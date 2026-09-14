@@ -775,11 +775,17 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     }],
   });
 
-  const html = u.quotaHtml(false);
+  const html = u.quotaHtml();
   check("the agent is named", /class="usage-agent">Claude</.test(html), true);
-  check("the bar follows the fullest window", /width:74%/.test(html), true);
-  check("every window it has is spelled out",
-        (html.match(/class="usage-window/g) || []).length, 2);
+  /* Both windows run out independently, so both get a bar: a five hour window
+     that is fine says nothing about a weekly one that is nearly gone. */
+  check("every window it has gets its own bar",
+        (html.match(/class="usage-bar"/g) || []).length, 2);
+  check("each filled to its own mark",
+        [/width:74%/.test(html), /width:9%/.test(html)], [true, true]);
+  check("and labelled with which window it is",
+        [/class="usage-label">5h</.test(html), /class="usage-label">week</.test(html)],
+        [true, true]);
   // A plan slot this account does not use is not a window at zero percent.
   check("an empty slot is not drawn", /opus/.test(html), false);
 
@@ -787,19 +793,22 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
   check("seven days is a week", u.windowLabel("seven_day"), "week");
   check("and a window Codex invents later still reads", u.windowLabel("3_hour"), "3h");
 
-  /* Today is a time; anything further out needs its date as well. Noon rather
-     than "three hours from now", which is tomorrow if the test runs at 10pm. */
-  const noon = new Date();
-  noon.setHours(12, 0, 0, 0);
-  check("a reset today is a time",
-        /^\d{1,2}[:.]\d{2}/.test(u.resetLabel(noon.toISOString())), true);
+  /* A reset you could sit and wait for is a time - the small hours of tomorrow
+     included, which is where a five hour window started in the evening lands.
+     A reset days away is a date. */
+  const hours = (n) => new Date(Date.now() + n * 3600 * 1000).toISOString();
+  check("a reset in three hours is a time",
+        /^\d{1,2}[:.]\d{2}/.test(u.resetLabel(hours(3))), true);
+  check("so is one in the small hours of tomorrow",
+        /^\d{1,2}[:.]\d{2}/.test(u.resetLabel(hours(9))), true);
   check("a reset next week carries its date", /^\d{1,2}\.\d{1,2}\./.test(u.resetLabel(week)), true);
   check("and nothing is nothing", u.resetLabel(null), "");
 
   /* A window with anything left in it is yours to spend, so there is nothing
      to explain and nothing to warn about - the bar says it. */
   check("a window that has room says nothing else", /quota-note/.test(html), false);
-  check("and no threshold is ever explained", /85%/.test(html), false);
+  check("and no threshold is ever explained", /80%|85%/.test(html), false);
+  check("nor is the word resets spent on it", /resets/.test(html), false);
 
   // A window that has already come back is not at the percentage it was: the
   // strip must not draw a full bar for a wall that is gone.
@@ -811,10 +820,11 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
         { name: "seven_day", utilization: 40, resets_at: week, spent: false, warning: false, expired: false },
       ],
     }],
-  }).quotaHtml(false);
-  check("an expired window shows no percentage", /class="usage-window past">\s*—/.test(rolled), true);
-  check("and says it reset rather than that it resets", /reset \d/.test(rolled), true);
-  check("the bar is the window that is still running", /width:40%/.test(rolled), true);
+  }).quotaHtml();
+  check("an expired window shows no percentage",
+        /class="usage-window past">[\s\S]*?class="usage-pct">—/.test(rolled), true);
+  check("and draws an empty bar rather than the old one", /width:0%/.test(rolled), true);
+  check("the window still running keeps its own", /width:40%/.test(rolled), true);
 
   const out = loadUsage({
     threshold: 85,
@@ -830,18 +840,16 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
      both noise and, when it was wrong, alarming. */
   check("a window with nothing left is marked out",
         /class="usage-window out"/.test(out), true);
-  check("and its own reset is what carries it",
-        /class="usage-window out">[^<]*<span class="usage-when">\(5h, resets/.test(out), true);
   check("the window that still has room is not marked",
         (out.match(/usage-window out/g) || []).length, 1);
   check("and nothing is said underneath", /quota-note/.test(out), false);
-  check("the bar draws it as a wall", /class="usage-bar over"/.test(out), true);
+  check("its bar is full", /class="usage-window out">[\s\S]*?width:100%/.test(out), true);
 
   // An agent nobody can price keeps delivering, so the strip does not shout.
   const unknown = loadUsage({
     threshold: 85,
     agents: [{ agent: "gemini", ok: false, error: "no usage to read for gemini", buckets: [] }],
-  }).quotaHtml(false);
+  }).quotaHtml();
   check("an unreadable agent explains itself quietly",
         /usage-detail muted">no usage to read for gemini/.test(unknown), true);
   check("and is not drawn as blocked", /blocked/.test(unknown), false);

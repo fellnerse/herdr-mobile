@@ -148,6 +148,18 @@ for the same reason: the banner says go and ask, usage says yes or no. Acting on
 matched text directly parks a healthy chat that merely mentioned running out of
 usage — which is a thing agents say to each other constantly.
 
+## The strip
+
+One line per agent, one bar per window: `Claude 5h ▁▁ 10% 04:10 week ▃▃ 25%
+21.9.` Both windows get a bar because they run out independently — a five-hour
+window that is fine says nothing about a weekly one that is nearly gone.
+
+It has to survive a 360px phone with two agents running, so everything that
+could be inferred is gone: no "resets", no brackets, and a date rather than a
+date and a time once the reset is more than eighteen hours out. Inside that,
+a reset is a clock time — including the small hours of tomorrow, which is where
+a five-hour window started in the evening lands.
+
 ## Where it is seen
 
 In the chat it was typed into, above the box it was typed in. A queued prompt

@@ -2031,18 +2031,30 @@
     return String(name || "").replace(/_/g, " ");
   }
 
-  /* When the window comes back, in as few characters as will still say it:
-     a time for today, a date and a time for anything further out. */
+  /* When the window comes back, in as few characters as will still say it.
+
+     A reset you could sit and wait for is a time - including the small hours
+     of tomorrow, which is where a five hour window started in the evening
+     lands, and "15.9." for something happening at 03:36 tonight says less than
+     nothing. A reset days away is answered by its date; the minute it happens
+     on is not what anybody is asking at that distance. */
+  const SOON_HOURS = 18;
+
   function resetLabel(iso) {
     if (!iso) return "";
     const at = new Date(iso);
     if (isNaN(at)) return "";
-    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const today = new Date();
-    if (at.toDateString() === today.toDateString()) return time;
-    return `${at.getDate()}.${at.getMonth() + 1}. ${time}`;
+    const hours = (at.getTime() - Date.now()) / 3600000;
+    if (hours < SOON_HOURS) {
+      return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    return `${at.getDate()}.${at.getMonth() + 1}.`;
   }
 
+  /* One line per agent, one bar per window. Both windows matter and they run
+     out independently - a five hour window that is fine says nothing about a
+     weekly one that is nearly gone - so each gets its own bar rather than the
+     row showing whichever was worse. */
   function agentQuotaHtml(a) {
     const name = (a.agent || "agent").replace(/^./, (c) => c.toUpperCase());
     if (a.ok === false) {
@@ -2057,34 +2069,23 @@
 
     /* Buckets that are empty and have no window carry no information - they
        are plan slots this account does not use. */
-    const windows = (a.buckets || []).filter((b) => b.utilization > 0 || b.resets_at);
-    /* The bar is the window closest to full, since that is the one that runs
-       out first. An expired window describes a window that has already come
-       back, so it is not what anybody is spending now. */
-    const live = windows.filter((b) => !b.expired);
-    const lead = live.reduce((worst, b) => (!worst || b.utilization > worst.utilization ? b : worst), null);
-    const pct = lead ? Math.max(0, Math.min(100, lead.utilization)) : 0;
-    // Amber is a warning and red is a wall; nothing is held back for amber.
-    const cls = lead && lead.spent ? "over" : lead && lead.warning ? "warn" : "";
-
-    const detail = windows
+    const windows = (a.buckets || [])
+      .filter((b) => b.utilization > 0 || b.resets_at)
       .map((b) => {
-        const at = resetLabel(b.resets_at);
-        const when = at ? `${b.expired ? "reset" : "resets"} ${at}` : "";
-        const label = [windowLabel(b.name), when].filter(Boolean).join(", ");
-        // A window that has rolled over is not at the percentage it was.
-        const value = b.expired ? "—" : `${b.utilization.toFixed(0)}%`;
-        /* Amber from the threshold up, red at the cap - and a window with
-           nothing left says so on the time it comes back, which is the only
-           thing you can do about it. No sentence underneath: the colour is the
-           sentence. */
-        // A window that has rolled over is drawn as neither: what has been
-        // spent in the new one is not known, so it is not amber and not red.
+        const pct = Math.max(0, Math.min(100, b.utilization));
+        /* Amber from the threshold up, red at the cap. A window that has
+           rolled over is drawn as neither: what has been spent in the new one
+           is not known yet, so it shows no percentage at all. */
         const cls = b.expired ? "past" : b.spent ? "out" : b.warning ? "near" : "";
-        return `<span class="usage-window${cls ? " " + cls : ""}">${escapeHtml(value)}
-          <span class="usage-when">(${escapeHtml(label)})</span></span>`;
+        return `
+          <span class="usage-window${cls ? " " + cls : ""}">
+            <span class="usage-label">${escapeHtml(windowLabel(b.name))}</span>
+            <span class="usage-bar"><span class="usage-fill" style="width:${b.expired ? 0 : pct}%"></span></span>
+            <span class="usage-pct">${b.expired ? "—" : `${pct.toFixed(0)}%`}</span>
+            <span class="usage-when">${escapeHtml(resetLabel(b.resets_at))}</span>
+          </span>`;
       })
-      .join('<span class="usage-sep">·</span>');
+      .join("");
 
     /* An expired reading is too old to hold work on, so the queue has stopped
        believing it and the strip says so rather than showing a wall that is not
@@ -2099,12 +2100,10 @@
     return `
       <div class="usage">
         <span class="usage-agent">${escapeHtml(name)}</span>
-        <span class="usage-bar ${cls}"><span class="usage-fill" style="width:${pct}%"></span></span>
-        <span class="usage-detail">${detail}</span>
+        ${windows}
       </div>`;
   }
 
-  // Both strips carry the same reading; whichever view is up draws it.
   function renderQuota() {
     elPickerQuota.innerHTML = quotaHtml();
   }
