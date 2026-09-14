@@ -1209,7 +1209,12 @@
           <span class="sheep-wrap ${status}"${fleece}>${sheepSvg(status, agent.pane_id)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
-            ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
+            <span class="agent-row-meta">
+              ${agent.has_agent && agent.agent
+                ? `<span class="row-agent">${escapeHtml(agent.agent)}</span>`
+                : ""}
+              ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
+            </span>
           </span>
           <span class="agent-row-side">
             ${
@@ -2023,66 +2028,91 @@
     return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}m`;
   }
 
-  /* How much subscription is left, per agent. The queue shows it because it
-     decides what it may start, and the overview shows it because it is the
-     same question asked about the herd already running: what is there left to
-     spend. Two agents have two subscriptions and two answers - a Claude window
-     says nothing about what a Codex pane may spend - so each gets its own
-     block, and only the agents actually on this machine are drawn. */
+  /* How much subscription is left, per agent: a line each, small enough to
+     live above the flock without pushing it down the screen.
+
+     Two agents have two subscriptions and two answers - a Claude window says
+     nothing about what a Codex pane may spend - so each gets its own line, and
+     only the agents actually on this machine are drawn. */
   function quotaHtml() {
     const q = state.quota;
     if (!q) return '<div class="quota-note">Reading usage…</div>';
     const agents = q.agents || [];
     if (!agents.length) return '<div class="quota-note">No agents running.</div>';
-    const many = agents.length > 1;
-    return agents.map((a) => agentQuotaHtml(a, q.threshold, many)).join("");
+    return agents.map((a) => agentQuotaHtml(a, q.threshold)).join("");
   }
 
-  function agentQuotaHtml(a, threshold, named) {
-    const head = named
-      ? `<div class="quota-agent">${escapeHtml(a.agent || "agent")}</div>`
-      : "";
+  // "five_hour" is what the endpoint calls it; "5h" is what fits on a phone.
+  function windowLabel(name) {
+    if (name === "five_hour") return "5h";
+    if (name === "seven_day") return "week";
+    const m = /^(\d+)_(hour|day)$/.exec(name || "");
+    if (m) return m[2] === "hour" ? `${m[1]}h` : `${m[1]}d`;
+    return String(name || "").replace(/_/g, " ");
+  }
+
+  /* When the window comes back, in as few characters as will still say it:
+     a time for today, a date and a time for anything further out. */
+  function resetLabel(iso) {
+    if (!iso) return "";
+    const at = new Date(iso);
+    if (isNaN(at)) return "";
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const today = new Date();
+    if (at.toDateString() === today.toDateString()) return time;
+    return `${at.getDate()}.${at.getMonth() + 1}. ${time}`;
+  }
+
+  function agentQuotaHtml(a, threshold) {
+    const name = (a.agent || "agent").replace(/^./, (c) => c.toUpperCase());
     if (a.ok === false) {
       // Not knowing is not the same as having nothing left: the queue keeps
       // delivering, so this says what is missing rather than crying wolf.
-      return `${head}<div class="quota-note">${escapeHtml(a.error || "no usage reading")}</div>`;
+      return `
+        <div class="usage">
+          <span class="usage-agent">${escapeHtml(name)}</span>
+          <span class="usage-detail muted">${escapeHtml(a.error || "no usage reading")}</span>
+        </div>`;
     }
 
     /* Buckets that are empty and have no window carry no information - they
        are plan slots this account does not use. */
-    const rows = (a.buckets || [])
-      .filter((b) => b.utilization > 0 || b.resets_at)
+    const windows = (a.buckets || []).filter((b) => b.utilization > 0 || b.resets_at);
+    /* The bar is the window closest to full, since that is the one that runs
+       out first. An expired window describes a window that has already come
+       back, so it is not what anybody is spending now. */
+    const live = windows.filter((b) => !b.expired);
+    const lead = live.reduce((worst, b) => (!worst || b.utilization > worst.utilization ? b : worst), null);
+    const pct = lead ? Math.max(0, Math.min(100, lead.utilization)) : 0;
+    const cls = lead && lead.blocking ? "over" : lead && pct >= threshold * 0.8 ? "warn" : "";
+
+    const detail = windows
       .map((b) => {
-        const pct = Math.max(0, Math.min(100, b.utilization));
-        const near = pct >= threshold * 0.8;
-        const cls = b.blocking ? "over" : near ? "warn" : "";
-        return `
-          <div class="quota-row ${cls}">
-            <span class="quota-name">${escapeHtml(b.name.replace(/_/g, " "))}</span>
-            <span class="quota-track"><span class="quota-fill" style="width:${pct}%"></span></span>
-            <span class="quota-pct">${pct.toFixed(0)}%</span>
-          </div>`;
+        const at = resetLabel(b.resets_at);
+        const when = at ? `${b.expired ? "reset" : "resets"} ${at}` : "";
+        const label = [windowLabel(b.name), when].filter(Boolean).join(", ");
+        // A window that has rolled over is not at the percentage it was.
+        const value = b.expired ? "—" : `${b.utilization.toFixed(0)}%`;
+        return `<span class="usage-window${b.expired ? " spent" : ""}">${escapeHtml(value)}
+          <span class="usage-when">(${escapeHtml(label)})</span></span>`;
       })
-      .join("");
+      .join('<span class="usage-sep">·</span>');
 
     /* An expired reading is too old to hold work on, so the queue has stopped
        believing it and the strip says so rather than showing a wall that is not
-       there. The bars above are the last thing we were told, not the truth. */
+       there. The bars are the last thing we were told, not the truth - and it
+       is the one thing here worth a sentence, because no colour can say "these
+       numbers are stale". */
     const note = a.expired
       ? '<div class="quota-note">last known reading — running anyway until usage can be read</div>'
-      : a.blocked
-      ? `<div class="quota-note blocked">No usage left — next window in ${escapeHtml(relTime(a.resume_at))}</div>`
-      : `<div class="quota-note">Clear to run · pauses at ${threshold.toFixed(0)}%</div>`;
-
-    /* Where the reading came from. `observed` is the agent's own note of its
-       last turn, which is worth saying: it is right, but only as of then. */
-    const since = a.source === "observed"
-      ? '<div class="quota-note">as of its last turn</div>'
-      : a.stale
-      ? `<div class="quota-note">cached — ${escapeHtml(a.reason || "could not reach the usage endpoint")}</div>`
       : "";
 
-    return head + rows + note + since;
+    return `
+      <div class="usage">
+        <span class="usage-agent">${escapeHtml(name)}</span>
+        <span class="usage-bar ${cls}"><span class="usage-fill" style="width:${pct}%"></span></span>
+        <span class="usage-detail">${detail}</span>
+      </div>${note}`;
   }
 
   // Both strips carry the same reading; whichever view is up draws it.

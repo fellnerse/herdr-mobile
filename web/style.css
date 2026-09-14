@@ -380,6 +380,27 @@ html, body {
   gap: 2px;
 }
 
+/* Under the headline: which agent is in this tab, then whatever else the row
+   has to say. Two agents on one project look identical otherwise, and which
+   one it is decides whose usage window the tab is spending. */
+.agent-row-meta {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.row-agent {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
 /* The row's headline is what the agent is doing, which is a sentence rather
    than a word - so it gets two lines before the ellipsis rather than one. */
 .agent-row-name {
@@ -1315,21 +1336,68 @@ html, body {
   gap: 9px;
 }
 
-/* Whose window this is. Only drawn when more than one agent is running, so a
-   machine with a single agent keeps the strip it always had. */
-.quota-agent {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
+/* One line per agent: who it is, a bar for whichever of its windows is closest
+   to full, and every window in words after it. Small on purpose - this sits
+   above the flock, and the flock is what the screen is for. */
+.usage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
-.quota-agent:not(:first-child) {
-  margin-top: 4px;
-  padding-top: 9px;
-  border-top: 1px solid var(--border-subtle);
+.usage-agent {
+  flex-shrink: 0;
+  min-width: 3.4rem;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
+
+.usage-bar {
+  flex-shrink: 0;
+  width: 54px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+/* A span is inline until told otherwise, and an inline fill draws nothing
+   however much of the window is gone. */
+.usage-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--status-idle);
+  transition: width 0.3s ease;
+}
+
+/* Amber approaching the line, red once the queue stops at it - the same
+   reading as a sheep's colour, so no legend is needed. */
+.usage-bar.warn .usage-fill { background: var(--status-working); }
+.usage-bar.over .usage-fill { background: var(--status-blocked); }
+
+.usage-detail {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-window { white-space: nowrap; }
+
+/* A window that has already come back carries no percentage worth reading. */
+.usage-window.spent { color: var(--text-muted); }
+
+.usage-when { color: var(--text-muted); }
+
+.usage-sep { color: var(--text-muted); }
+
+.usage-detail.muted { color: var(--text-muted); }
 
 .quota-row {
   display: grid;
