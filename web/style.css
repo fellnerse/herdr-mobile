@@ -22,6 +22,9 @@
   --status-blocked: #f85149;
   --status-done: #58a6ff;
   --status-unknown: #8b949e;
+  /* Work you stacked yourself, which is none of the four states an agent
+     reports - orange so it reads as yours rather than as the agent's. */
+  --status-queued: #f0883e;
 
   /* Transcript roles */
   --role-user: #7ee787;
@@ -583,21 +586,6 @@ html, body {
   gap: 4px;
 }
 
-/* What is still owed to this sheep: prompts queued behind whatever it is
-   doing. Monospace and quiet - it is a number you check, not one that should
-   compete with the status it sits under. */
-.agent-row-queued {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent-primary);
-  white-space: nowrap;
-}
-
-/* A prompt that failed on the way in is not waiting for a window; it is
-   waiting for you. */
-.agent-row-queued.failed { color: var(--status-blocked); }
-
 .agent-group-queued {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -625,6 +613,7 @@ html, body {
   letter-spacing: 0.5px;
 }
 
+.status-queued { background: rgba(240, 136, 62, 0.16); color: var(--status-queued); }
 .status-working { background: rgba(227, 179, 65, 0.15); color: var(--status-working); }
 .status-idle { background: rgba(63, 185, 80, 0.15); color: var(--status-idle); }
 .status-blocked { background: rgba(248, 81, 73, 0.15); color: var(--status-blocked); }

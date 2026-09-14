@@ -482,8 +482,13 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     { id: 1, pane_id: "wA:p1", state: "waiting" },
     { id: 2, pane_id: "wA:p1", state: "waiting" },
   ]);
-  check("two waiting prompts are counted", />2 queued</.test(waiting), true);
-  check("beside what the agent itself is doing", />working</.test(waiting), true);
+  /* What the agent is doing is already the spine and the pose, so the one word
+     beside the row is the more useful one: an agent that finished with a prompt
+     still waiting is not "done", it is one prompt from starting again. */
+  check("two waiting prompts are the row's word", />2 queued</.test(waiting), true);
+  check("and the agent's own word steps aside", /status-working/.test(waiting), false);
+  check("drawn as work you stacked rather than work it is doing",
+        /status-badge status-queued/.test(waiting), true);
 
   // Another chat's queue is not this row's business.
   check("a prompt for another chat is not drawn here",
@@ -496,7 +501,20 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     { id: 5, pane_id: "wA:p1", state: "failed" },
   ]);
   check("a failed prompt is said as well", />1 queued · 1 failed</.test(failed), true);
-  check("and marks the row", /agent-row-queued failed/.test(failed), true);
+  check("in red, because it is waiting for you rather than for a window",
+        /status-badge status-failed/.test(failed), true);
+
+  /* Except when the agent has stopped on a question. Nothing is ever delivered
+     into that, and it is the state that must never be buried under a count. */
+  const asking = (queue) => {
+    rows.state.queue = queue;
+    return rows.agentRowHtml(
+      { ...row("wA:p1", 1, "/p/api", "blocked"), name: "api", title: "Which of these?" },
+      "api", rows.queuedByPane().get("wA:p1"));
+  };
+  check("a question outranks the queue behind it",
+        /status-blocked">blocked</.test(asking([{ id: 6, pane_id: "wA:p1", state: "waiting" }])),
+        true);
 }
 
 // -- telling two sheep apart -------------------------------------------------
@@ -745,7 +763,8 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     { ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite it" },
     "api", counts.get("wA:p1"));
   check("the row wears the count", html.includes("2 queued · 1 failed"), true);
-  check("and marks it as wanting a person", html.includes("agent-row-queued failed"), true);
+  check("in the place the status word had", html.includes("status-badge status-failed"), true);
+  check("and the status word steps aside for it", /status-working/.test(html), false);
 
   const quiet = rows.agentRowHtml(
     { ...row("wC:p1", 2, "/p/api", "working"), name: "api", title: "Rewrite it" },

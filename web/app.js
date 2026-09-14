@@ -1166,6 +1166,21 @@
     return bits.join(" · ");
   }
 
+  /* The one word beside a row. What the agent is doing is already the spine
+     down the card and the pose the sheep stands in, so when something is
+     stacked behind it that is the more useful word: an agent that finished
+     with a prompt still waiting is not "done", it is one prompt from starting
+     again. A question on screen outranks even that - nothing is ever delivered
+     into one, and it is the state that must never be buried. */
+  function statusBadge(agent, status, queued) {
+    if (!agent.has_agent) return '<span class="agent-row-ago">shell</span>';
+    const word = queued ? queuedLabel(queued) : "";
+    if (!word || status === "blocked") {
+      return `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`;
+    }
+    return `<span class="status-badge status-${queued.failed ? "failed" : "queued"}">${escapeHtml(word)}</span>`;
+  }
+
   function agentRowHtml(agent, groupName, queued) {
     const isActive = agent.pane_id === state.activePaneId;
     const status = knownStatus(agent.status);
@@ -1203,15 +1218,8 @@
             </span>
           </span>
           <span class="agent-row-side">
-            ${
-              agent.has_agent
-                ? `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`
-                : `<span class="agent-row-ago">shell</span>`
-            }
+            ${statusBadge(agent, status, queued)}
             <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
-            ${queued
-                ? `<span class="agent-row-queued${queued.failed ? " failed" : ""}">${escapeHtml(queuedLabel(queued))}</span>`
-                : ""}
           </span>
         </button>
       </div>
