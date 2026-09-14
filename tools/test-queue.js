@@ -50,6 +50,7 @@ function loadQueue(state) {
     };
     const fetchQueue = async () => {};
     const alert = (message) => { sent.push("alert: " + message); };
+    const resetLabel = (iso) => (iso ? "19.9." : "");
   `;
   const mod = new Function(
     "elChatQueue", "state", "elPromptInput", "sent",
@@ -137,6 +138,47 @@ const waiting = (id, pane, prompt) => ({ id, pane_id: pane, state: "waiting", pr
   q.renderChatQueue();
   check("a prompt cannot bring its own markup",
         /<img/.test(q.el.innerHTML), false);
+}
+
+// -- why it is still sitting there ------------------------------------------
+
+/* A queue that holds without saying so is indistinguishable from one that is
+   broken, which is exactly how it looked when a window ran out and nothing in
+   the chat mentioned it. */
+{
+  const out = {
+    activePaneId: "w3:p1",
+    queueSignature: null,
+    queue: [waiting(20, "w3:p1", "after the reset then")],
+    agents: [{ pane_id: "w3:p1", agent: "codex" }],
+    quota: { agents: [{ agent: "codex", blocked: true, resume_at: "2026-09-19T08:14:00Z" }] },
+  };
+  const q = loadQueue(out);
+  q.renderChatQueue();
+  check("a held prompt says which agent is out",
+        /Codex has nothing left until 19\.9\./.test(q.el.innerHTML), true);
+  check("and stops there - the buttons under it say the rest",
+        /goes anyway|Send now goes/.test(q.el.innerHTML), false);
+
+  // The same chat with room left says nothing: a queue waiting its turn behind
+  // a busy agent is working exactly as intended.
+  const fine = loadQueue({
+    ...out,
+    queueSignature: null,
+    quota: { agents: [{ agent: "codex", blocked: false }] },
+  });
+  fine.renderChatQueue();
+  check("a window with room says nothing", /chat-queue-note/.test(fine.el.innerHTML), false);
+
+  // Another agent's wall is not this chat's problem.
+  const other = loadQueue({
+    ...out,
+    queueSignature: null,
+    quota: { agents: [{ agent: "claude", blocked: true, resume_at: "2026-09-19T08:14:00Z" }] },
+  });
+  other.renderChatQueue();
+  check("and neither is another agent's",
+        /chat-queue-note/.test(other.el.innerHTML), false);
 }
 
 // -- taking one back --------------------------------------------------------

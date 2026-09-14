@@ -1166,6 +1166,21 @@
     return bits.join(" · ");
   }
 
+  /* The one word beside a row. What the agent is doing is already the spine
+     down the card and the pose the sheep stands in, so when something is
+     stacked behind it that is the more useful word: an agent that finished
+     with a prompt still waiting is not "done", it is one prompt from starting
+     again. A question on screen outranks even that - nothing is ever delivered
+     into one, and it is the state that must never be buried. */
+  function statusBadge(agent, status, queued) {
+    if (!agent.has_agent) return '<span class="agent-row-ago">shell</span>';
+    const word = queued ? queuedLabel(queued) : "";
+    if (!word || status === "blocked") {
+      return `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`;
+    }
+    return `<span class="status-badge status-${queued.failed ? "failed" : "queued"}">${escapeHtml(word)}</span>`;
+  }
+
   function agentRowHtml(agent, groupName, queued) {
     const isActive = agent.pane_id === state.activePaneId;
     const status = knownStatus(agent.status);
@@ -1203,15 +1218,8 @@
             </span>
           </span>
           <span class="agent-row-side">
-            ${
-              agent.has_agent
-                ? `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`
-                : `<span class="agent-row-ago">shell</span>`
-            }
+            ${statusBadge(agent, status, queued)}
             <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
-            ${queued
-                ? `<span class="agent-row-queued${queued.failed ? " failed" : ""}">${escapeHtml(queuedLabel(queued))}</span>`
-                : ""}
           </span>
         </button>
       </div>
@@ -2128,6 +2136,23 @@
     return state.queue.filter((p) => p.pane_id === paneId && p.state !== "sent");
   }
 
+  /* Why a prompt is still sitting there. A queue that holds without saying so
+     is indistinguishable from one that is broken - which is exactly how it
+     looked when a window ran out and the strip above said nothing about the
+     chat below it. */
+  function holdingNote() {
+    const row = (state.agents || []).find((a) => a.pane_id === state.activePaneId);
+    const kind = row && row.agent;
+    if (!kind || !state.quota) return "";
+    const reading = (state.quota.agents || []).find((a) => a.agent === kind);
+    if (!reading || !reading.blocked) return "";
+    const back = resetLabel(reading.resume_at);
+    const name = kind.replace(/^./, (c) => c.toUpperCase());
+    return `<div class="chat-queue-note">${escapeHtml(name)} has nothing left${
+      back ? ` until ${escapeHtml(back)}` : ""
+    }</div>`;
+  }
+
   function renderChatQueue() {
     const queued = queuedFor(state.activePaneId);
     if (!queued.length) {
@@ -2136,12 +2161,13 @@
       state.queueSignature = null;
       return;
     }
-    const signature = queueSignature() + state.activePaneId;
+    const note = holdingNote();
+    const signature = queueSignature() + state.activePaneId + note;
     if (signature === state.queueSignature && !elChatQueue.classList.contains("hidden")) return;
     state.queueSignature = signature;
 
     elChatQueue.classList.remove("hidden");
-    elChatQueue.innerHTML = queued
+    elChatQueue.innerHTML = note + queued
       .map((p) => {
         const failed = p.state === "failed";
         const word = QUEUE_WORD[p.state] || p.state;

@@ -84,10 +84,14 @@ read as full all afternoon. A bucket whose `resets_at` has passed blocks
 nothing, and the phone draws it with no percentage at all rather than an old
 one.
 
-**Usage does not gate delivery at all**, so not knowing what is left costs
-nothing: a prompt goes as soon as the pane can take it. A window therefore
-matters in exactly two places — the strip, where it is information, and the
-wall, where a banner is confirmed against it.
+**Only a window that is out may hold anything.** Not `threshold`, which is a
+colour on a bar, and not a reading nobody could take: not knowing is not the
+same as knowing there is nothing left, and a hold is forever — nothing retries
+a prompt the sweep declined to send. An agent that cannot be priced is
+delivered to, and the wall catches it if that was optimistic.
+
+Each agent is priced separately and holds only its own panes, since a Claude
+window says nothing about what a Codex pane may spend.
 
 "Spent" in that second place means the cap itself — 100%, or a window the
 provider locked after it was used. Not `threshold`, which is only where the bar
@@ -106,10 +110,15 @@ minute later, for a window that was not out at all.
   itself, but then everything behind the first prompt runs against whatever the
   subscription looks like by the time it gets there — which is the entire thing
   this queue exists to decide.
-- **No admission control.** A prompt somebody typed is theirs to spend their own
-  window on, down to the last percent, so nothing in delivery consults usage.
-  A queue that stops at 85% stops exactly when the phone is most wanted, and
-  the 15% it was protecting is days of perfectly good weekly window.
+- **Admission at the cap, and nowhere before it.** A prompt somebody typed is
+  theirs to spend their own window on, down to the last percent: a queue that
+  stops at 85% stops exactly when the phone is most wanted, and the 15% it was
+  protecting is days of perfectly good weekly window. But "down to the last
+  percent" has an end. A window with nothing left cannot take the prompt —
+  handing it over spends it against a wall and loses the text in a refusal — so
+  a pane whose agent is out waits for the window to reopen, and the chat says
+  so above the composer. **Send now** goes anyway — it is a button under the
+  prompt, not a sentence beside it.
 - **The wall.** When a window runs out mid-turn, `esc` halts it and a resume
   prompt is queued *in front* of everything else for that chat. There is no
   separate pause state: a resume is just a prompt that jumps the queue.

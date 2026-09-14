@@ -10,6 +10,14 @@ is who, the row is what**.
 
 ### The row says what it is doing
 
+When something is queued behind a pane, the row says *that* instead — "1
+queued", in orange, where the agent's own word would be. An agent that finished
+with a prompt still waiting is not "done", it is one prompt from starting
+again, and what it was doing is still on the card twice over: the spine and the
+pose. A question on screen is the exception and outranks the count, since
+nothing is ever delivered into one.
+
+
 | State | Row | Sheep |
 |---|---|---|
 | Working 🟡 | amber spine | grazing, head down — munching bob |
