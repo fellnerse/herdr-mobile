@@ -857,13 +857,22 @@
     saddle: '<path d="M6 4 h26 v9 q-13 4 -26 0 z"/>',
   };
 
-  /* Horns: the cue that survives being small. Drawn in one canonical frame -
-     base at the origin, curling back over the skull - and then placed by
-     whatever the pose did with the head. */
+  /* Horns: the cue that is supposed to survive being small, and the first
+     attempt did not. It curled *back over* the skull, inside the fleece, in
+     bone - which on a white sheep is pale on pale, inside the outline, where
+     it changes nothing at all about the shape.
+
+     A horn has to leave the silhouette to be one. These rise off the top of
+     the head and sweep back above the fleece line, so what changes is the
+     animal's edge against the card - and they are coloured against the fleece
+     rather than in a fixed bone, the way the eye is coloured against the
+     face. */
   const HORNS = {
     none: "",
-    curl: "M0 0 q-3.4 -0.6 -4.3 2.1 q-0.7 2.3 1.9 3",
-    spiral: "M0 0 q-4.2 -1.2 -5.4 2.2 q-1 3 2.2 4 q2.6 0.8 3.1 -1.6 q0.4 -1.9 -1.6 -2.3",
+    // Half a turn: up, back, and hooked down behind the ear.
+    curl: "M0 0 c-1.4 -3.2 -5.2 -4 -7 -1.4 c-1.4 2 -0.2 4.2 1.8 4.4",
+    // A full one, the ram's.
+    spiral: "M0 0 c-1.6 -3.8 -6.4 -5 -8.6 -1.8 c-1.9 2.8 -0.2 6 3 6 c2.4 0 3.6 -1.9 2.8 -3.6 c-0.6 -1.3 -2.3 -1.5 -3.2 -0.5",
   };
   const HORN_KINDS = ["none", "curl", "spiral"];
 
@@ -916,9 +925,11 @@
       ? `<clipPath id="${clip}">${shape}</clipPath>
          <g clip-path="url(#${clip})" fill="${marks.breed.patch}">${mark}</g>`
       : "";
+    const rim = rimFor(marks.breed.fleece);
+    const rimStyle = rim ? ` style="fill:${rim};stroke:${rim}"` : "";
     return `
       <g transform="translate(0 ${dy})">
-        <g class="sheep-edge">${shape}</g>
+        <g class="sheep-edge"${rimStyle}>${shape}</g>
         <g fill="currentColor">${shape}</g>
         ${pattern}
       </g>`;
@@ -927,24 +938,55 @@
   /* A horn placed on a head: the card-coloured stroke underneath is the same
      outline the face and ear carry, and it is what keeps a pale horn off a
      pale fleece and a dark one off the card. */
-  function hornAt(kind, x, y, rotate) {
-    const path = HORNS[kind];
+  /* Where a horn is planted is not a matter of taste: it has to leave the
+     fleece, or it changes no outline and is not doing the job horns are here
+     for. The head is in a different place in every pose and the low ones -
+     grazing, asleep - are where the first attempt failed, because a horn
+     curling up off a lowered skull curls straight into the body. These four
+     placements were searched for rather than eyeballed: each keeps the horn
+     off the face and the eye, inside the canvas, and mostly outside the
+     silhouette. `tools/test-flock.js` holds that last part. */
+  function hornAt(marks, x, y, rotate) {
+    const path = HORNS[marks.horn];
     if (!path) return "";
     const at = `translate(${x} ${y}) rotate(${rotate})`;
     return `
       <g transform="${at}" fill="none" stroke-linecap="round">
         <path class="sheep-horn-edge" d="${path}"/>
-        <path class="sheep-horn" d="${path}"/>
+        <path class="sheep-horn" d="${path}" style="stroke:${hornOn(marks.breed.fleece)}"/>
       </g>`;
   }
 
-  // A fringe hangs off the forehead, so it belongs to the head, not the body.
+  /* Dark horn on a pale sheep, bone on a dark one. Horn is keratin and comes in
+     both, so the one that can be seen is the right one. */
+  function hornOn(fleece) {
+    return isLight(fleece) ? "#4a4235" : "#e4d9bd";
+  }
+
+  /* A fringe hangs off the forehead, so it belongs to the head rather than the
+     body - and it has to actually cross the face. As a soft ellipse tucked
+     above the brow it was fleece-coloured wool over a pale face, which is to
+     say invisible. Scalloped and sitting on the face, its card-coloured edge
+     draws a line across the brow that reads at any size. */
+  const FRINGE = "M-5.6 -2.6 h11.2 v1.4 q-1.9 2.9 -3.8 0 q-1.9 2.9 -3.8 0 q-1.9 2.9 -3.8 0 z";
+
   function fringeAt(x, y, rotate) {
     return `
-      <g transform="translate(${x} ${y}) rotate(${rotate})" fill="currentColor">
-        <ellipse class="sheep-edge-fill" cx="0" cy="0" rx="4.4" ry="3"/>
+      <g transform="translate(${x} ${y}) rotate(${rotate})">
+        <path class="sheep-fringe" d="${FRINGE}"/>
       </g>`;
   }
+
+  /* Where the horn and the fringe go in each pose: [x, y, rotation]. Data
+     rather than four hand-placed pairs, so the test can take the real numbers
+     and check the horn actually leaves the fleece - which is the property that
+     has now been got wrong twice. */
+  const HEAD_AT = {
+    graze: { horn: [38, 15, 110], fringe: [36.4, 17.4, 18] },
+    stand: { horn: [38, 8.2, 40], fringe: [36.2, 10.4, 0] },
+    alert: { horn: [36.4, 6.2, 15], fringe: [36.6, 8, -6] },
+    sleep: { horn: [38, 19.8, 110], fringe: [36.2, 22.6, 12] },
+  };
 
   /* Each pose moves the head, so everything hanging off it - the ear, the
      horn, the fringe - is part of the pose rather than laid over the top. */
@@ -952,43 +994,66 @@
     // Head down in the grass.
     graze: (m) => `
       <ellipse class="sheep-ear" cx="33.2" cy="15.2" rx="3" ry="1.8" transform="rotate(-42 33.2 15.2)"/>
-      ${hornAt(m.horn, 34.4, 15.4, 20)}
+      ${hornAt(m, ...HEAD_AT.graze.horn)}
       <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
       ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.5" cy="20.5" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
-      ${m.coat === "fringe" ? fringeAt(34.6, 16.4, 20) : ""}
+      ${m.coat === "fringe" ? fringeAt(...HEAD_AT.graze.fringe) : ""}
       <circle class="sheep-eye" cx="38.2" cy="18" r="1.2" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Head up, ear resting: done, waiting on you.
     stand: (m) => `
       <ellipse class="sheep-ear" cx="32.4" cy="9" rx="3" ry="1.8" transform="rotate(-38 32.4 9)"/>
-      ${hornAt(m.horn, 33.8, 9.2, 0)}
+      ${hornAt(m, ...HEAD_AT.stand.horn)}
       <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
       ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.3" cy="13.7" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
-      ${m.coat === "fringe" ? fringeAt(34.8, 9.4, 0) : ""}
+      ${m.coat === "fringe" ? fringeAt(...HEAD_AT.stand.fringe) : ""}
       <circle class="sheep-eye" cx="38.2" cy="11.4" r="1.2" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Ear pricked straight up: something is asking for an answer.
     alert: (m) => `
       <ellipse class="sheep-ear" cx="33.6" cy="6.2" rx="3.2" ry="1.7" transform="rotate(-72 33.6 6.2)"/>
-      ${hornAt(m.horn, 34.2, 7, -8)}
+      ${hornAt(m, ...HEAD_AT.alert.horn)}
       <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
       ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.7" cy="11.3" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
-      ${m.coat === "fringe" ? fringeAt(35.2, 7, -8) : ""}
+      ${m.coat === "fringe" ? fringeAt(...HEAD_AT.alert.fringe) : ""}
       <circle class="sheep-eye" cx="38.6" cy="8.8" r="1.3" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Lying down, eye shut, legs folded under.
     sleep: (m) => `
       <ellipse class="sheep-ear" cx="32.6" cy="20.4" rx="3" ry="1.8" transform="rotate(-30 32.6 20.4)"/>
-      ${hornAt(m.horn, 33.8, 20.6, 14)}
+      ${hornAt(m, ...HEAD_AT.sleep.horn)}
       <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
       ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.3" cy="25.7" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
-      ${m.coat === "fringe" ? fringeAt(34.8, 21.6, 14) : ""}
+      ${m.coat === "fringe" ? fringeAt(...HEAD_AT.sleep.fringe) : ""}
       <path class="sheep-lid" d="M36.4 24.2 q1.6 1.4 3.2 0"/>`,
   };
+
+  function isLight(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return ((n >> 16) * 0.299 + ((n >> 8) & 255) * 0.587 + (n & 255) * 0.114) > 110;
+  }
 
   /* An eye has to be the opposite of the face it sits in: a dark pupil on a
      black-faced Suffolk is not a subtle eye, it is no eye. */
   function eyeOn(face) {
-    const n = parseInt(face.slice(1), 16);
-    const light = ((n >> 16) * 0.299 + ((n >> 8) & 255) * 0.587 + (n & 255) * 0.114) > 110;
-    return light ? "#12161f" : "#e8edf6";
+    return isLight(face) ? "#12161f" : "#e8edf6";
+  }
+
+  /* The rim around the whole animal, and the thing the first version got
+     backwards. It was the card's own colour, which cannot by definition
+     separate a dark sheep from the card - a black one was a hole in the row
+     rather than an animal in it.
+
+     A pale sheep needs no rim at all against a dark card, so it keeps the
+     card-coloured one (the stylesheet swaps that for the selected row's colour
+     on its own). A dark one gets a light rim instead: its own fleece mixed
+     halfway to a pale grey, so the halo still belongs to that animal rather
+     than outlining every dark sheep in the same white. */
+  function rimFor(fleece) {
+    if (isLight(fleece)) return "";
+    const n = parseInt(fleece.slice(1), 16);
+    const mix = (channel, towards) => Math.round(channel + (towards - channel) * 0.55);
+    const rgb = [
+      mix(n >> 16, 0xc6), mix((n >> 8) & 255, 0xcf), mix(n & 255, 0xdd),
+    ];
+    return `rgb(${rgb.join(",")})`;
   }
 
   /* Nobody home: bare ground where the sheep would stand. Quieter than the

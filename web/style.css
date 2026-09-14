@@ -400,26 +400,31 @@ html, body {
 
 .sheep-face,
 .sheep-ear,
-.sheep-edge-fill {
+.sheep-fringe {
   fill: #dfe5f0;
   stroke: var(--bg-card);
   stroke-width: 1.1;
 }
 
-/* The fringe is fleece hanging over the forehead, so it takes the fleece's
-   colour from the group it is drawn in rather than the face's. */
-.sheep-edge-fill { fill: currentColor; }
+/* The fringe is fleece hanging over the brow, so it takes the fleece's colour
+   from the group it is drawn in - and its card-coloured edge is the line that
+   makes it legible where the face is pale too. */
+.sheep-fringe {
+  fill: currentColor;
+  stroke-linejoin: round;
+}
 
-/* Horn: bone, on a card-coloured stroke a shade fatter, which is the same
-   outline by another means - a stroke cannot carry one of its own. */
+/* Horn: coloured against the fleece in JS, on a card-coloured stroke a shade
+   fatter, which is the same outline by another means - a stroke cannot carry
+   one of its own. */
 .sheep-horn {
-  stroke: #d9cdb2;
-  stroke-width: 1.9;
+  stroke: #e4d9bd;
+  stroke-width: 2.1;
 }
 
 .sheep-horn-edge {
   stroke: var(--bg-card);
-  stroke-width: 3.6;
+  stroke-width: 3.8;
 }
 
 .sheep-ear { stroke-width: 1; }
@@ -439,9 +444,13 @@ html, body {
 
 /* The selected row is a different colour, so everything outlined against the
    card has to be outlined against that instead. */
+/* The selected row is a different colour, so everything outlined against the
+   card has to be outlined against that instead. A dark sheep's rim is set on
+   the element itself and deliberately wins over this: it is a light halo that
+   has to hold on either background. */
 .agent-row.active .sheep-face,
 .agent-row.active .sheep-ear,
-.agent-row.active .sheep-edge-fill,
+.agent-row.active .sheep-fringe,
 .agent-row.active .sheep-horn-edge,
 .agent-row.active .sheep-edge { stroke: var(--bg-hover); }
 

@@ -47,7 +47,15 @@ head, where *the one with the teal blob on its flank* is a thing you decode.
 So the whole animal is identity, hashed from the pane id with FNV-1a:
 
 * **Horns** — hornless, a short curl, or a full spiral. The strongest cue at 44
-  pixels, because it changes the outline.
+  pixels, *provided* it changes the outline, which took two attempts. Drawn
+  inside the silhouette in bone, a horn on a white sheep is pale on pale and
+  alters no shape at all; and a placement that works for a raised head curls
+  straight into the body when the head is down, which is two of the four poses.
+  So the four placements were searched for rather than eyeballed — off the
+  face, off the eye, inside the canvas, and mostly outside the fleece — and the
+  test samples the curves and holds that last part. The horn is coloured
+  against the fleece, dark on a pale sheep and bone on a dark one, the same way
+  the eye is coloured against the face.
 * **Coat** — woolly (the cloud line), shorn (a smooth, slimmer barrel with more
   daylight under it, drawn as two ellipses so it tapers into the neck rather
   than reading as furniture), or a fringe down over the eyes.
@@ -87,9 +95,16 @@ fails.
 ### Outlines, and the hole in the row
 
 Everything laid over the body is outlined in the card's own colour: face, ear,
-fringe, horn. That was true when the fleece was a status colour and it matters
-more now, because a sheep can be black and a black sheep on a dark card is a
-hole rather than an animal.
+fringe, horn. That is what makes a fringe legible where the face under it is
+pale too — the scalloped card-coloured edge draws a line across the brow, where
+a soft ellipse of fleece-coloured wool drew nothing.
+
+The rim around the whole animal is the one place that rule inverts, and getting
+it wrong is what left a black sheep as a hole in the row: the card's own colour
+cannot separate anything *from the card*. A pale sheep needs no rim against a
+dark row and keeps the card-coloured one; a dark sheep gets a light one
+instead, its own fleece mixed halfway to a pale grey, so the halo still belongs
+to that animal rather than outlining every dark sheep in the same white.
 
 The body itself cannot simply be stroked: it is four overlapping circles and a
 rectangle, and stroking them draws a line through every place two of them meet

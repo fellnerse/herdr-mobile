@@ -47,7 +47,7 @@ function loadMarks() {
   const to = src.indexOf("  /* Everything a row draws.");
   if (from < 0 || to < 0) throw new Error(`marks anchors moved in ${SRC}`);
   return new Function(
-    `${src.slice(from, to)} return { sheepMarks, sheepSvg, eyeOn, BREEDS, MARKS, HORN_KINDS, COATS, knownStatus };`
+    `${src.slice(from, to)} return { sheepMarks, sheepSvg, eyeOn, hornOn, rimFor, isLight, BREEDS, MARKS, HORNS, HORN_KINDS, HEAD_AT, COATS, knownStatus };`
   )();
 }
 
@@ -370,6 +370,109 @@ function order(agents, pickerHidden = true, held = []) {
      black-faced Suffolk is not a subtle eye, it is no eye. */
   check("a dark face gets a pale eye", m.eyeOn("#2c3242"), "#e8edf6");
   check("a pale face gets a dark eye", m.eyeOn("#ccd4e1"), "#12161f");
+
+  /* The same rule for horns, and it is the one the first version broke: bone
+     drawn on a white fleece is a horn nobody can see. */
+  check("a pale sheep gets a dark horn", m.hornOn("#eef1f6"), "#4a4235");
+  check("a dark sheep gets a bone one", m.hornOn("#2f3543"), "#e4d9bd");
+  for (const b of m.BREEDS) {
+    if (m.hornOn(b.fleece) === b.fleece) failures.push(`FAIL ${b.id} wears an invisible horn`);
+  }
+
+  /* The rim is what keeps a dark animal off a dark card - so a dark breed must
+     carry its own, and a pale one must not (it would outline a white sheep in
+     white). The card colour cannot separate anything from the card. */
+  const CARD = "#181c26";
+  for (const b of m.BREEDS) {
+    const rim = m.rimFor(b.fleece);
+    if (m.isLight(b.fleece) && rim) failures.push(`FAIL ${b.id} is pale and rimmed anyway`);
+    if (!m.isLight(b.fleece) && !rim) failures.push(`FAIL ${b.id} is dark with no rim`);
+    if (rim === CARD) failures.push(`FAIL ${b.id} is rimmed in the card's own colour`);
+  }
+  check("a dark sheep's rim is lighter than it is",
+        m.isLight("#2f3543"), false);
+
+  /* A horn that does not leave the fleece changes no outline, and an outline is
+     the whole reason horns are the first cue. This has now been got wrong
+     twice - once by drawing them inside the silhouette, once by keeping the
+     same placement for the poses where the head is *down*, where curling up
+     off a lowered skull curls straight into the body. So the placements are
+     read out of the drawing and checked, rather than trusted.
+
+     The body shapes below mirror the woolly coat in `sheepBody`; they are the
+     silhouette the horn has to escape. */
+  const BODY = [[11.5, 16, 7.5], [18, 11, 8], [25.5, 11.5, 7.5], [31, 16, 7]];
+  const BARREL = [5, 13, 32, 26];
+
+  function hornPoints(path, [bx, by, rotate]) {
+    const nums = path.slice(1).trim().split(/[c\s,]+/).filter(Boolean).map(Number);
+    let [x, y] = [nums[0], nums[1]];
+    const local = [[x, y]];
+    for (let i = 2; i + 5 < nums.length; i += 6) {
+      const [x1, y1, x2, y2, x3, y3] = nums.slice(i, i + 6);
+      const p = [[x, y], [x + x1, y + y1], [x + x2, y + y2], [x + x3, y + y3]];
+      for (let t = 0.05; t <= 1.0001; t += 0.05) {
+        const u = 1 - t;
+        local.push([
+          u ** 3 * p[0][0] + 3 * u * u * t * p[1][0] + 3 * u * t * t * p[2][0] + t ** 3 * p[3][0],
+          u ** 3 * p[0][1] + 3 * u * u * t * p[1][1] + 3 * u * t * t * p[2][1] + t ** 3 * p[3][1],
+        ]);
+      }
+      [x, y] = p[3];
+    }
+    const rad = (rotate * Math.PI) / 180;
+    return local.map(([lx, ly]) => [
+      bx + lx * Math.cos(rad) - ly * Math.sin(rad),
+      by + lx * Math.sin(rad) + ly * Math.cos(rad),
+    ]);
+  }
+
+  const inFleece = ([x, y], dy) =>
+    BODY.some(([cx, cy, r]) => (x - cx) ** 2 + (y - cy - dy) ** 2 <= r * r) ||
+    (x >= BARREL[0] && x <= BARREL[2] && y - dy >= BARREL[1] && y - dy <= BARREL[3]);
+
+  for (const [pose, at] of Object.entries(m.HEAD_AT)) {
+    const dy = pose === "sleep" ? 5 : 0;
+    for (const kind of ["curl", "spiral"]) {
+      const pts = hornPoints(m.HORNS[kind], at.horn);
+      const outside = pts.filter((p) => !inFleece(p, dy)).length / pts.length;
+      if (outside < 0.5) {
+        failures.push(`FAIL a ${kind} horn on a ${pose}ing sheep is ${Math.round(outside * 100)}% outside the fleece`);
+      }
+      if (pts.some(([x, y]) => x < 0 || x > 44 || y < 0 || y > 34)) {
+        failures.push(`FAIL a ${kind} horn on a ${pose}ing sheep leaves the canvas`);
+      }
+    }
+  }
+
+  /* Every cue has to change the drawing, and this is the one that went wrong:
+     the horns were there in the markup and invisible on the sheep. Find two
+     seeds that differ in exactly one axis and check the pictures differ too. */
+  const twinsDiffering = (axis) => {
+    const seeds = [];
+    for (let i = 0; i < 4000; i++) seeds.push(`w${i}:p1`);
+    for (const a of seeds) {
+      const x = m.sheepMarks(a);
+      for (const b of seeds) {
+        const y = m.sheepMarks(b);
+        if (a === b || x[axis] === y[axis]) continue;
+        const rest = ["breed", "horn", "coat", "muzzle"].filter((k) => k !== axis);
+        if (rest.every((k) => x[k] === y[k])) return [a, b];
+      }
+    }
+    return null;
+  };
+
+  for (const axis of ["horn", "coat"]) {
+    const pair = twinsDiffering(axis);
+    if (!pair) {
+      failures.push(`FAIL no two seeds differ only in ${axis}`);
+      continue;
+    }
+    const [a, b] = pair;
+    const strip = (svg) => svg.replace(/id="fleece-\d+"|url\(#fleece-\d+\)/g, "");
+    check(`${axis} changes the animal`, strip(m.sheepSvg("idle", a)) === strip(m.sheepSvg("idle", b)), false);
+  }
 
   // Nobody home is nobody to tell apart.
   const empty = m.sheepSvg("unknown", "wJ:p1");
