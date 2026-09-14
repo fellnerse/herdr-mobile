@@ -2094,10 +2094,13 @@
         const label = [windowLabel(b.name), when].filter(Boolean).join(", ");
         // A window that has rolled over is not at the percentage it was.
         const value = b.expired ? "—" : `${b.utilization.toFixed(0)}%`;
-        /* A window with nothing left says so in red, on the time it comes
-           back - which is the only thing you can do about it. No sentence
-           underneath: the colour is the sentence. */
-        const cls = [b.expired ? "past" : "", b.spent ? "out" : ""].filter(Boolean).join(" ");
+        /* Amber from the threshold up, red at the cap - and a window with
+           nothing left says so on the time it comes back, which is the only
+           thing you can do about it. No sentence underneath: the colour is the
+           sentence. */
+        // A window that has rolled over is drawn as neither: what has been
+        // spent in the new one is not known, so it is not amber and not red.
+        const cls = b.expired ? "past" : b.spent ? "out" : b.warning ? "near" : "";
         return `<span class="usage-window${cls ? " " + cls : ""}">${escapeHtml(value)}
           <span class="usage-when">(${escapeHtml(label)})</span></span>`;
       })

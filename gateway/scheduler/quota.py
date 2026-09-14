@@ -56,12 +56,12 @@ CACHE = STATE_DIR / "quota-cache.json"
 # The line the strip turns amber at. It is a warning and nothing else: a prompt
 # somebody typed is never held back for it, because the window is theirs to
 # spend down to the last percent.
-DEFAULT_THRESHOLD = 85.0
+DEFAULT_THRESHOLD = 80.0
 
-# What counts as actually out. The endpoint reports a locked window outright;
-# short of that, a percentage this high means the next turn is the one that
-# gets cut off, and only then is there anything worth waiting for.
-EXHAUSTED = 99.0
+# What counts as actually out: the cap itself, or a window the provider has
+# locked after it was used. Anything below that has something left in it, and a
+# window with something left in it is not a wall.
+EXHAUSTED = 100.0
 
 # Backoff when a bucket is exhausted but reports no reset time.
 BLIND_BACKOFF_SECONDS = 15 * 60

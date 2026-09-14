@@ -681,6 +681,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scheduler import quota
+from scheduler import config as sched_config
 
 # Claude Code's own cache, as it sits in .claude.json: the endpoint's payload,
 # stamped with the account it belongs to and when it was taken.
@@ -854,7 +855,8 @@ def bucket(util, resets_at=None, locked=None):
 
 check("most of a window gone is not a window spent", bucket(87.0, ahead).is_spent(), False)
 check("nor is nearly all of it", bucket(98.0, ahead).is_spent(), False)
-check("all of it is", bucket(100.0, ahead).is_spent(), True)
+check("nor is all but a rounding error", bucket(99.5, ahead).is_spent(), False)
+check("the cap itself is", bucket(100.0, ahead).is_spent(), True)
 check("and a window the provider locked is, whatever it reads",
       bucket(3.0, ahead, "over_limit").is_spent(), True)
 
@@ -866,10 +868,15 @@ check("and it knows it has come back", bucket(98.0, past).is_expired(), True)
 check("a window with no reset time is taken at its word",
       bucket(100.0, None).is_spent(), True)
 
-# The threshold is a colour on a bar and nothing else now. Whatever it is set
-# to, a window with room in it is spendable.
+# The threshold is a colour on a bar and nothing else now: amber from there up,
+# red at the cap. Whatever it is set to, a window with room in it is spendable.
 check("the threshold does not decide what is spent",
-      [b.is_spent() for b in (bucket(86.0, ahead), bucket(99.5, ahead))], [False, True])
+      [b.is_spent() for b in (bucket(81.0, ahead), bucket(99.0, ahead))], [False, False])
+check("amber starts at four fifths of a window",
+      quota.DEFAULT_THRESHOLD, 80.0)
+check("and the default the queue loads agrees with it",
+      sched_config.load(Path("/nonexistent/scheduler.json")).threshold,
+      quota.DEFAULT_THRESHOLD)
 
 # Nothing in the queue's delivery path asks about usage any more: a prompt
 # somebody typed goes when the pane can take it, and the only thing that defers

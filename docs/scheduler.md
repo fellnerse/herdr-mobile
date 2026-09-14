@@ -89,8 +89,9 @@ nothing: a prompt goes as soon as the pane can take it. A window therefore
 matters in exactly two places — the strip, where it is information, and the
 wall, where a banner is confirmed against it.
 
-"Spent" in that second place means locked *after* being used, or within a
-percent of the top. Not `threshold`, which is only where the bar turns amber.
+"Spent" in that second place means the cap itself — 100%, or a window the
+provider locked after it was used. Not `threshold`, which is only where the bar
+turns amber (80%).
 And not a slot the plan never included, which is locked from the day it was
 born and says nothing about what anybody spent.
 
@@ -108,7 +109,7 @@ minute later, for a window that was not out at all.
 - **No admission control.** A prompt somebody typed is theirs to spend their own
   window on, down to the last percent, so nothing in delivery consults usage.
   A queue that stops at 85% stops exactly when the phone is most wanted, and
-  the 13% it was protecting is five days of perfectly good weekly window.
+  the 15% it was protecting is days of perfectly good weekly window.
 - **The wall.** When a window runs out mid-turn, `esc` halts it and a resume
   prompt is queued *in front* of everything else for that chat. There is no
   separate pause state: a resume is just a prompt that jumps the queue.
@@ -231,7 +232,7 @@ restart.
 
 | Key | Default | |
 |---|---|---|
-| `threshold` | `85.0` | the line the usage bar turns amber at — a warning, not a gate |
+| `threshold` | `80.0` | where a usage window turns amber — a warning, not a gate. Red is the cap itself, which is not a setting |
 | `poll_seconds` | `60` | worst-case sweep interval if the event stream drops |
 | `agent_kind` | `claude` | |
 | `agent_args` | `[]` | passed to a relaunched session on the cold path |

@@ -1393,8 +1393,14 @@ html, body {
 /* A window that has already come back carries no percentage worth reading. */
 .usage-window.past { color: var(--text-muted); }
 
+/* Getting close. The same amber the bar uses and the same amber a working
+   sheep is drawn in, so the three never have to be reconciled by eye. */
+.usage-window.near { color: var(--status-working); }
+
 /* Nothing left in this one. The time it comes back is the only part worth
    reading, so that is the part that goes red - no sentence underneath. */
+.usage-window.out { color: var(--status-blocked); }
+
 .usage-window.out .usage-when {
   color: var(--status-blocked);
   font-weight: 600;
