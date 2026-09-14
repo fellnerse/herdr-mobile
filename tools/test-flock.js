@@ -21,11 +21,12 @@ const TO = "  // Opening a project is activity too";
    are sliced separately so this suite can ask what a row says without a DOM. */
 function loadRows() {
   const src = fs.readFileSync(SRC, "utf8");
-  const from = src.indexOf("  function agentRowHtml(");
+  const from = src.indexOf("  /* What is still owed to each pane");
   const to = src.indexOf("  async function createWorkspace() {");
   if (from < 0 || to < 0) throw new Error(`row anchors moved in ${SRC}`);
   const PRELUDE = `
-    const state = { activePaneId: null, groups: [], agents: [], swiping: false, listSignature: null };
+    const state = { activePaneId: null, groups: [], agents: [], queue: [],
+                    swiping: false, listSignature: null };
     const elAgentList = { innerHTML: "", querySelector: () => null };
     const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const knownStatus = (s) => s || "unknown";
@@ -33,7 +34,7 @@ function loadRows() {
     const agoLabel = () => "";
     const wantsInput = (a) => a.status === "blocked";
   `;
-  return new Function(`${PRELUDE}${src.slice(from, to)} return { agentRowHtml };`)();
+  return new Function(`${PRELUDE}${src.slice(from, to)} return { state, agentRowHtml, queuedByPane, queuedLabel };`)();
 }
 
 /* The markings that tell two sheep on one project apart. Sliced on its own so
@@ -312,6 +313,39 @@ function order(agents, pickerHidden = true, held = []) {
 
   // Nobody home is nobody to tell apart.
   check("an empty pasture wears no tag", m.sheepSvg("unknown", "wJ:p1").includes("sheep-tag"), false);
+}
+
+// -- what is still owed ------------------------------------------------------
+
+/* A queue you have to open the queue to see is a queue you forget you left
+   running. The count belongs on the sheep it is stacked behind. */
+{
+  const rows = loadRows();
+  rows.state.queue = [
+    { id: 1, pane_id: "wA:p1", state: "waiting" },
+    { id: 2, pane_id: "wA:p1", state: "waiting" },
+    { id: 3, pane_id: "wA:p1", state: "failed" },
+    { id: 4, pane_id: "wB:p1", state: "waiting" },
+  ];
+  const counts = rows.queuedByPane();
+  check("waiting and failed are counted apart",
+        counts.get("wA:p1"), { waiting: 2, failed: 1 });
+  check("a pane with nothing queued is absent", counts.get("wC:p1"), undefined);
+  check("both are said", rows.queuedLabel(counts.get("wA:p1")), "2 queued · 1 failed");
+  check("a plain queue says one thing", rows.queuedLabel(counts.get("wB:p1")), "1 queued");
+  check("nothing owed says nothing", rows.queuedLabel(undefined), "");
+
+  const html = rows.agentRowHtml(
+    { ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite it" },
+    "api", counts.get("wA:p1"));
+  check("the row wears the count", html.includes("2 queued · 1 failed"), true);
+  check("and marks it as wanting a person", html.includes("agent-row-queued failed"), true);
+
+  const quiet = rows.agentRowHtml(
+    { ...row("wC:p1", 2, "/p/api", "working"), name: "api", title: "Rewrite it" },
+    "api", counts.get("wC:p1"));
+  check("a sheep with an empty queue says nothing",
+        quiet.includes("agent-row-queued"), false);
 }
 
 if (failures) {

@@ -938,6 +938,7 @@
      its HTML restarts each sheep's graze mid-cycle and throws away the row a
      swipe is holding open - so redraw only when one of these actually moved. */
   function agentListSignature() {
+    const queued = queuedByPane();
     return state.groups
       .map((group) =>
         [
@@ -951,6 +952,7 @@
               a.name,
               a.title || a.cwd,
               agoLabel(a.pane_id),
+              queuedLabel(queued.get(a.pane_id)),
               a.pane_id === state.activePaneId ? "1" : "",
             ].join("\u001f")
           ),
@@ -965,7 +967,30 @@
      it is whatever you asked it to do, and the workspace label drops to the
      small line, and only when it says something the heading did not: "sheep
      #5", or a name you set by hand. */
-  function agentRowHtml(agent, groupName) {
+  /* What is still owed to each pane: prompts holding for a window or a busy
+     chat, and anything that failed on the way in. Both are things you queued
+     and neither has happened yet, so the overview says so rather than making
+     you open the queue to find out. */
+  function queuedByPane() {
+    const counts = new Map();
+    for (const p of state.queue) {
+      const at = counts.get(p.pane_id) || { waiting: 0, failed: 0 };
+      if (p.state === "failed") at.failed++;
+      else at.waiting++;
+      counts.set(p.pane_id, at);
+    }
+    return counts;
+  }
+
+  function queuedLabel(count) {
+    if (!count) return "";
+    const bits = [];
+    if (count.waiting) bits.push(`${count.waiting} queued`);
+    if (count.failed) bits.push(`${count.failed} failed`);
+    return bits.join(" · ");
+  }
+
+  function agentRowHtml(agent, groupName, queued) {
     const isActive = agent.pane_id === state.activePaneId;
     const status = knownStatus(agent.status);
     const label = agent.name || agent.pane_id;
@@ -985,6 +1010,9 @@
           <span class="agent-row-side">
             <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
             <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
+            ${queued
+                ? `<span class="agent-row-queued${queued.failed ? " failed" : ""}">${escapeHtml(queuedLabel(queued))}</span>`
+                : ""}
           </span>
         </button>
       </div>
@@ -1007,19 +1035,32 @@
     if (signature === state.listSignature) return;
     state.listSignature = signature;
 
+    const queued = queuedByPane();
     elAgentList.innerHTML = state.groups
       .map((group) => {
         const waiting = group.agents.filter(wantsInput).length;
+        const owed = group.agents.reduce(
+          (sum, a) => sum + ((queued.get(a.pane_id) || {}).waiting || 0), 0
+        );
         const tally = waiting
           ? `<span class="agent-group-waiting">${waiting} waiting</span>`
           : `<span class="agent-group-count">${group.agents.length}</span>`;
+        /* The heading is sticky, so a project's total stays on screen while
+           you scroll its sheep - which is the number you want when the queue
+           is long enough to scroll. */
+        const owedChip = owed
+          ? `<span class="agent-group-queued">${owed} queued</span>`
+          : "";
         return `
           <section class="agent-group">
             <h2 class="agent-group-head">
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
+              ${owedChip}
               ${tally}
             </h2>
-            ${group.agents.map((a) => agentRowHtml(a, group.name)).join("")}
+            ${group.agents
+                .map((a) => agentRowHtml(a, group.name, queued.get(a.pane_id)))
+                .join("")}
           </section>`;
       })
       .join("");
@@ -1587,6 +1628,10 @@
       state.queue = (data.prompts || []).filter((p) => p.state !== "sent");
       renderQueueBadge();
       if (state.queueOpen) renderTaskList();
+      // The herd is polled before the queue, so the counts on the rows arrive
+      // a beat later than the rows do. The signature keeps this cheap: it only
+      // redraws when a number actually moved.
+      if (state.pickerOpen) renderAgentList();
     } catch (err) {
       /* The connection dot already says the gateway is unreachable; a failed
          queue poll should not also blank the list you were reading. */

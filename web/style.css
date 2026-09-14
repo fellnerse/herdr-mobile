@@ -482,6 +482,30 @@ html, body {
   gap: 4px;
 }
 
+/* What is still owed to this sheep: prompts queued behind whatever it is
+   doing. Monospace and quiet - it is a number you check, not one that should
+   compete with the status it sits under. */
+.agent-row-queued {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  white-space: nowrap;
+}
+
+/* A prompt that failed on the way in is not waiting for a window; it is
+   waiting for you. */
+.agent-row-queued.failed { color: var(--status-blocked); }
+
+.agent-group-queued {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
+  color: var(--accent-primary);
+  white-space: nowrap;
+}
+
 .agent-row-ago {
   font-size: 10px;
   color: var(--text-muted);
