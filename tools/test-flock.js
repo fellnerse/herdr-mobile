@@ -17,6 +17,25 @@ const SRC = path.join(__dirname, "..", "web", "app.js");
 const FROM = "  /* ----------------------------------------------------------- The flock ---";
 const TO = "  // Opening a project is activity too";
 
+/* The row templates live further down app.js, past the picker plumbing. They
+   are sliced separately so this suite can ask what a row says without a DOM. */
+function loadRows() {
+  const src = fs.readFileSync(SRC, "utf8");
+  const from = src.indexOf("  function agentRowHtml(");
+  const to = src.indexOf("  async function createWorkspace() {");
+  if (from < 0 || to < 0) throw new Error(`row anchors moved in ${SRC}`);
+  const PRELUDE = `
+    const state = { activePaneId: null, groups: [], agents: [], swiping: false, listSignature: null };
+    const elAgentList = { innerHTML: "", querySelector: () => null };
+    const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const knownStatus = (s) => s || "unknown";
+    const sheepSvg = () => "";
+    const agoLabel = () => "";
+    const wantsInput = (a) => a.status === "blocked";
+  `;
+  return new Function(`${PRELUDE}${src.slice(from, to)} return { agentRowHtml };`)();
+}
+
 function loadFlock(pickerHidden = true) {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf(FROM);
@@ -209,6 +228,40 @@ function order(agents, pickerHidden = true, held = []) {
   check("the flat list follows the groups",
         f.state.agents.map((a) => a.pane_id), ["wB:p1", "wA:p1"]);
   check("and the held order is that list", f.state.order, ["wB:p1", "wA:p1"]);
+}
+
+// -- what a row says --------------------------------------------------------
+
+/* The heading names the project, so the row must not spend its headline
+   saying it again - what you are looking for is which of a project's agents
+   this one is. */
+{
+  const { agentRowHtml } = loadRows();
+  const text = (html, cls) => {
+    const m = new RegExp(`<span class="${cls}">([^<]*)</span>`).exec(html);
+    return m ? m[1] : null;
+  };
+
+  const plain = agentRowHtml(
+    { ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite the importer" },
+    "api");
+  check("the headline is what the agent is doing", text(plain, "agent-row-name"),
+        "Rewrite the importer");
+  check("and the project is not said twice", text(plain, "agent-row-title"), null);
+
+  // A worktree's label is the one thing the heading did not say.
+  const sheep = agentRowHtml(
+    { ...row("wS:p1", 7, "/p/api", "working"), name: "sheep #4", title: "Fix the flaky test" },
+    "api");
+  check("a workspace named something else keeps its name",
+        text(sheep, "agent-row-title"), "sheep #4");
+
+  // A pane Herdr has no title for yet: fall back to the label, and say where.
+  const fresh = agentRowHtml(
+    { ...row("wN:p1", 9, "/p/api", "unknown"), name: "api", title: "", cwd: "/p/api" },
+    "api");
+  check("a titleless pane falls back to its name", text(fresh, "agent-row-name"), "api");
+  check("and says where it is", text(fresh, "agent-row-title"), "/p/api");
 }
 
 if (failures) {

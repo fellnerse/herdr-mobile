@@ -872,18 +872,28 @@
       .join("\u001d");
   }
 
-  function agentRowHtml(agent) {
+  /* A row under a heading that already names the project should not spend its
+     biggest line saying the project again. What you are looking for is which
+     of this project's agents this one is - so the terminal title leads, since
+     it is whatever you asked it to do, and the workspace label drops to the
+     small line, and only when it says something the heading did not: "sheep
+     #5", or a name you set by hand. */
+  function agentRowHtml(agent, groupName) {
     const isActive = agent.pane_id === state.activePaneId;
     const status = knownStatus(agent.status);
-    const subtitle = agent.title || agent.cwd || "";
+    const label = agent.name || agent.pane_id;
+    const headline = agent.title || label;
+    let sub = "";
+    if (label !== headline && label !== groupName) sub = label;
+    else if (!agent.title) sub = agent.cwd || "";
     return `
       <div class="agent-row-wrap">
         <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
         <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
           <span class="sheep-wrap ${status}">${sheepSvg(status)}</span>
           <span class="agent-row-text">
-            <span class="agent-row-name">${escapeHtml(agent.name || agent.pane_id)}</span>
-            <span class="agent-row-title">${escapeHtml(subtitle)}</span>
+            <span class="agent-row-name">${escapeHtml(headline)}</span>
+            ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
           </span>
           <span class="agent-row-side">
             <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
@@ -922,7 +932,7 @@
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
               ${tally}
             </h2>
-            ${group.agents.map(agentRowHtml).join("")}
+            ${group.agents.map((a) => agentRowHtml(a, group.name)).join("")}
           </section>`;
       })
       .join("");

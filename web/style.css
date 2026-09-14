@@ -323,12 +323,17 @@ html, body {
   gap: 2px;
 }
 
+/* The row's headline is what the agent is doing, which is a sentence rather
+   than a word - so it gets two lines before the ellipsis rather than one. */
 .agent-row-name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
-  white-space: nowrap;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .agent-row-title {
@@ -1095,13 +1100,18 @@ html, body {
 }
 
 .quota-track {
+  display: block;
   height: 6px;
   border-radius: 3px;
   background: var(--bg-hover);
   overflow: hidden;
 }
 
+/* Both of these are spans, and a span is inline until told otherwise: the
+   fill carried a width and a height that a browser had no reason to apply,
+   so every bar read as empty however much of the window was gone. */
 .quota-fill {
+  display: block;
   height: 100%;
   border-radius: 3px;
   background: var(--status-idle);
