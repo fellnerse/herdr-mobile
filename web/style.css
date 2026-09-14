@@ -48,6 +48,12 @@
 html, body {
   width: 100%;
   height: 100%;
+  /* iOS inflates text it decides is "too small for its block" - and it decides
+     per block, so in a diff the short lines (a comment, a closing brace) come
+     out bigger than the code around them and read as headings. Every size here
+     is deliberate; none of them want boosting. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   /* Matches the input dock so the home-indicator strip never reads as a
      black band in standalone (home screen) mode. */
   background-color: var(--bg-surface);
@@ -1216,3 +1222,290 @@ html, body {
 .sheet-backdrop.over-queue { z-index: 40; }
 
 .task-act.accent { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }
+
+/* ---------------------------------------------------------------------------
+   The console and the changed files
+
+   Both take the whole screen the way the project picker does: on a phone a
+   half-view of a terminal or a diff is no view at all.
+   --------------------------------------------------------------------------- */
+/* `inset: 0` is the layout viewport, which on iOS is taller than what you can
+   actually see: the bottom of the view - the console's key row, the last rows
+   of the terminal - ends up under Safari's chrome or the keyboard. The app
+   container solves this with --app-height, tracked from visualViewport, and
+   these views need exactly the same treatment. */
+.full-view {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: var(--app-height, 100dvh);
+  transform: translateY(var(--app-offset, 0px));
+  z-index: 30;
+  background: var(--bg-base);
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--safe-top);
+  /* No bottom inset, for the same reason the input dock takes none: the key
+     row belongs against the bottom edge, and iOS keeps the home indicator
+     legible over it on its own. Reserving the inset here left a band of
+     background between the keys and the keyboard. */
+}
+
+.full-view.hidden { display: none; }
+
+.view-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.view-head-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.view-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.view-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.view-action {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.view-action[aria-pressed="true"] {
+  color: var(--text-primary);
+  border-color: var(--accent-primary);
+}
+
+/* The terminal itself. xterm draws its own rows; all this owns is the room
+   they get and the padding that keeps them off the notch. */
+.console-term {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 4px 6px 8px;
+  overflow-x: hidden;
+  /* While the keyboard is open the font is held steady rather than shrunk to
+     nothing, so the terminal is taller than the room left for it - and what
+     you want to see then is the bottom, where the prompt is. */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.console-term .xterm { height: 100%; }
+
+.console-keys {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.console-keys .key-btn { flex: 1 0 auto; min-width: 46px; }
+
+/* A count on the header button: how many files the agent has touched. */
+#btn-changes {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.changes-count {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  min-width: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--accent-primary);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.changes-count.hidden { display: none; }
+
+.changes-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.change-row-wrap { border-bottom: 1px solid var(--border-subtle); }
+
+.change-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: none;
+  border: none;
+  text-align: left;
+  color: var(--text-primary);
+}
+
+.change-row.open { background: var(--bg-card); }
+
+.change-status {
+  flex-shrink: 0;
+  width: 62px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.status-new { color: var(--status-idle); }
+.status-modified { color: var(--status-working); }
+.status-deleted { color: var(--status-blocked); }
+.status-renamed { color: var(--status-done); }
+
+.change-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  word-break: break-all;
+}
+
+.change-dir { color: var(--text-muted); }
+
+.change-counts {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.diff-add { color: var(--status-idle); }
+.diff-del { color: var(--status-blocked); }
+.diff-binary { color: var(--text-muted); font-size: 11px; }
+
+/* The diff. A wide line scrolls inside its own file rather than pushing the
+   list sideways. */
+.diff-body {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--bg-base);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.diff-body.hidden { display: none; }
+
+.diff-loading {
+  padding: 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.diff-hunk {
+  padding: 5px 10px;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  border-top: 1px solid var(--border-subtle);
+  position: sticky;
+  left: 0;
+}
+
+.diff-grid {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  min-width: max-content;
+}
+
+.diff-line, .diff-side {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 8px;
+  white-space: pre;
+  /* As wide as its text, but never narrower than the column: a short added
+     line still paints its green all the way across. */
+  width: max-content;
+  min-width: 100%;
+}
+
+/* Two halves of the screen, each scrolling its own long lines. `min-width: 0`
+   is what stops a long line from widening the column it sits in. */
+.diff-grid.split {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.diff-col {
+  flex: 1 1 50%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.diff-col + .diff-col { border-left: 1px solid var(--border-subtle); }
+
+/* The gutter numbers never move with the text they belong to. */
+.diff-no {
+  flex-shrink: 0;
+  width: 34px;
+  text-align: right;
+  color: var(--text-muted);
+  opacity: 0.7;
+  user-select: none;
+}
+
+.diff-mark {
+  flex-shrink: 0;
+  width: 8px;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.diff-text { color: var(--role-assistant); }
+.diff-text.empty { color: transparent; }
+
+.diff-line.add, .diff-side.add { background: rgba(63, 185, 80, 0.12); }
+.diff-line.add .diff-text, .diff-side.add .diff-text { color: #9be7a6; }
+.diff-line.del, .diff-side.del { background: rgba(248, 81, 73, 0.12); }
+.diff-line.del .diff-text, .diff-side.del .diff-text { color: #ffb3ad; }
+.diff-side.pad { background: rgba(255, 255, 255, 0.02); }
+
+/* Every row is exactly one line tall, which is what keeps the two columns
+   opposite each other without measuring anything. */
+.diff-side { height: 1.5em; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .change-row { transition: background 0.12s ease; }
+}

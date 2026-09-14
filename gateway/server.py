@@ -17,11 +17,21 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import push
+import gitdiff
+import wsproto
 from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
+from terminal import TerminalStream, TerminalError
 from scheduler import config as sched_config
 from scheduler import db as sched_db
 from scheduler import quota as sched_quota
 from scheduler.dispatch import Scheduler
+
+# The console attaches to Herdr's client socket, which sits beside the RPC one
+# and speaks the protocol a real Herdr GUI speaks.
+HERDR_CLIENT_SOCKET_PATH = (
+    os.environ.get("HERDR_CLIENT_SOCKET")
+    or str(Path(HERDR_SOCKET_PATH).with_name("herdr-client.sock"))
+)
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("SHEEPIT_PORT") or os.environ.get("PORT", "3009"))
@@ -175,6 +185,35 @@ def record_finished(rows: list) -> None:
 FINISHED_TTL = 120.0
 
 
+def pane_cwd(pane_id: str) -> str:
+    """Where a pane is working: the agent's foreground directory when it has
+    one - an agent that has cd'd somewhere is working there - and the pane's
+    own directory otherwise."""
+    res = call_herdr_rpc("agent.list")
+    for agent in res.get("result", {}).get("agents", []):
+        if agent.get("pane_id") == pane_id:
+            cwd = agent.get("foreground_cwd") or agent.get("cwd") or ""
+            if cwd:
+                return cwd
+            break
+    res = call_herdr_rpc("pane.list")
+    for pane in res.get("result", {}).get("panes", []):
+        if pane.get("pane_id") == pane_id:
+            return pane.get("cwd") or ""
+    return ""
+
+
+def clamp_int(value, low: int, high: int, default: int) -> int:
+    """A number the client sent, held inside what the server will act on. A
+    value that is not a number at all is the default rather than an exception
+    thrown out of a request handler."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(number, low), high)
+
+
 def last_finished() -> dict:
     with _LAST_FINISHED_LOCK:
         at = _LAST_FINISHED["at"]
@@ -269,11 +308,113 @@ class HerdrHandler(BaseHTTPRequestHandler):
         # to every /api/ path whether it exists or not.
         self.do_GET()
 
+    def herdr_protocol(self) -> int:
+        """The wire protocol this Herdr speaks, asked fresh rather than cached:
+        a live handoff can put a different build behind the socket."""
+        res = call_herdr_rpc("ping")
+        return res.get("result", {}).get("protocol")
+
+    def serve_terminal_ws(self, pane_id: str, qs: dict):
+        """Attach the phone to one pane's terminal for as long as it holds on.
+
+        Nothing here is polled. Herdr streams the pane's own ANSI as it draws,
+        and keystrokes go back down the same socket, so what the phone shows is
+        the terminal rather than a reading of it.
+        """
+        # Browsers do not apply CORS to a WebSocket: without this, any page in
+        # any tab could open one and type into a pane.
+        if not self.same_origin():
+            self.send_json({"ok": False, "error": "Cross-origin request refused"},
+                           HTTPStatus.FORBIDDEN)
+            return
+
+        panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
+        pane = next((p for p in panes if p.get("pane_id") == pane_id), None)
+        terminal_id = (pane or {}).get("terminal_id")
+        if not terminal_id:
+            self.send_json({"ok": False, "error": "No terminal for that pane"},
+                           HTTPStatus.NOT_FOUND)
+            return
+
+        protocol = self.herdr_protocol()
+        # The handshake has to name a size, but it is only what this connection
+        # would like; the pane keeps the size the desktop gave it until the
+        # phone explicitly asks to change it, because the runtime is shared and
+        # a resize here moves the window over there.
+        cols = clamp_int(qs.get("cols", ["80"])[0], 20, 500, 80)
+        rows = clamp_int(qs.get("rows", ["24"])[0], 5, 200, 24)
+
+        try:
+            ws = wsproto.WebSocket.accept(self)
+        except (wsproto.WebSocketError, OSError):
+            return
+
+        stream = None
+        try:
+            def announce_size(width, height):
+                # What the pane is actually drawn at, so the phone can show it
+                # whole rather than guess and wrap.
+                ws.send_text(json.dumps({"type": "size", "cols": width, "rows": height}))
+
+            stream = TerminalStream(
+                HERDR_CLIENT_SOCKET_PATH, protocol,
+                on_data=ws.send_bytes, on_close=ws.close, on_size=announce_size)
+            stream.connect(cols, rows)
+            stream.attach(terminal_id)
+        except (TerminalError, OSError, ValueError) as e:
+            # The socket is already upgraded, so the failure has to travel as a
+            # message rather than a status code.
+            ws.send_text(json.dumps({"type": "error", "message": str(e)}))
+            ws.close()
+            if stream:
+                stream.close()
+            return
+
+        try:
+            while True:
+                message = ws.recv()
+                if message is None:
+                    break
+                opcode, payload = message
+                if opcode == wsproto.OP_BINARY:
+                    # Keystrokes travel as themselves: no framing, no encoding.
+                    stream.input(payload)
+                elif opcode == wsproto.OP_TEXT:
+                    self.handle_terminal_control(stream, payload)
+                if stream.closed:
+                    break
+        except (OSError, wsproto.WebSocketError):
+            pass
+        finally:
+            stream.close()
+            ws.close()
+
+    @staticmethod
+    def handle_terminal_control(stream, payload: bytes):
+        """Everything that is not a keystroke: resize and scrollback."""
+        try:
+            msg = json.loads(payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return
+        kind = msg.get("type")
+        if kind == "resize":
+            cols = clamp_int(msg.get("cols"), 20, 500, 80)
+            rows = clamp_int(msg.get("rows"), 5, 200, 24)
+            stream.resize(cols, rows)
+        elif kind == "scroll":
+            direction = "up" if msg.get("direction") == "up" else "down"
+            stream.scroll(direction, clamp_int(msg.get("lines"), 1, 100, 3))
+
     def do_GET(self):
         self.head_only = self.command == "HEAD"
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         qs = parse_qs(parsed.query)
+
+        # The console: an upgrade, so it never reaches the JSON routes below.
+        if path.startswith("/ws/terminal/") and wsproto.is_websocket(self.headers):
+            self.serve_terminal_ws(path[len("/ws/terminal/"):], qs)
+            return
 
         if not self.guard_origin(path):
             return
@@ -331,23 +472,43 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 pane_id = unquote(parts[3])
                 query = qs.get("q", [""])[0]
 
-                cwd = ""
-                res = call_herdr_rpc("agent.list")
-                for a in res.get("result", {}).get("agents", []):
-                    if a.get("pane_id") == pane_id:
-                        cwd = a.get("foreground_cwd") or a.get("cwd") or ""
-                        break
-                if not cwd:
-                    res = call_herdr_rpc("pane.list")
-                    for pane in res.get("result", {}).get("panes", []):
-                        if pane.get("pane_id") == pane_id:
-                            cwd = pane.get("cwd") or ""
-                            break
+                cwd = pane_cwd(pane_id)
                 if not cwd:
                     self.send_json({"ok": False, "error": "No cwd for pane"}, 404)
                     return
 
                 self.send_json({"ok": True, "cwd": cwd, "entries": complete_path(cwd, query)})
+                return
+
+        # API: What the agent changed in its working tree
+        # /api/agents/{pane_id}/changes
+        if path.startswith("/api/agents/") and path.endswith("/changes"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                cwd = pane_cwd(unquote(parts[3]))
+                if not cwd:
+                    self.send_json({"ok": False, "error": "No cwd for pane"}, 404)
+                    return
+                try:
+                    self.send_json({"ok": True, **gitdiff.changed_files(cwd)})
+                except gitdiff.GitError as e:
+                    self.send_json({"ok": False, "error": str(e)}, 500)
+                return
+
+        # API: One changed file, as a unified diff
+        # /api/agents/{pane_id}/diff?path=...
+        if path.startswith("/api/agents/") and path.endswith("/diff"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                cwd = pane_cwd(unquote(parts[3]))
+                rel_path = qs.get("path", [""])[0]
+                if not cwd:
+                    self.send_json({"ok": False, "error": "No cwd for pane"}, 404)
+                    return
+                try:
+                    self.send_json({"ok": True, **gitdiff.file_diff(cwd, rel_path)})
+                except gitdiff.GitError as e:
+                    self.send_json({"ok": False, "error": str(e)}, 400)
                 return
 
         # API: Get history / output for a specific agent pane
@@ -357,13 +518,9 @@ class HerdrHandler(BaseHTTPRequestHandler):
             # ["", "api", "agents", "<pane_id>", "history"]
             if len(parts) == 5:
                 pane_id = unquote(parts[3])
-                try:
-                    lines = int(qs.get("lines", ["100"])[0])
-                except ValueError:
-                    # The clamp below says a wrong number is tolerated; a
-                    # number that is not one should not drop the connection.
-                    lines = 100
-                lines = min(max(lines, 10), 1000)
+                # A wrong number is tolerated, so a value that is not a
+                # number should not drop the connection either.
+                lines = clamp_int(qs.get("lines", ["100"])[0], 10, 1000, 100)
                 source = qs.get("source", ["recent_unwrapped"])[0]
                 # "ansi" keeps the SGR sequences so the client can mirror the
                 # terminal's own colours; "text" is the plain fallback.
