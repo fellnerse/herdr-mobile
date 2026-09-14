@@ -682,6 +682,7 @@ from pathlib import Path
 
 from scheduler import quota
 from scheduler import config as sched_config
+from scheduler import dispatch as sched_dispatch
 
 # Claude Code's own cache, as it sits in .claude.json: the endpoint's payload,
 # stamped with the account it belongs to and when it was taken.
@@ -878,14 +879,57 @@ check("and the default the queue loads agrees with it",
       sched_config.load(Path("/nonexistent/scheduler.json")).threshold,
       quota.DEFAULT_THRESHOLD)
 
-# Nothing in the queue's delivery path asks about usage any more: a prompt
-# somebody typed goes when the pane can take it, and the only thing that defers
-# a pane is that pane having hit the wall mid-turn.
+# What the queue does with a window, end to end. A hold is forever - nothing
+# retries a prompt the sweep declined to send - so the only thing that may hold
+# one is a window that is actually out.
+
+def holds(reading):
+    """Whether the sweep would hold this agent's panes."""
+    dispatcher = sched_dispatch.Dispatcher.__new__(sched_dispatch.Dispatcher)
+    original = quota.current
+    quota.current = reading
+    try:
+        return dispatcher.out_of_window("codex", ["wA:p1"])
+    finally:
+        quota.current = original
+
+
+def reading(*buckets):
+    def read(agent, *a, **kw):
+        return quota.Quota(tuple(buckets), datetime.now(timezone.utc), stale=False,
+                           agent=agent, source="api")
+    return read
+
+
+def refuses(agent, *a, **kw):
+    raise quota.QuotaError("no credentials, no cache, no note")
+
+
+# The case that started this: a weekly window at the cap, a prompt queued
+# against it, and nothing in the way of handing it straight over.
+check("a weekly window at the cap holds the queue",
+      holds(reading(bucket(12.0, ahead), quota.Bucket("seven_day", 100.0, ahead, None))), True)
+check("a five hour window at the cap holds it too",
+      holds(reading(bucket(100.0, ahead))), True)
+check("and so does an account the provider locked",
+      holds(reading(bucket(40.0, ahead, "over_limit"))), True)
+
+# Everything short of the cap is yours to spend.
+check("most of a window gone holds nothing",
+      holds(reading(bucket(87.0, ahead), quota.Bucket("seven_day", 94.0, ahead, None))), False)
+check("nor does all but a rounding error", holds(reading(bucket(99.0, ahead))), False)
+
+# A window that has already come back is not a wall, whatever it says.
+check("a window that reopened holds nothing", holds(reading(bucket(100.0, past))), False)
+
+# Not knowing is not knowing there is nothing left.
+check("an agent nobody can price is delivered to", holds(refuses), False)
+
 sweep_source = (Path(__file__).resolve().parent.parent
                 / "gateway" / "scheduler" / "dispatch.py").read_text()
-sweep_body = sweep_source[sweep_source.index("    def sweep("):sweep_source.index("    def report_blocked(")]
-check("delivery does not consult usage", "quota" in sweep_body, False)
-check("but a pane that hit the wall is still parked", "self.stalls" in sweep_body, True)
+sweep_body = sweep_source[sweep_source.index("    def sweep("):sweep_source.index("    def out_of_window(")]
+check("the sweep prices each agent separately", "agent_kind" in sweep_body, True)
+check("and a pane that hit the wall is still parked", "self.stalls" in sweep_body, True)
 
 # ---------------------------------------------------------------------------
 # Picking back up after a usage window, which has exactly two ways to silently
