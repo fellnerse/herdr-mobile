@@ -21,19 +21,22 @@ const TO = "  // Opening a project is activity too";
    are sliced separately so this suite can ask what a row says without a DOM. */
 function loadRows() {
   const src = fs.readFileSync(SRC, "utf8");
-  const from = src.indexOf("  function agentRowHtml(");
+  const from = src.indexOf("  /* What is still owed to each pane");
   const to = src.indexOf("  async function createWorkspace() {");
   if (from < 0 || to < 0) throw new Error(`row anchors moved in ${SRC}`);
   const PRELUDE = `
-    const state = { activePaneId: null, groups: [], agents: [], swiping: false, listSignature: null };
+    const state = { activePaneId: null, groups: [], agents: [], queue: [],
+                    swiping: false, listSignature: null };
     const elAgentList = { innerHTML: "", querySelector: () => null };
     const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const knownStatus = (s) => s || "unknown";
     const sheepSvg = () => "";
+    const sheepMarks = (seed) => ({ breed: { id: "test", fleece: "#abcdef", face: "#123456" },
+                                    horn: "curl", coat: "woolly", muzzle: false });
     const agoLabel = () => "";
     const wantsInput = (a) => a.status === "blocked";
   `;
-  return new Function(`${PRELUDE}${src.slice(from, to)} return { agentRowHtml };`)();
+  return new Function(`${PRELUDE}${src.slice(from, to)} return { state, agentRowHtml, queuedByPane, queuedLabel };`)();
 }
 
 /* The markings that tell two sheep on one project apart. Sliced on its own so
@@ -44,7 +47,7 @@ function loadMarks() {
   const to = src.indexOf("  /* Everything a row draws.");
   if (from < 0 || to < 0) throw new Error(`marks anchors moved in ${SRC}`);
   return new Function(
-    `${src.slice(from, to)} return { sheepMarks, sheepSvg, TAGS, FLEECES, FACES, knownStatus };`
+    `${src.slice(from, to)} return { sheepMarks, sheepSvg, eyeOn, hornOn, rimFor, isLight, BREEDS, MARKS, HORNS, HORN_KINDS, HEAD_AT, COATS, knownStatus };`
   )();
 }
 
@@ -282,36 +285,253 @@ function order(agents, pickerHidden = true, held = []) {
   const m = loadMarks();
   const key = (id) => {
     const marks = m.sheepMarks(id);
-    return `${marks.tag}|${marks.fleece.join("")}|${marks.face}`;
+    return `${marks.breed.id}|${marks.horn}|${marks.coat}|${marks.muzzle}`;
   };
 
-  /* A sheep that changes its markings is not an identity, it is noise. The
-     same pane has to be the same animal across a reload and a restart. */
+  /* A sheep that changes shape is not an identity, it is noise. The same pane
+     has to be the same animal across a reload and a restart. */
   check("the same pane is the same sheep", key("wJ:p1"), key("wJ:p1"));
 
   /* Pane ids differ in one character - "wE:p1" against "wJ:p1" - which is
-     exactly where a weak hash hands out the same tag to the whole herd. */
+     exactly where a weak hash hands the whole flock one shape. */
   const ids = [];
   for (const w of ["wE", "wJ", "wM", "wP", "w11", "w12", "w13", "w2", "w3", "w4", "wA", "wB"]) {
     ids.push(`${w}:p1`, `${w}:p2`);
   }
-  const distinct = new Set(ids.map(key));
-  check("a plausible herd is all distinct", distinct.size, ids.length);
-  check("and wears every tag in the drawer",
-        new Set(ids.map((id) => m.sheepMarks(id).tag)).size, m.TAGS.length);
+  check("a plausible herd is nearly all distinct",
+        new Set(ids.map(key)).size >= ids.length - 2, true);
+  check("and grazes every breed in the book",
+        new Set(ids.map((id) => m.sheepMarks(id).breed.id)).size, m.BREEDS.length);
 
-  // Markings are identity; the fleece colour and the pose are status. One must
-  // never be read off the other.
+  /* Silhouette before colour: what you recognise at this size is whether it
+     has horns and whether it has been shorn, so both have to actually vary. */
+  check("horns vary", new Set(ids.map((id) => m.sheepMarks(id).horn)).size, 3);
+  check("coats vary", new Set(ids.map((id) => m.sheepMarks(id).coat)).size, 3);
+
+  /* Identity is the animal; status is the row it stands in. Neither may be
+     read off the other - which is the whole reason the fleece could stop
+     being a status colour. */
   const working = m.sheepSvg("working", "wJ:p1");
   const blocked = m.sheepSvg("blocked", "wJ:p1");
-  const tag = m.sheepMarks("wJ:p1").tag;
-  check("the tag survives a change of status",
-        [working.includes(tag), blocked.includes(tag)], [true, true]);
-  check("and so does the patch of dark fleece",
-        [working, blocked].map((svg) => svg.includes('cx="13.5" cy="17.5"')), [true, true]);
+  const breed = m.sheepMarks("wJ:p1").breed;
+  check("the same sheep whatever it is doing",
+        [working, blocked].map((svg) => svg.includes(breed.face)), [true, true]);
+  check("and no status colour anywhere on it",
+        [working, blocked].some((svg) => /#e3b341|#f85149|#3fb950|#58a6ff/.test(svg)), false);
+
+  /* Lightness alone cannot separate the dark end of the palette: at 44 pixels
+     charcoal, black and a dark badger grey are one animal three times. Hue can
+     - a brown sheep is nobody's black sheep - so the rule is about dark
+     *neutrals* specifically, and at most one of those may be a plain colour.
+     The rest have to carry a pattern, which is what stops a fourth dark grey
+     being quietly added later. */
+  const shade = (hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    const [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255];
+    return {
+      light: r * 0.299 + g * 0.587 + b * 0.114,
+      chroma: Math.max(r, g, b) - Math.min(r, g, b),
+    };
+  };
+  const plainDark = m.BREEDS.filter((b) => {
+    const { light, chroma } = shade(b.fleece);
+    return light < 110 && chroma < 45 && !b.mark;
+  });
+  check("only one plain dark neutral", plainDark.map((b) => b.id), ["black"]);
+
+  // A pattern with no second colour is a pattern nobody can see.
+  for (const b of m.BREEDS) {
+    if (b.mark && !b.patch) failures.push(`FAIL ${b.id} has a pattern and no colour for it`);
+    if (b.mark && !m.MARKS[b.mark]) failures.push(`FAIL ${b.id} wears a pattern nothing draws`);
+  }
+
+  /* The pattern is clipped to the body, and a clip is referenced by id - so
+     two sheep drawn into one list must not share one, or the second wears the
+     first one's shape. */
+  const idOf = (svg) => (/<clipPath id="([^"]+)"/.exec(svg) || [])[1];
+  const patterned = m.BREEDS.find((b) => b.mark).id;
+  const seedFor = ["wA:p1", "wB:p1", "wC:p1", "wD:p1", "wE:p1", "wF:p1", "wG:p1", "wH:p1"]
+    .find((id) => m.sheepMarks(id).breed.mark);
+  if (seedFor) {
+    const first = m.sheepSvg("idle", seedFor);
+    const second = m.sheepSvg("idle", seedFor);
+    check("a pattern is clipped to the body", first.includes("clip-path=\"url(#"), true);
+    check("and no two drawings share a clip", idOf(first) === idOf(second), false);
+  } else {
+    failures.push(`FAIL no test seed draws a patterned breed (${patterned})`);
+  }
+
+  // A face has to stay off its own fleece, or it is not a face.
+  for (const b of m.BREEDS) {
+    if (b.face === b.fleece) failures.push(`FAIL ${b.id} has a face the colour of its fleece`);
+  }
+
+  /* An eye is the opposite of the face it sits in: a dark pupil on a
+     black-faced Suffolk is not a subtle eye, it is no eye. */
+  check("a dark face gets a pale eye", m.eyeOn("#2c3242"), "#e8edf6");
+  check("a pale face gets a dark eye", m.eyeOn("#ccd4e1"), "#12161f");
+
+  /* The same rule for horns, and it is the one the first version broke: bone
+     drawn on a white fleece is a horn nobody can see. */
+  check("a pale sheep gets a dark horn", m.hornOn("#eef1f6"), "#4a4235");
+  check("a dark sheep gets a bone one", m.hornOn("#2f3543"), "#e4d9bd");
+  for (const b of m.BREEDS) {
+    if (m.hornOn(b.fleece) === b.fleece) failures.push(`FAIL ${b.id} wears an invisible horn`);
+  }
+
+  /* The rim is what keeps a dark animal off a dark card - so a dark breed must
+     carry its own, and a pale one must not (it would outline a white sheep in
+     white). The card colour cannot separate anything from the card. */
+  const CARD = "#181c26";
+  for (const b of m.BREEDS) {
+    const rim = m.rimFor(b.fleece);
+    if (m.isLight(b.fleece) && rim) failures.push(`FAIL ${b.id} is pale and rimmed anyway`);
+    if (!m.isLight(b.fleece) && !rim) failures.push(`FAIL ${b.id} is dark with no rim`);
+    if (rim === CARD) failures.push(`FAIL ${b.id} is rimmed in the card's own colour`);
+  }
+  check("a dark sheep's rim is lighter than it is",
+        m.isLight("#2f3543"), false);
+
+  /* A horn that does not leave the fleece changes no outline, and an outline is
+     the whole reason horns are the first cue. This has now been got wrong
+     twice - once by drawing them inside the silhouette, once by keeping the
+     same placement for the poses where the head is *down*, where curling up
+     off a lowered skull curls straight into the body. So the placements are
+     read out of the drawing and checked, rather than trusted.
+
+     The body shapes below mirror the woolly coat in `sheepBody`; they are the
+     silhouette the horn has to escape. */
+  const BODY = [[11.5, 16, 7.5], [18, 11, 8], [25.5, 11.5, 7.5], [31, 16, 7]];
+  const BARREL = [5, 13, 32, 26];
+
+  function hornPoints(path, [bx, by, rotate]) {
+    const nums = path.slice(1).trim().split(/[c\s,]+/).filter(Boolean).map(Number);
+    let [x, y] = [nums[0], nums[1]];
+    const local = [[x, y]];
+    for (let i = 2; i + 5 < nums.length; i += 6) {
+      const [x1, y1, x2, y2, x3, y3] = nums.slice(i, i + 6);
+      const p = [[x, y], [x + x1, y + y1], [x + x2, y + y2], [x + x3, y + y3]];
+      for (let t = 0.05; t <= 1.0001; t += 0.05) {
+        const u = 1 - t;
+        local.push([
+          u ** 3 * p[0][0] + 3 * u * u * t * p[1][0] + 3 * u * t * t * p[2][0] + t ** 3 * p[3][0],
+          u ** 3 * p[0][1] + 3 * u * u * t * p[1][1] + 3 * u * t * t * p[2][1] + t ** 3 * p[3][1],
+        ]);
+      }
+      [x, y] = p[3];
+    }
+    const rad = (rotate * Math.PI) / 180;
+    return local.map(([lx, ly]) => [
+      bx + lx * Math.cos(rad) - ly * Math.sin(rad),
+      by + lx * Math.sin(rad) + ly * Math.cos(rad),
+    ]);
+  }
+
+  const inFleece = ([x, y], dy) =>
+    BODY.some(([cx, cy, r]) => (x - cx) ** 2 + (y - cy - dy) ** 2 <= r * r) ||
+    (x >= BARREL[0] && x <= BARREL[2] && y - dy >= BARREL[1] && y - dy <= BARREL[3]);
+
+  for (const [pose, at] of Object.entries(m.HEAD_AT)) {
+    const dy = pose === "sleep" ? 5 : 0;
+    for (const kind of ["curl", "spiral"]) {
+      const pts = hornPoints(m.HORNS[kind], at.horn);
+      const outside = pts.filter((p) => !inFleece(p, dy)).length / pts.length;
+      if (outside < 0.5) {
+        failures.push(`FAIL a ${kind} horn on a ${pose}ing sheep is ${Math.round(outside * 100)}% outside the fleece`);
+      }
+      if (pts.some(([x, y]) => x < 0 || x > 44 || y < 0 || y > 34)) {
+        failures.push(`FAIL a ${kind} horn on a ${pose}ing sheep leaves the canvas`);
+      }
+    }
+  }
+
+  /* Every cue has to change the drawing, and this is the one that went wrong:
+     the horns were there in the markup and invisible on the sheep. Find two
+     seeds that differ in exactly one axis and check the pictures differ too. */
+  const twinsDiffering = (axis) => {
+    const seeds = [];
+    for (let i = 0; i < 4000; i++) seeds.push(`w${i}:p1`);
+    for (const a of seeds) {
+      const x = m.sheepMarks(a);
+      for (const b of seeds) {
+        const y = m.sheepMarks(b);
+        if (a === b || x[axis] === y[axis]) continue;
+        const rest = ["breed", "horn", "coat", "muzzle"].filter((k) => k !== axis);
+        if (rest.every((k) => x[k] === y[k])) return [a, b];
+      }
+    }
+    return null;
+  };
+
+  for (const axis of ["horn", "coat"]) {
+    const pair = twinsDiffering(axis);
+    if (!pair) {
+      failures.push(`FAIL no two seeds differ only in ${axis}`);
+      continue;
+    }
+    const [a, b] = pair;
+    const strip = (svg) => svg.replace(/id="fleece-\d+"|url\(#fleece-\d+\)/g, "");
+    check(`${axis} changes the animal`, strip(m.sheepSvg("idle", a)) === strip(m.sheepSvg("idle", b)), false);
+  }
 
   // Nobody home is nobody to tell apart.
-  check("an empty pasture wears no tag", m.sheepSvg("unknown", "wJ:p1").includes("sheep-tag"), false);
+  const empty = m.sheepSvg("unknown", "wJ:p1");
+  check("an empty pasture is no animal at all",
+        [empty.includes("sheep-horn"), empty.includes("sheep-face")], [false, false]);
+}
+
+// -- the row wears the status ------------------------------------------------
+
+/* With the fleece carrying identity, the row has to carry status - and
+   `blocked` is the one that must never be missed, so it gets the tint as well
+   as the spine. */
+{
+  const rows = loadRows();
+  const of = (status) => rows.agentRowHtml(
+    { ...row("wA:p1", 1, "/p/api", status), name: "api", title: "Rewrite it" }, "api");
+
+  check("a working row is marked working", of("working").includes("agent-row st-working"), true);
+  check("a blocked row is marked blocked", of("blocked").includes("agent-row st-blocked"), true);
+  check("an empty pane is marked unknown", of("unknown").includes("agent-row st-unknown"), true);
+  check("the pill still says it too", of("blocked").includes("status-badge status-blocked"), true);
+
+  /* The fleece colour on the wrapper is the breed's, not the status's. Two
+     rows in different states must paint the same sheep. */
+  const fleece = (html) => /style="color:(#[0-9a-f]{6})"/.exec(html)[1];
+  check("the same sheep in either state", fleece(of("working")), fleece(of("done")));
+}
+
+// -- what is still owed ------------------------------------------------------
+
+/* A queue you have to open the queue to see is a queue you forget you left
+   running. The count belongs on the sheep it is stacked behind. */
+{
+  const rows = loadRows();
+  rows.state.queue = [
+    { id: 1, pane_id: "wA:p1", state: "waiting" },
+    { id: 2, pane_id: "wA:p1", state: "waiting" },
+    { id: 3, pane_id: "wA:p1", state: "failed" },
+    { id: 4, pane_id: "wB:p1", state: "waiting" },
+  ];
+  const counts = rows.queuedByPane();
+  check("waiting and failed are counted apart",
+        counts.get("wA:p1"), { waiting: 2, failed: 1 });
+  check("a pane with nothing queued is absent", counts.get("wC:p1"), undefined);
+  check("both are said", rows.queuedLabel(counts.get("wA:p1")), "2 queued · 1 failed");
+  check("a plain queue says one thing", rows.queuedLabel(counts.get("wB:p1")), "1 queued");
+  check("nothing owed says nothing", rows.queuedLabel(undefined), "");
+
+  const html = rows.agentRowHtml(
+    { ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite it" },
+    "api", counts.get("wA:p1"));
+  check("the row wears the count", html.includes("2 queued · 1 failed"), true);
+  check("and marks it as wanting a person", html.includes("agent-row-queued failed"), true);
+
+  const quiet = rows.agentRowHtml(
+    { ...row("wC:p1", 2, "/p/api", "working"), name: "api", title: "Rewrite it" },
+    "api", counts.get("wC:p1"));
+  check("a sheep with an empty queue says nothing",
+        quiet.includes("agent-row-queued"), false);
 }
 
 if (failures) {

@@ -35,13 +35,16 @@ project telling you at a glance who is working and who is waiting.
 - **Answer prompts from the phone.** Selection prompts render as their own
   card, with number keys that follow however many options the agent listed.
   Claude Code and Codex panes are both read, whichever glyphs they draw with.
-- **Your herd at a glance.** One sheep per project, coloured *and* posed by
-  what its agent is doing: grazing while it works, head up when idle, ear
-  pricked when blocked, asleep when done. Every sheep also wears its own ear
-  tag and markings, hashed from its pane, so two agents on one project are not
-  the same animal twice. Grouped under the repository they work in — worktrees
-  included — in the order they were started, with whoever is asking you a
-  question on top.
+- **Your herd at a glance.** The sheep is *who*, the row is *what*. Each pane
+  gets its own animal — horns or none, woolly or shorn, one of thirteen breeds —
+  hashed from the pane, so two agents on one project are never the same sheep
+  twice and you can say "the black one with horns" and mean something. What it
+  is *doing* is the coloured spine down the row and the pose it stands in:
+  grazing while it works, head up when idle, ear pricked when blocked, asleep
+  when done. Grouped under the repository they work in — worktrees included —
+  in the order they were started, with whoever is asking you a question on top.
+- **What is queued**, on the sheep it is stacked behind: prompts waiting for a
+  window or a busy chat, counted per project in its heading.
 - **What is left to spend**, above the flock: the same usage windows the queue
   runs on, so you can see the wall coming before you start three more agents.
 - **Notifications when an agent actually wants you** — a turn that finished, a
@@ -49,6 +52,10 @@ project telling you at a glance who is working and who is waiting.
   the home screen icon.
 - **A bleat.** A sheep answers when an agent stops and needs you, if the app is
   open.
+- **Send a screenshot.** Paste one straight into the composer, or use the
+  paperclip for the photo library and the camera. The image is scaled down on
+  the phone, written beside the work, and its path goes into the prompt for the
+  agent to read. Git never sees it.
 - **Native dictation.** Talk to your agent using the iOS keyboard's mic.
 - **Drafts that stay put.** A half-written prompt belongs to the project it
   was typed for: switch away to check on another agent, come back, and it is
@@ -171,6 +178,30 @@ cannot carry a custom sound on iOS, so this is not a replacement for the one
 above. iOS also refuses to let a page make any noise until it has been touched
 once, so the first tap anywhere in the app is what unlocks it.
 
+### Sending a screenshot
+
+Nothing to turn on, and two ways in. **Paste** one straight into the composer —
+iOS puts a screenshot on the clipboard the moment you take it, which makes this
+the shortest path there is between seeing something wrong and an agent looking
+at it. Or tap the **paperclip** left of the composer and pick a photo, take one,
+or choose a file; iOS offers all three. On a laptop you can also drag an image
+onto the composer. The image is scaled to 1600px
+on the phone before it goes anywhere — a screenshot stays a PNG so its text
+stays sharp — and lands in `.sheepit/` inside the directory the agent is
+working in, with `@.sheepit/<name>.png` typed into the composer for you. Add
+your question around it and send.
+
+It goes *beside* the work on purpose: an agent reads a file in its own working
+directory without stopping to ask permission, which is the whole point of
+sending a picture from a phone. The directory is added to `.git/info/exclude`
+on first use — ignored for this clone only, nothing committed, nothing in the
+changed-files view — and images older than a week are cleared out as new ones
+arrive.
+
+The thumbnail strip above the composer shows what is attached. It is drawn from
+the paths in the text, so deleting the path (or tapping **×**) un-attaches the
+image; what you can see is exactly what will be sent.
+
 ### Dictation
 
 No setting. Tap the microphone on the iOS keyboard and talk into the composer.
@@ -230,7 +261,7 @@ plain view already shows it, and greys the switch out while it is on.
 | `web/` | The phone app — plain HTML, CSS and JavaScript, no build step. `web/vendor/` holds xterm.js, the one third-party file it loads. |
 | `menubar/` | `SheepIt.app`, the macOS menu bar switch. One `clang` invocation, no Xcode project. |
 | `deploy/` | systemd and launchd units for running the gateway unattended. |
-| `tools/` | The synthesised bleat, and the tests: `node tools/test-transcript.js` (the pane parser, both agents), `node tools/test-diff.js` (the diff rendering), `node tools/test-drafts.js` (the per-project drafts), `node tools/test-flock.js` (the overview's grouping and order), `python3 tools/test-gateway.py` (the Herdr codec, the WebSocket framing, git against a real repository, who earns a notification). |
+| `tools/` | The synthesised bleat, and the tests: `node tools/test-transcript.js` (the pane parser, both agents), `node tools/test-diff.js` (the diff rendering), `node tools/test-drafts.js` (the per-project drafts), `node tools/test-flock.js` (the overview's grouping and order), `node tools/test-attach.js` (pasting and attaching images), `python3 tools/test-gateway.py` (the Herdr codec, the WebSocket framing, git against a real repository, who earns a notification). |
 | `LICENSES/` | The licences of the code this one borrowed from. |
 | `docs/` | Everything below. |
 

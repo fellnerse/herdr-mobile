@@ -435,6 +435,82 @@ check("a pane with nowhere to be still has a heading",
       rows["wN:p1"]["project_name"], "notes")
 
 # ---------------------------------------------------------------------------
+# Images from the phone. The one thing a phone has that a laptop does not, and
+# it lands inside a repository somebody is working in - so where it goes, what
+# it is called, and what git makes of it all have to be right.
+
+with tempfile.TemporaryDirectory() as tmp:
+    repo = Path(tmp) / "project"
+    repo.mkdir()
+    git(repo, "init", "-q")
+
+    png = b"\x89PNG\r\n\x1a\n" + b"pretend this is a screenshot"
+    rel = server.save_attachment(str(repo), png, "image/png")
+
+    check("the path is relative to the agent's own directory", rel.startswith(".sheepit/"), True)
+    check("the bytes are what arrived", (repo / rel).read_bytes(), png)
+    check("the name says when it came", rel.split("/")[1][:8].isdigit(), True)
+
+    # The content type names the file, because the client's filename is a
+    # string from a phone and belongs to nobody this server trusts.
+    check("a jpeg is a .jpg", server.save_attachment(str(repo), b"x", "image/jpeg").endswith(".jpg"), True)
+    check("a type with parameters still lands",
+          server.save_attachment(str(repo), b"x", "image/png; charset=binary").endswith(".png"), True)
+    for refused in ("text/html", "application/x-sh", "", "image/svg+xml"):
+        try:
+            server.save_attachment(str(repo), b"x", refused)
+            failures.append(f"FAIL {refused!r} should be refused")
+        except ValueError:
+            pass
+
+    # Two in the same second must not be one file.
+    pair = {server.save_attachment(str(repo), b"a", "image/png"),
+            server.save_attachment(str(repo), b"b", "image/png")}
+    check("two at once are two files", len(pair), 2)
+
+    # Excluded for this clone only: nothing a commit could pick up.
+    exclude = (repo / ".git/info/exclude").read_text()
+    check("the inbox is excluded", ".sheepit/" in exclude.split(), True)
+    server.save_attachment(str(repo), b"x", "image/png")
+    check("and excluded once, however many images arrive",
+          (repo / ".git/info/exclude").read_text().count(".sheepit/"), 1)
+    check("git sees nothing to commit",
+          subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                         capture_output=True, text=True).stdout.strip(), "")
+
+    # Old images age out; the ones you just sent do not.
+    old = repo / ".sheepit" / "20200101-000000-dead.png"
+    old.write_bytes(b"x")
+    os.utime(old, (0, 0))
+    fresh = server.save_attachment(str(repo), b"x", "image/png")
+    check("a week-old image is gone", old.exists(), False)
+    check("today's is not", (repo / fresh).exists(), True)
+
+    # Somewhere that is not a directory is an answer, not a traceback.
+    try:
+        server.save_attachment(str(Path(tmp) / "nowhere"), b"x", "image/png")
+        failures.append("FAIL a missing directory should be refused")
+    except ValueError:
+        pass
+
+# A worktree keeps its .git as a file pointing elsewhere, which is exactly
+# where a naive `.git/info/exclude` writes into a directory that is not there.
+with tempfile.TemporaryDirectory() as tmp:
+    main = Path(tmp) / "main"
+    main.mkdir()
+    git(main, "init", "-q")
+    git(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
+        "--allow-empty", "-m", "root")
+    tree = Path(tmp) / "tree"
+    git(main, "worktree", "add", "-q", "-b", "side", str(tree))
+    server.save_attachment(str(tree), b"x", "image/png")
+    check("a worktree excludes it too",
+          ".sheepit/" in (main / ".git/info/exclude").read_text().split(), True)
+    check("and shows nothing to commit",
+          subprocess.run(["git", "-C", str(tree), "status", "--porcelain"],
+                         capture_output=True, text=True).stdout.strip(), "")
+
+# ---------------------------------------------------------------------------
 # Who gets a notification. The phone buzzing for things that are not waiting on
 # anybody is worse than it sounds: it teaches you to ignore the ones that are.
 

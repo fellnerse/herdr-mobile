@@ -185,6 +185,7 @@ Two consequences worth knowing:
 | `GET /api/agents/{pane}/diff?path=` | One file's unified diff. |
 | `GET /ws/terminal/{pane}` | The console: a WebSocket carrying the pane's ANSI, with keystrokes, resizes and scrolls going back. |
 | `POST /api/agents/{pane}/prompt`, `/keys` | Typing and single keys. |
+| `POST /api/agents/{pane}/attach` | An image, as raw bytes with its own `Content-Type`. Written to `.sheepit/` beside the agent's work and excluded from git; answers with the path to put in a prompt. |
 | `POST /api/workspaces`, `/api/workspaces/{id}/close` | Starting and closing projects. |
 | `GET|POST /api/push/*` | Notification keys, subscriptions and the last finisher. |
 

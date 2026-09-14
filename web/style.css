@@ -290,13 +290,20 @@ html, body {
 
 .agent-row-delete:active { filter: brightness(0.88); }
 
+/* The row carries the status now, because the sheep carries who it is.
+
+   A five-pixel spine down the left edge is louder than a coloured animal ever
+   was, and it stays scannable when you are looking down a list of projects
+   rather than at one sheep. It is an inset shadow rather than a border so the
+   card's corner radius still clips it, and so the swipe underneath does not
+   have to know about it. */
 .agent-row {
   position: relative;
   width: 100%;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 14px;
+  padding: 14px 14px 14px 17px;
   transition: transform 0.2s ease;
   touch-action: pan-y;
   background: var(--bg-card);
@@ -309,6 +316,20 @@ html, body {
 }
 
 .agent-row:active { background: var(--bg-hover); }
+
+.agent-row.st-working { box-shadow: inset 5px 0 0 var(--status-working); }
+.agent-row.st-idle { box-shadow: inset 5px 0 0 var(--status-idle); }
+.agent-row.st-done { box-shadow: inset 5px 0 0 var(--status-done); }
+.agent-row.st-unknown { box-shadow: inset 5px 0 0 var(--status-unknown); }
+
+/* Blocked is the one state that must never be missed, and a pose alone will
+   not do it: the spine is joined by the card's own tint, so the row reads as
+   wanting something before you have looked at anything in it. */
+.agent-row.st-blocked {
+  box-shadow: inset 5px 0 0 var(--status-blocked);
+  background: rgba(248, 81, 73, 0.09);
+  border-color: rgba(248, 81, 73, 0.35);
+}
 
 .agent-row.active {
   border-color: var(--accent-primary);
@@ -344,13 +365,16 @@ html, body {
   text-overflow: ellipsis;
 }
 
-/* The flock: one sheep per project, tinted by what its agent is doing. The
-   fleece is currentColor, so a single colour on the wrapper drives the whole
-   animal and the eye stays readable against it. */
+/* The flock: one sheep per project, and the colour on the wrapper is whose
+   sheep it is - the breed's own fleece - rather than what it is doing. The
+   fleece is currentColor, so that one colour drives the whole animal. */
+/* Bigger than it was: the markings that tell one sheep from another are the
+   whole point of drawing an animal rather than a dot, and at 34px they were
+   freckles. */
 .sheep-wrap {
   flex-shrink: 0;
-  width: 34px;
-  height: 26px;
+  width: 44px;
+  height: 34px;
   display: flex;
   align-items: center;
   color: var(--status-unknown);
@@ -362,25 +386,52 @@ html, body {
   overflow: visible;
 }
 
-/* Face and ear are pale, not dark: a dark muzzle disappears into the card and
-   leaves a headless blob. The card-coloured outline keeps them off the fleece. */
+/* Every part laid over the body is outlined in the card's own colour, which is
+   what keeps a face off its fleece - and, now that a sheep can be black, what
+   keeps the whole animal from being a hole in a dark row. The body's outline is
+   drawn as a fat stroke underneath the fill (see sheepBody), so none of the
+   shapes it is built from show through as lines. */
+.sheep-edge {
+  fill: var(--bg-card);
+  stroke: var(--bg-card);
+  stroke-width: 2.6;
+  stroke-linejoin: round;
+}
+
 .sheep-face,
-.sheep-ear {
+.sheep-ear,
+.sheep-fringe {
   fill: #dfe5f0;
   stroke: var(--bg-card);
   stroke-width: 1.1;
 }
 
-.sheep-ear { stroke-width: 1; }
-.sheep-eye { fill: var(--bg-card); }
-
-/* The ear tag: this sheep's own colour, hashed from its pane, so two agents
-   on the same project are not the same animal twice. Outlined like the ear it
-   hangs from, or it reads as a stray pixel rather than a tag. */
-.sheep-tag {
-  stroke: var(--bg-card);
-  stroke-width: 1.1;
+/* The fringe is fleece hanging over the brow, so it takes the fleece's colour
+   from the group it is drawn in - and its card-coloured edge is the line that
+   makes it legible where the face is pale too. */
+.sheep-fringe {
+  fill: currentColor;
+  stroke-linejoin: round;
 }
+
+/* Horn: coloured against the fleece in JS, on a card-coloured stroke a shade
+   fatter, which is the same outline by another means - a stroke cannot carry
+   one of its own. */
+.sheep-horn {
+  stroke: #e4d9bd;
+  stroke-width: 2.1;
+}
+
+.sheep-horn-edge {
+  stroke: var(--bg-card);
+  stroke-width: 3.8;
+}
+
+.sheep-ear { stroke-width: 1; }
+
+/* Set per breed, light on a dark face and dark on a light one: a black-faced
+   Suffolk with a dark pupil has no eye at all. */
+.sheep-eye { fill: #12161f; }
 
 /* A shut eye for a sleeping sheep: the lid takes the card's colour so it reads
    as a closed lid rather than a stray mark on the face. */
@@ -391,28 +442,31 @@ html, body {
   stroke-linecap: round;
 }
 
+/* The selected row is a different colour, so everything outlined against the
+   card has to be outlined against that instead. */
+/* The selected row is a different colour, so everything outlined against the
+   card has to be outlined against that instead. A dark sheep's rim is set on
+   the element itself and deliberately wins over this: it is a light halo that
+   has to hold on either background. */
 .agent-row.active .sheep-face,
-.agent-row.active .sheep-tag,
-.agent-row.active .sheep-ear { stroke: var(--bg-hover); }
+.agent-row.active .sheep-ear,
+.agent-row.active .sheep-fringe,
+.agent-row.active .sheep-horn-edge,
+.agent-row.active .sheep-edge { stroke: var(--bg-hover); }
 
-.agent-row.active .sheep-eye { fill: var(--bg-hover); }
+.agent-row.active .sheep-edge { fill: var(--bg-hover); }
 .agent-row.active .sheep-lid { stroke: var(--bg-hover); }
 
-.sheep-wrap.idle { color: var(--status-idle); }
-.sheep-wrap.done { color: var(--status-done); }
+/* Nobody home: the empty pasture is the one drawing with no breed behind it,
+   so it keeps a colour of its own. */
 .sheep-wrap.unknown { color: var(--status-unknown); }
 
 /* The postures move the way they should: a grazing sheep munches, a blocked one
-   twitches for attention, a sleeping one only breathes. */
-.sheep-wrap.working {
-  color: var(--status-working);
-  animation: sheep-graze 2.4s ease-in-out infinite;
-}
+   twitches for attention, a sleeping one only breathes. Status kept the
+   animation when it gave up the colour. */
+.sheep-wrap.working { animation: sheep-graze 2.4s ease-in-out infinite; }
 
-.sheep-wrap.blocked {
-  color: var(--status-blocked);
-  animation: sheep-alert 1.2s ease-in-out infinite;
-}
+.sheep-wrap.blocked { animation: sheep-alert 1.2s ease-in-out infinite; }
 
 /* The sleeping sheep only breathes; the empty pasture does not move at all. */
 .sheep-wrap.done {
@@ -470,6 +524,30 @@ html, body {
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
+}
+
+/* What is still owed to this sheep: prompts queued behind whatever it is
+   doing. Monospace and quiet - it is a number you check, not one that should
+   compete with the status it sits under. */
+.agent-row-queued {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  white-space: nowrap;
+}
+
+/* A prompt that failed on the way in is not waiting for a window; it is
+   waiting for you. */
+.agent-row-queued.failed { color: var(--status-blocked); }
+
+.agent-group-queued {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
+  color: var(--accent-primary);
+  white-space: nowrap;
 }
 
 .agent-row-ago {
@@ -851,6 +929,114 @@ html, body {
 
 
 
+
+/* The paperclip sits where a thumb already is, at the same size as the send
+   button on the other side of the composer. */
+.btn-attach {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.btn-attach:active { background: var(--bg-hover); color: var(--text-primary); }
+
+/* Uploading: the clip turns and the button stops taking taps, because a
+   second screenshot queued behind the first is how you end up with two. */
+.btn-attach.busy {
+  opacity: 0.6;
+  animation: attach-busy 1s linear infinite;
+}
+
+@keyframes attach-busy {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-attach.busy { animation: none; }
+}
+
+/* The file input is the thing iOS actually opens its photo sheet from, so it
+   has to exist - it just never has to be seen. */
+.attach-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* What is on its way to the agent, above the composer that will send it. */
+.attach-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 6px 0 2px 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.attach-strip::-webkit-scrollbar { display: none; }
+.attach-strip.hidden { display: none; }
+
+.attach-chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 62vw;
+  padding: 4px 4px 4px 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+
+.attach-chip img {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: block;
+}
+
+.attach-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attach-drop {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.attach-drop:active { background: var(--bg-hover); color: var(--text-primary); }
+
+.attach-error {
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--status-blocked);
+  font-size: 12px;
+}
 
 .prompt-input {
   flex: 1;

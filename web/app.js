@@ -54,6 +54,9 @@
   const elPromptInput = document.getElementById("prompt-input");
   const elTerminalInput = document.getElementById("terminal-input");
   const elCompleteBar = document.getElementById("complete-bar");
+  const elBtnAttach = document.getElementById("btn-attach");
+  const elAttachInput = document.getElementById("attach-input");
+  const elAttachStrip = document.getElementById("attach-strip");
   const elTerminalInputRow = document.getElementById("terminal-input-row");
   const elBtnAdopt = document.getElementById("btn-adopt");
   const elBtnCycleMode = document.getElementById("btn-cycle-mode");
@@ -780,21 +783,31 @@
 
   /* ------------------------------------------------------- Telling them apart
    *
-   * Status is a colour and a posture, and two agents working on the same
-   * project are therefore the same animal twice. A shepherd has this problem
-   * too and solved it long before software did: every sheep wears a numbered
-   * ear tag, and you learn the markings on the ones you look at daily.
+   * Two agents on one project used to be the same animal twice, and grouping
+   * the list by project is exactly what puts them side by side.
    *
-   * So each pane gets its own: a tag colour, a patch of darker fleece, and the
-   * shade of its face, all hashed out of the pane id. It is deterministic -
-   * the same pane is the same sheep across a reload, a restart, and this
-   * phone's whole life - and it is drawn in the space status does not use.
-   * Status stays the fleece and the pose; identity is the small stuff.
+   * The first answer here was paint - a raddle mark in a hashed colour - which
+   * works on a real hillside and worked here too, until you ask what you
+   * actually recognise a sheep by. It is not the mark. It is the shape: horns
+   * or no horns, woolly or shorn, and then the colour of the animal itself.
+   * Shape survives a glance too fast to register hue, and colour you can name
+   * - "the black one with horns" is a thing you can hold in your head, where
+   * "the one with the teal blob on its flank" is a thing you have to decode.
+   *
+   * So the sheep is identity, whole: breed, horns, coat. Nine breeds, three
+   * horns, three coats - 81 animals, most of which differ in silhouette
+   * before they differ in colour.
+   *
+   * That is only possible because status moved off the animal and onto the
+   * row: see `.agent-row` in the stylesheet, where a five-pixel spine down the
+   * left edge carries what the fleece used to. The pose still carries it too -
+   * grazing, head up, ear pricked, asleep - but a pose is not enough on its
+   * own for `blocked`, which is the one state that must never be missed.
    * ------------------------------------------------------------------------ */
 
   /* FNV-1a, because the ids being hashed are short and nearly identical -
      "wE:p1" and "wJ:p1" differ in one character, and a weaker hash hands them
-     the same tag. */
+     the same animal. */
   function fnv1a(text) {
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) {
@@ -804,80 +817,244 @@
     return hash >>> 0;
   }
 
-  /* Tag colours, chosen to stay apart from each other at the size of a pip and
-     to sit on any fleece: a sheep's status colour is the whole animal, so the
-     tag never has to compete with it. */
-  const TAGS = [
-    "#ff7ab6", "#ff9f45", "#ffd43b", "#9ae64c", "#3ddc97", "#2ec4d6",
-    "#4d9dff", "#8b7bff", "#c77dff", "#ff6b6b", "#d9b38c", "#7de3ff",
+  /* Breeds, near enough to real ones to be nameable: a white sheep with a
+     black face is a Suffolk, a dark one with a pale face is a badger face.
+     Each carries its own face colour rather than picking one at random,
+     because the pairing is what makes it read as an animal - and because a
+     face has to stay off its own fleece to be a face at all.
+
+     `patch` is a second fleece colour for the spotted ones. */
+  const BREEDS = [
+    { id: "white", fleece: "#eef1f6", face: "#ccd4e1" },
+    { id: "suffolk", fleece: "#e9edf4", face: "#2c3242" },
+    { id: "cream", fleece: "#e8dcb9", face: "#b8a878" },
+    { id: "oatmeal", fleece: "#d8c9a8", face: "#6f6650" },
+    { id: "tan", fleece: "#cfa26b", face: "#a97c49" },
+    { id: "saddle", fleece: "#d9b98a", face: "#7a5636", patch: "#6b4a2f", mark: "saddle" },
+    { id: "brown", fleece: "#8d5c3c", face: "#e0d4c4" },
+    { id: "grey", fleece: "#9aa2b1", face: "#6d7688" },
+    /* The dark end of the palette cannot be told apart by shade - at this size
+       charcoal, black and a badger face are one animal three times. So only
+       one of them is a plain dark sheep; the others carry a pattern, which
+       reads at a glance where four points of lightness do not. */
+    { id: "dalmatian", fleece: "#474f61", face: "#d7dce6", patch: "#eef1f6", mark: "dots" },
+    { id: "black", fleece: "#2f3543", face: "#1d222c" },
+    { id: "badger", fleece: "#5c6678", face: "#e3e8f1", patch: "#e8edf6", mark: "belt" },
+    { id: "spotted", fleece: "#edf0f6", face: "#8d5c3c", patch: "#8d5c3c", mark: "spots" },
+    { id: "jacob", fleece: "#c3c9d4", face: "#333a49", patch: "#333a49", mark: "spots" },
   ];
 
-  // Patches of darker fleece. Ink over whatever colour the status painted.
-  const PATCH = {
-    a: '<circle cx="13.5" cy="17.5" r="3.2"/>',
-    b: '<circle cx="21" cy="14.5" r="2.6"/>',
-    c: '<circle cx="26.5" cy="18.5" r="2.8"/>',
-    d: '<circle cx="17" cy="20.5" r="2.4"/>',
+  /* Fleece patterns, clipped to whatever body the coat drew - a dot that falls
+     off a shorn sheep's slimmer barrel is a dot lying in the grass. */
+  const MARKS = {
+    spots: '<circle cx="13.5" cy="16.5" r="4.6"/><circle cx="27" cy="13.5" r="3.8"/>',
+    dots: [
+      [10, 14, 1.9], [15.5, 11, 1.7], [20.5, 15.5, 2], [25, 10.5, 1.7],
+      [29.5, 14.5, 1.9], [13, 21, 1.7], [19, 21.5, 1.6], [25.5, 20.5, 1.8],
+      [32, 19.5, 1.5], [8.5, 19, 1.5],
+    ].map(([x, y, r]) => `<circle cx="${x}" cy="${y}" r="${r}"/>`).join(""),
+    belt: '<rect x="14" y="0" width="7.5" height="34" rx="0.5"/>',
+    saddle: '<path d="M6 4 h26 v9 q-13 4 -26 0 z"/>',
   };
-  const FLEECES = [[], ["a"], ["c"], ["a", "c"], ["b", "d"], ["a", "b"], ["c", "d"], ["a", "b", "c"]];
 
-  // Face shades a breed might come in. All stay light enough for a dark eye.
-  const FACES = ["#dfe5f0", "#cbb392", "#a7b0c2"];
+  /* Horns: the cue that is supposed to survive being small, and the first
+     attempt did not. It curled *back over* the skull, inside the fleece, in
+     bone - which on a white sheep is pale on pale, inside the outline, where
+     it changes nothing at all about the shape.
+
+     A horn has to leave the silhouette to be one. These rise off the top of
+     the head and sweep back above the fleece line, so what changes is the
+     animal's edge against the card - and they are coloured against the fleece
+     rather than in a fixed bone, the way the eye is coloured against the
+     face. */
+  const HORNS = {
+    none: "",
+    // Half a turn: up, back, and hooked down behind the ear.
+    curl: "M0 0 c-1.4 -3.2 -5.2 -4 -7 -1.4 c-1.4 2 -0.2 4.2 1.8 4.4",
+    // A full one, the ram's.
+    spiral: "M0 0 c-1.6 -3.8 -6.4 -5 -8.6 -1.8 c-1.9 2.8 -0.2 6 3 6 c2.4 0 3.6 -1.9 2.8 -3.6 c-0.6 -1.3 -2.3 -1.5 -3.2 -0.5",
+  };
+  const HORN_KINDS = ["none", "curl", "spiral"];
+
+  // Woolly, shorn, or woolly with a fringe down over the eyes.
+  const COATS = ["woolly", "shorn", "fringe"];
 
   function sheepMarks(seed) {
     const hash = fnv1a(String(seed || ""));
     return {
-      tag: TAGS[hash % TAGS.length],
-      fleece: FLEECES[(hash >>> 5) % FLEECES.length],
-      face: FACES[(hash >>> 11) % FACES.length],
+      breed: BREEDS[hash % BREEDS.length],
+      horn: HORN_KINDS[(hash >>> 5) % HORN_KINDS.length],
+      coat: COATS[(hash >>> 11) % COATS.length],
+      // A dark muzzle on a pale face, a pale one on a dark face. Real, and it
+      // is the cheapest way to tell two of one breed apart.
+      muzzle: ((hash >>> 17) & 1) === 1,
     };
   }
 
-  function sheepBody(dy, legs, marks) {
-    const patches = marks.fleece.map((key) => PATCH[key]).join("");
+  /* The body, in two passes.
+
+     A black sheep on a dark card is a hole in the row unless something draws
+     its edge, and stroking the shapes themselves puts a line through every
+     place two of them overlap - the fleece would come out as a diagram of the
+     circles it is made of. So the same shapes are drawn twice: once in the
+     card's colour with a fat stroke, and once filled on top. The first pass
+     leaves a halo, the second covers every internal line of it. */
+  function sheepBody(dy, legs, marks, clip) {
+    const woolly = `
+      ${legs ? '<rect x="11" y="21" width="5" height="12" rx="2.5"/>' : ""}
+      ${legs ? '<rect x="23" y="21" width="5" height="12" rx="2.5"/>' : ""}
+      <circle cx="11.5" cy="16" r="7.5"/>
+      <circle cx="18" cy="11" r="8"/>
+      <circle cx="25.5" cy="11.5" r="7.5"/>
+      <circle cx="31" cy="16" r="7"/>
+      <rect x="5" y="13" width="27" height="13" rx="6.5"/>`;
+    /* Shorn: the same animal a week after the clippers. Ellipses rather than a
+       rounded rectangle - a shorn sheep is a barrel that tapers into the neck,
+       and a box with round corners reads as furniture. */
+    const shorn = `
+      ${legs ? '<rect x="12" y="21" width="4.4" height="13" rx="2.2"/>' : ""}
+      ${legs ? '<rect x="23.5" y="21" width="4.4" height="13" rx="2.2"/>' : ""}
+      <ellipse cx="17" cy="18.5" rx="13" ry="7.4"/>
+      <ellipse cx="27.5" cy="16.5" rx="7" ry="6.2"/>`;
+    const shape = marks.coat === "shorn" ? shorn : woolly;
+    const mark = MARKS[marks.breed.mark];
+    /* Clipped to the body the coat actually drew, so a pattern cannot spill
+       off a slimmer sheep - and defined per drawing, because several of these
+       share one page. */
+    const pattern = mark
+      ? `<clipPath id="${clip}">${shape}</clipPath>
+         <g clip-path="url(#${clip})" fill="${marks.breed.patch}">${mark}</g>`
+      : "";
+    const rim = rimFor(marks.breed.fleece);
+    const rimStyle = rim ? ` style="fill:${rim};stroke:${rim}"` : "";
     return `
       <g transform="translate(0 ${dy})">
-        <g fill="currentColor">
-          ${legs ? '<rect x="11" y="21" width="5" height="12" rx="2.5"/>' : ""}
-          ${legs ? '<rect x="23" y="21" width="5" height="12" rx="2.5"/>' : ""}
-          <circle cx="11.5" cy="16" r="7.5"/>
-          <circle cx="18" cy="11" r="8"/>
-          <circle cx="25.5" cy="11.5" r="7.5"/>
-          <circle cx="31" cy="16" r="7"/>
-          <rect x="5" y="13" width="27" height="13" rx="6.5"/>
-        </g>
-        <g fill="#05070c" opacity="0.22">${patches}</g>
+        <g class="sheep-edge"${rimStyle}>${shape}</g>
+        <g fill="currentColor">${shape}</g>
+        ${pattern}
       </g>`;
   }
 
-  /* Each pose puts the ear somewhere else, so the tag hanging from it is part
-     of the pose rather than something laid over the top. */
+  /* A horn placed on a head: the card-coloured stroke underneath is the same
+     outline the face and ear carry, and it is what keeps a pale horn off a
+     pale fleece and a dark one off the card. */
+  /* Where a horn is planted is not a matter of taste: it has to leave the
+     fleece, or it changes no outline and is not doing the job horns are here
+     for. The head is in a different place in every pose and the low ones -
+     grazing, asleep - are where the first attempt failed, because a horn
+     curling up off a lowered skull curls straight into the body. These four
+     placements were searched for rather than eyeballed: each keeps the horn
+     off the face and the eye, inside the canvas, and mostly outside the
+     silhouette. `tools/test-flock.js` holds that last part. */
+  function hornAt(marks, x, y, rotate) {
+    const path = HORNS[marks.horn];
+    if (!path) return "";
+    const at = `translate(${x} ${y}) rotate(${rotate})`;
+    return `
+      <g transform="${at}" fill="none" stroke-linecap="round">
+        <path class="sheep-horn-edge" d="${path}"/>
+        <path class="sheep-horn" d="${path}" style="stroke:${hornOn(marks.breed.fleece)}"/>
+      </g>`;
+  }
+
+  /* Dark horn on a pale sheep, bone on a dark one. Horn is keratin and comes in
+     both, so the one that can be seen is the right one. */
+  function hornOn(fleece) {
+    return isLight(fleece) ? "#4a4235" : "#e4d9bd";
+  }
+
+  /* A fringe hangs off the forehead, so it belongs to the head rather than the
+     body - and it has to actually cross the face. As a soft ellipse tucked
+     above the brow it was fleece-coloured wool over a pale face, which is to
+     say invisible. Scalloped and sitting on the face, its card-coloured edge
+     draws a line across the brow that reads at any size. */
+  const FRINGE = "M-5.6 -2.6 h11.2 v1.4 q-1.9 2.9 -3.8 0 q-1.9 2.9 -3.8 0 q-1.9 2.9 -3.8 0 z";
+
+  function fringeAt(x, y, rotate) {
+    return `
+      <g transform="translate(${x} ${y}) rotate(${rotate})">
+        <path class="sheep-fringe" d="${FRINGE}"/>
+      </g>`;
+  }
+
+  /* Where the horn and the fringe go in each pose: [x, y, rotation]. Data
+     rather than four hand-placed pairs, so the test can take the real numbers
+     and check the horn actually leaves the fleece - which is the property that
+     has now been got wrong twice. */
+  const HEAD_AT = {
+    graze: { horn: [38, 15, 110], fringe: [36.4, 17.4, 18] },
+    stand: { horn: [38, 8.2, 40], fringe: [36.2, 10.4, 0] },
+    alert: { horn: [36.4, 6.2, 15], fringe: [36.6, 8, -6] },
+    sleep: { horn: [38, 19.8, 110], fringe: [36.2, 22.6, 12] },
+  };
+
+  /* Each pose moves the head, so everything hanging off it - the ear, the
+     horn, the fringe - is part of the pose rather than laid over the top. */
   const HEADS = {
     // Head down in the grass.
     graze: (m) => `
       <ellipse class="sheep-ear" cx="33.2" cy="15.2" rx="3" ry="1.8" transform="rotate(-42 33.2 15.2)"/>
-      <circle class="sheep-tag" cx="34.6" cy="13.6" r="2.1" style="fill:${m.tag}"/>
-      <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6" style="fill:${m.face}"/>
-      <circle class="sheep-eye" cx="38.2" cy="18" r="1.2"/>`,
+      ${hornAt(m, ...HEAD_AT.graze.horn)}
+      <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
+      ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.5" cy="20.5" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
+      ${m.coat === "fringe" ? fringeAt(...HEAD_AT.graze.fringe) : ""}
+      <circle class="sheep-eye" cx="38.2" cy="18" r="1.2" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Head up, ear resting: done, waiting on you.
     stand: (m) => `
       <ellipse class="sheep-ear" cx="32.4" cy="9" rx="3" ry="1.8" transform="rotate(-38 32.4 9)"/>
-      <circle class="sheep-tag" cx="33.6" cy="7.2" r="2.1" style="fill:${m.tag}"/>
-      <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6" style="fill:${m.face}"/>
-      <circle class="sheep-eye" cx="38.2" cy="11.4" r="1.2"/>`,
+      ${hornAt(m, ...HEAD_AT.stand.horn)}
+      <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
+      ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.3" cy="13.7" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
+      ${m.coat === "fringe" ? fringeAt(...HEAD_AT.stand.fringe) : ""}
+      <circle class="sheep-eye" cx="38.2" cy="11.4" r="1.2" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Ear pricked straight up: something is asking for an answer.
     alert: (m) => `
       <ellipse class="sheep-ear" cx="33.6" cy="6.2" rx="3.2" ry="1.7" transform="rotate(-72 33.6 6.2)"/>
-      <circle class="sheep-tag" cx="34.4" cy="3.6" r="2.1" style="fill:${m.tag}"/>
-      <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6" style="fill:${m.face}"/>
-      <circle class="sheep-eye" cx="38.6" cy="8.8" r="1.3"/>`,
+      ${hornAt(m, ...HEAD_AT.alert.horn)}
+      <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
+      ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.7" cy="11.3" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
+      ${m.coat === "fringe" ? fringeAt(...HEAD_AT.alert.fringe) : ""}
+      <circle class="sheep-eye" cx="38.6" cy="8.8" r="1.3" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Lying down, eye shut, legs folded under.
     sleep: (m) => `
       <ellipse class="sheep-ear" cx="32.6" cy="20.4" rx="3" ry="1.8" transform="rotate(-30 32.6 20.4)"/>
-      <circle class="sheep-tag" cx="33.4" cy="18.4" r="2.1" style="fill:${m.tag}"/>
-      <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6" style="fill:${m.face}"/>
+      ${hornAt(m, ...HEAD_AT.sleep.horn)}
+      <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
+      ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.3" cy="25.7" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
+      ${m.coat === "fringe" ? fringeAt(...HEAD_AT.sleep.fringe) : ""}
       <path class="sheep-lid" d="M36.4 24.2 q1.6 1.4 3.2 0"/>`,
   };
+
+  function isLight(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return ((n >> 16) * 0.299 + ((n >> 8) & 255) * 0.587 + (n & 255) * 0.114) > 110;
+  }
+
+  /* An eye has to be the opposite of the face it sits in: a dark pupil on a
+     black-faced Suffolk is not a subtle eye, it is no eye. */
+  function eyeOn(face) {
+    return isLight(face) ? "#12161f" : "#e8edf6";
+  }
+
+  /* The rim around the whole animal, and the thing the first version got
+     backwards. It was the card's own colour, which cannot by definition
+     separate a dark sheep from the card - a black one was a hole in the row
+     rather than an animal in it.
+
+     A pale sheep needs no rim at all against a dark card, so it keeps the
+     card-coloured one (the stylesheet swaps that for the selected row's colour
+     on its own). A dark one gets a light rim instead: its own fleece mixed
+     halfway to a pale grey, so the halo still belongs to that animal rather
+     than outlining every dark sheep in the same white. */
+  function rimFor(fleece) {
+    if (isLight(fleece)) return "";
+    const n = parseInt(fleece.slice(1), 16);
+    const mix = (channel, towards) => Math.round(channel + (towards - channel) * 0.55);
+    const rgb = [
+      mix(n >> 16, 0xc6), mix((n >> 8) & 255, 0xcf), mix(n & 255, 0xdd),
+    ];
+    return `rgb(${rgb.join(",")})`;
+  }
 
   /* Nobody home: bare ground where the sheep would stand. Quieter than the
      animals on purpose - it marks the rows with nothing running. */
@@ -899,6 +1076,11 @@
     return Object.prototype.hasOwnProperty.call(POSE, status) ? status : "unknown";
   }
 
+  /* A clip path is referenced by id, and the list draws a dozen of these into
+     one document - so each drawing gets its own. The list is replaced whole on
+     every redraw, so the counter never has to be tidied up. */
+  let sheepSerial = 0;
+
   function sheepSvg(status, seed) {
     const pose = POSE[knownStatus(status)];
     // An empty pasture has nobody to tell apart.
@@ -909,7 +1091,7 @@
     const asleep = pose === "sleep";
     return `
       <svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">
-        ${sheepBody(asleep ? 5 : 0, !asleep, marks)}
+        ${sheepBody(asleep ? 5 : 0, !asleep, marks, `fleece-${++sheepSerial}`)}
         ${HEADS[pose](marks)}
       </svg>`;
   }
@@ -918,6 +1100,7 @@
      its HTML restarts each sheep's graze mid-cycle and throws away the row a
      swipe is holding open - so redraw only when one of these actually moved. */
   function agentListSignature() {
+    const queued = queuedByPane();
     return state.groups
       .map((group) =>
         [
@@ -931,6 +1114,7 @@
               a.name,
               a.title || a.cwd,
               agoLabel(a.pane_id),
+              queuedLabel(queued.get(a.pane_id)),
               a.pane_id === state.activePaneId ? "1" : "",
             ].join("\u001f")
           ),
@@ -945,19 +1129,48 @@
      it is whatever you asked it to do, and the workspace label drops to the
      small line, and only when it says something the heading did not: "sheep
      #5", or a name you set by hand. */
-  function agentRowHtml(agent, groupName) {
+  /* What is still owed to each pane: prompts holding for a window or a busy
+     chat, and anything that failed on the way in. Both are things you queued
+     and neither has happened yet, so the overview says so rather than making
+     you open the queue to find out. */
+  function queuedByPane() {
+    const counts = new Map();
+    for (const p of state.queue) {
+      const at = counts.get(p.pane_id) || { waiting: 0, failed: 0 };
+      if (p.state === "failed") at.failed++;
+      else at.waiting++;
+      counts.set(p.pane_id, at);
+    }
+    return counts;
+  }
+
+  function queuedLabel(count) {
+    if (!count) return "";
+    const bits = [];
+    if (count.waiting) bits.push(`${count.waiting} queued`);
+    if (count.failed) bits.push(`${count.failed} failed`);
+    return bits.join(" · ");
+  }
+
+  function agentRowHtml(agent, groupName, queued) {
     const isActive = agent.pane_id === state.activePaneId;
     const status = knownStatus(agent.status);
     const label = agent.name || agent.pane_id;
     const headline = agent.title || label;
+    /* The fleece is whose sheep it is. An empty pasture has no sheep and so no
+       breed - it keeps the muted colour the stylesheet gives it, which an
+       inline one would quietly win against. */
+    const fleece = status === "unknown"
+      ? ""
+      : ` style="color:${sheepMarks(agent.pane_id).breed.fleece}"`;
     let sub = "";
     if (label !== headline && label !== groupName) sub = label;
     else if (!agent.title) sub = agent.cwd || "";
     return `
       <div class="agent-row-wrap">
         <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
-        <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${status}">${sheepSvg(status, agent.pane_id)}</span>
+        <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
+          <span class="sheep-wrap ${status}"${fleece}>${sheepSvg(status, agent.pane_id)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
@@ -965,6 +1178,9 @@
           <span class="agent-row-side">
             <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
             <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
+            ${queued
+                ? `<span class="agent-row-queued${queued.failed ? " failed" : ""}">${escapeHtml(queuedLabel(queued))}</span>`
+                : ""}
           </span>
         </button>
       </div>
@@ -987,19 +1203,32 @@
     if (signature === state.listSignature) return;
     state.listSignature = signature;
 
+    const queued = queuedByPane();
     elAgentList.innerHTML = state.groups
       .map((group) => {
         const waiting = group.agents.filter(wantsInput).length;
+        const owed = group.agents.reduce(
+          (sum, a) => sum + ((queued.get(a.pane_id) || {}).waiting || 0), 0
+        );
         const tally = waiting
           ? `<span class="agent-group-waiting">${waiting} waiting</span>`
           : `<span class="agent-group-count">${group.agents.length}</span>`;
+        /* The heading is sticky, so a project's total stays on screen while
+           you scroll its sheep - which is the number you want when the queue
+           is long enough to scroll. */
+        const owedChip = owed
+          ? `<span class="agent-group-queued">${owed} queued</span>`
+          : "";
         return `
           <section class="agent-group">
             <h2 class="agent-group-head">
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
+              ${owedChip}
               ${tally}
             </h2>
-            ${group.agents.map((a) => agentRowHtml(a, group.name)).join("")}
+            ${group.agents
+                .map((a) => agentRowHtml(a, group.name, queued.get(a.pane_id)))
+                .join("")}
           </section>`;
       })
       .join("");
@@ -1075,6 +1304,7 @@
     touchAgent(paneId);
     state.activePaneId = paneId;
     restoreDraft(paneId);
+    renderAttachments();
     state.historyText = "";
     elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
     triggerHaptic();
@@ -1202,6 +1432,7 @@
       clearDraft(state.activePaneId);
       elPromptInput.value = "";
       hideCompletions();
+      renderAttachments();
       autoResizeTextarea();
       elBtnSend.disabled = true;
 
@@ -1361,6 +1592,246 @@
     elBtnSend.disabled = elPromptInput.value.trim().length === 0;
   }
 
+  /* -------------------------------------------------------- Attachments ---
+   *
+   * A screenshot is the one thing the phone has that the laptop does not, and
+   * there was no way to hand one over: Claude Code pastes images from the
+   * clipboard of the machine it runs on, and the console forwards keystrokes
+   * rather than bytes. So the image goes up to the gateway, which writes it
+   * beside the work, and the prompt carries its path - a thing both agents
+   * already understand.
+   *
+   * The composer's text is the attachment. Thumbnails are drawn from whatever
+   * paths are still in it, so deleting the path takes the picture with it and
+   * the two can never disagree about what is being sent.
+   * ---------------------------------------------------------------------- */
+
+  // Long edge of what gets uploaded. A phone photo is four thousand pixels
+  // wide, an agent reads it at a fraction of that, and the difference is
+  // several seconds of someone's cellular connection.
+  const MAX_EDGE = 1600;
+  // Below this a screenshot goes up untouched: re-encoding costs the crispness
+  // that makes the text in it readable, which is usually the point of sending
+  // one.
+  const KEEP_AS_IS = 1.2 * 1024 * 1024;
+
+  // path -> object URL of the image that was uploaded to it.
+  const attachUrls = new Map();
+
+  /* Scale an image down before it goes anywhere. Everything here is allowed to
+     fail: if the browser will not decode it, the original bytes are still a
+     perfectly good upload. */
+  async function shrinkImage(file) {
+    const isPng = file.type === "image/png";
+    try {
+      const bitmap = await createImageBitmap(file);
+      const longest = Math.max(bitmap.width, bitmap.height);
+      const scale = Math.min(1, MAX_EDGE / longest);
+      if (scale === 1 && file.size <= KEEP_AS_IS) {
+        bitmap.close();
+        return file;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const type = isPng ? "image/png" : "image/jpeg";
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, 0.86));
+      return blob || file;
+    } catch (err) {
+      return file; // HEIC on a browser that will not decode it, say
+    }
+  }
+
+  async function uploadAttachment(file) {
+    if (!state.activePaneId) return null;
+    const blob = await shrinkImage(file);
+    const res = await fetch(`/api/agents/${encodeURIComponent(state.activePaneId)}/attach`, {
+      method: "POST",
+      headers: { "Content-Type": blob.type || file.type || "image/png" },
+      body: blob,
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "the gateway would not take it");
+    attachUrls.set(data.path, URL.createObjectURL(blob));
+    return data.path;
+  }
+
+  /* Put the path where the caret is, as an @mention: that is how you point an
+     agent at a file by hand, and it is what the completion bar already writes. */
+  function insertAttachment(path) {
+    const value = elPromptInput.value;
+    const at = elPromptInput.selectionStart ?? value.length;
+    const before = value.slice(0, at);
+    const after = value.slice(at);
+    /* A path must not fuse with the word in front of it, and must not push a
+       second space in front of the one behind it - pasting into the middle of
+       a sentence is rarer than pasting at the end, but it should not leave a
+       gap you have to go back and close. */
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = /^\s/.test(after) ? "" : " ";
+    const text = `${lead}@${path}${trail}`;
+    elPromptInput.value = before + text + after;
+    const caret = at + text.length;
+    try {
+      elPromptInput.setSelectionRange(caret, caret);
+    } catch (err) {
+      /* not focused; the text is what matters */
+    }
+    autoResizeTextarea();
+    rememberDraft();
+  }
+
+  async function attachFiles(files) {
+    if (!files || !files.length) return;
+    if (!state.activePaneId) return;
+    triggerHaptic();
+    setAttachBusy(true);
+    for (const file of files) {
+      try {
+        const path = await uploadAttachment(file);
+        if (path) insertAttachment(path);
+      } catch (err) {
+        /* Not an alert(): iOS stops showing those in an installed web app
+           once a few have been dismissed, and a silently dropped screenshot
+           looks exactly like one that went. */
+        showAttachError(err.message);
+      }
+    }
+    setAttachBusy(false);
+    renderAttachments();
+  }
+
+  function setAttachBusy(busy) {
+    elBtnAttach.classList.toggle("busy", busy);
+    elBtnAttach.disabled = busy;
+  }
+
+  function showAttachError(message) {
+    elAttachStrip.classList.remove("hidden");
+    elAttachStrip.innerHTML =
+      `<div class="attach-error">Could not attach it — ${escapeHtml(message)}</div>`;
+  }
+
+  // Every attachment path currently sitting in the composer, in order.
+  const RE_ATTACHED = /@(\.sheepit\/[A-Za-z0-9._-]+)/g;
+
+  function attachedPaths() {
+    return [...elPromptInput.value.matchAll(RE_ATTACHED)].map((m) => m[1]);
+  }
+
+  function renderAttachments() {
+    const paths = attachedPaths();
+    if (!paths.length) {
+      elAttachStrip.classList.add("hidden");
+      elAttachStrip.innerHTML = "";
+      return;
+    }
+    elAttachStrip.classList.remove("hidden");
+    elAttachStrip.innerHTML = paths
+      .map((path) => {
+        const url = attachUrls.get(path);
+        const name = path.split("/").pop();
+        return `
+          <span class="attach-chip" title="${escapeHtml(path)}">
+            ${url ? `<img src="${url}" alt="">` : ""}
+            <span class="attach-name">${escapeHtml(name)}</span>
+            <button type="button" class="attach-drop" data-path="${escapeHtml(path)}" aria-label="Remove">×</button>
+          </span>`;
+      })
+      .join("");
+  }
+
+  /* Dropping a thumbnail takes the path out of the composer, which is the only
+     thing that was ever going to be sent. The file stays on the machine; the
+     inbox clears itself out after a week. */
+  function dropAttachment(path) {
+    elPromptInput.value = elPromptInput.value
+      .replace(`@${path}`, "")
+      .replace(/[ \t]{2,}/g, " ")
+      .trimStart();
+    const url = attachUrls.get(path);
+    if (url) URL.revokeObjectURL(url);
+    attachUrls.delete(path);
+    autoResizeTextarea();
+    rememberDraft();
+    renderAttachments();
+    triggerHaptic();
+  }
+
+  /* Images out of a clipboard or a drag, which arrive in the same shape from
+     both: a list of items that may be files, and a list of files that may be
+     images. Safari fills one, some browsers fill the other, and a screenshot
+     copied on a phone can arrive as either - so read both and take whatever is
+     actually a picture. */
+  function imagesIn(transfer) {
+    if (!transfer) return [];
+    const found = [];
+    for (const item of transfer.items || []) {
+      if (item.kind !== "file" || !(item.type || "").startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file) found.push(file);
+    }
+    if (found.length) return found;
+    for (const file of transfer.files || []) {
+      if ((file.type || "").startsWith("image/")) found.push(file);
+    }
+    return found;
+  }
+
+  elBtnAttach.addEventListener("click", () => {
+    if (!state.activePaneId) return;
+    elAttachInput.click();
+  });
+
+  /* Paste a screenshot straight in. iOS copies one to the clipboard the moment
+     you take it, which makes this the shortest path there is between seeing
+     something wrong and an agent looking at it - shorter than the photo
+     library, which is what the paperclip opens.
+
+     Listened for on the document rather than the composer: a paste is aimed at
+     whatever has focus, and on a phone that is as often the page as the
+     textarea. Text pastes are left entirely alone. */
+  document.addEventListener("paste", (e) => {
+    // The console has its own terminal to paste into, and it wants the text.
+    if (!elConsoleView.classList.contains("hidden")) return;
+    if (!state.activePaneId) return;
+    const images = imagesIn(e.clipboardData);
+    if (!images.length) return;
+    e.preventDefault();
+    if (document.activeElement !== elPromptInput) elPromptInput.focus();
+    attachFiles(images);
+  });
+
+  /* Dragging a file onto the composer, which is how the same thing happens on
+     a laptop. `dragover` has to be refused for a drop to be offered at all -
+     and it can only ask *whether* files are coming, because reading one mid-drag
+     is not allowed: `getAsFile()` is null until the thing is actually dropped. */
+  elPromptInput.addEventListener("dragover", (e) => {
+    const types = e.dataTransfer ? [...(e.dataTransfer.types || [])] : [];
+    if (state.activePaneId && types.includes("Files")) e.preventDefault();
+  });
+
+  elPromptInput.addEventListener("drop", (e) => {
+    const images = imagesIn(e.dataTransfer);
+    if (!images.length || !state.activePaneId) return;
+    e.preventDefault();
+    attachFiles(images);
+  });
+
+  elAttachInput.addEventListener("change", async () => {
+    const files = [...(elAttachInput.files || [])];
+    // Let the same file be picked twice in a row.
+    elAttachInput.value = "";
+    await attachFiles(files);
+  });
+
+  elAttachStrip.addEventListener("click", (e) => {
+    const drop = e.target.closest(".attach-drop");
+    if (drop) dropAttachment(drop.dataset.path);
+  });
+
   /* ------------------------------------------------------------- Queue --- */
 
   /* A queued prompt is either still ours or it never made it. Delivered ones
@@ -1386,6 +1857,10 @@
       state.queue = (data.prompts || []).filter((p) => p.state !== "sent");
       renderQueueBadge();
       if (state.queueOpen) renderTaskList();
+      // The herd is polled before the queue, so the counts on the rows arrive
+      // a beat later than the rows do. The signature keeps this cheap: it only
+      // redraws when a number actually moved.
+      if (state.pickerOpen) renderAgentList();
     } catch (err) {
       /* The connection dot already says the gateway is unreachable; a failed
          queue poll should not also blank the list you were reading. */
@@ -2076,6 +2551,9 @@
     autoResizeTextarea();
     scheduleCompletion();
     rememberDraft();
+    // Deleting a path is how you un-attach an image, so the strip follows the
+    // text rather than keeping its own list to fall out of step with.
+    renderAttachments();
   });
   // Tapping a chip blurs the textarea, so the bar must outlive the blur long
   // enough for the click to land on it.
