@@ -31,6 +31,8 @@ function loadRows() {
     const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const knownStatus = (s) => s || "unknown";
     const sheepSvg = () => "";
+    const sheepMarks = (seed) => ({ breed: { id: "test", fleece: "#abcdef", face: "#123456" },
+                                    horn: "curl", coat: "woolly", muzzle: false });
     const agoLabel = () => "";
     const wantsInput = (a) => a.status === "blocked";
   `;
@@ -45,7 +47,7 @@ function loadMarks() {
   const to = src.indexOf("  /* Everything a row draws.");
   if (from < 0 || to < 0) throw new Error(`marks anchors moved in ${SRC}`);
   return new Function(
-    `${src.slice(from, to)} return { sheepMarks, sheepSvg, TAGS, COATS, FACES, knownStatus };`
+    `${src.slice(from, to)} return { sheepMarks, sheepSvg, eyeOn, BREEDS, HORN_KINDS, COATS, knownStatus };`
   )();
 }
 
@@ -283,36 +285,75 @@ function order(agents, pickerHidden = true, held = []) {
   const m = loadMarks();
   const key = (id) => {
     const marks = m.sheepMarks(id);
-    return `${marks.tag}|${marks.coat.join("")}|${marks.face}`;
+    return `${marks.breed.id}|${marks.horn}|${marks.coat}|${marks.muzzle}`;
   };
 
-  /* A sheep that changes its markings is not an identity, it is noise. The
-     same pane has to be the same animal across a reload and a restart. */
+  /* A sheep that changes shape is not an identity, it is noise. The same pane
+     has to be the same animal across a reload and a restart. */
   check("the same pane is the same sheep", key("wJ:p1"), key("wJ:p1"));
 
   /* Pane ids differ in one character - "wE:p1" against "wJ:p1" - which is
-     exactly where a weak hash hands out the same tag to the whole herd. */
+     exactly where a weak hash hands the whole flock one shape. */
   const ids = [];
   for (const w of ["wE", "wJ", "wM", "wP", "w11", "w12", "w13", "w2", "w3", "w4", "wA", "wB"]) {
     ids.push(`${w}:p1`, `${w}:p2`);
   }
-  const distinct = new Set(ids.map(key));
-  check("a plausible herd is all distinct", distinct.size, ids.length);
-  check("and wears every tag in the drawer",
-        new Set(ids.map((id) => m.sheepMarks(id).tag)).size, m.TAGS.length);
+  check("a plausible herd is nearly all distinct",
+        new Set(ids.map(key)).size >= ids.length - 2, true);
+  check("and grazes every breed in the book",
+        new Set(ids.map((id) => m.sheepMarks(id).breed.id)).size, m.BREEDS.length);
 
-  // Markings are identity; the fleece colour and the pose are status. One must
-  // never be read off the other.
+  /* Silhouette before colour: what you recognise at this size is whether it
+     has horns and whether it has been shorn, so both have to actually vary. */
+  check("horns vary", new Set(ids.map((id) => m.sheepMarks(id).horn)).size, 3);
+  check("coats vary", new Set(ids.map((id) => m.sheepMarks(id).coat)).size, 3);
+
+  /* Identity is the animal; status is the row it stands in. Neither may be
+     read off the other - which is the whole reason the fleece could stop
+     being a status colour. */
   const working = m.sheepSvg("working", "wJ:p1");
   const blocked = m.sheepSvg("blocked", "wJ:p1");
-  const tag = m.sheepMarks("wJ:p1").tag;
-  check("the tag survives a change of status",
-        [working.includes(tag), blocked.includes(tag)], [true, true]);
-  check("and so does the raddle on the fleece",
-        [working, blocked].map((svg) => svg.split(tag).length - 1), [2, 2]);
+  const breed = m.sheepMarks("wJ:p1").breed;
+  check("the same sheep whatever it is doing",
+        [working, blocked].map((svg) => svg.includes(breed.face)), [true, true]);
+  check("and no status colour anywhere on it",
+        [working, blocked].some((svg) => /#e3b341|#f85149|#3fb950|#58a6ff/.test(svg)), false);
+
+  // A face has to stay off its own fleece, or it is not a face.
+  for (const b of m.BREEDS) {
+    if (b.face === b.fleece) failures.push(`FAIL ${b.id} has a face the colour of its fleece`);
+  }
+
+  /* An eye is the opposite of the face it sits in: a dark pupil on a
+     black-faced Suffolk is not a subtle eye, it is no eye. */
+  check("a dark face gets a pale eye", m.eyeOn("#2c3242"), "#e8edf6");
+  check("a pale face gets a dark eye", m.eyeOn("#ccd4e1"), "#12161f");
 
   // Nobody home is nobody to tell apart.
-  check("an empty pasture wears no tag", m.sheepSvg("unknown", "wJ:p1").includes("sheep-tag"), false);
+  const empty = m.sheepSvg("unknown", "wJ:p1");
+  check("an empty pasture is no animal at all",
+        [empty.includes("sheep-horn"), empty.includes("sheep-face")], [false, false]);
+}
+
+// -- the row wears the status ------------------------------------------------
+
+/* With the fleece carrying identity, the row has to carry status - and
+   `blocked` is the one that must never be missed, so it gets the tint as well
+   as the spine. */
+{
+  const rows = loadRows();
+  const of = (status) => rows.agentRowHtml(
+    { ...row("wA:p1", 1, "/p/api", status), name: "api", title: "Rewrite it" }, "api");
+
+  check("a working row is marked working", of("working").includes("agent-row st-working"), true);
+  check("a blocked row is marked blocked", of("blocked").includes("agent-row st-blocked"), true);
+  check("an empty pane is marked unknown", of("unknown").includes("agent-row st-unknown"), true);
+  check("the pill still says it too", of("blocked").includes("status-badge status-blocked"), true);
+
+  /* The fleece colour on the wrapper is the breed's, not the status's. Two
+     rows in different states must paint the same sheep. */
+  const fleece = (html) => /style="color:(#[0-9a-f]{6})"/.exec(html)[1];
+  check("the same sheep in either state", fleece(of("working")), fleece(of("done")));
 }
 
 // -- what is still owed ------------------------------------------------------

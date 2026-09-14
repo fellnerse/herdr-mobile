@@ -783,27 +783,31 @@
 
   /* ------------------------------------------------------- Telling them apart
    *
-   * Status is a colour and a posture, and two agents working on the same
-   * project are therefore the same animal twice - which is exactly what
-   * grouping the list by project puts side by side.
+   * Two agents on one project used to be the same animal twice, and grouping
+   * the list by project is exactly what puts them side by side.
    *
-   * Shepherds have the problem and answered it with paint. A flock is marked
-   * with raddle - a bright blob sprayed on the fleece - and tagged in the ear
-   * to match, because a mark you have to squint at is no mark at all at the
-   * far end of a field. The same holds at the far end of a phone: the sheep
-   * here are 42 pixels wide, so identity has to be a big saturated patch of
-   * one colour, not a freckle.
+   * The first answer here was paint - a raddle mark in a hashed colour - which
+   * works on a real hillside and worked here too, until you ask what you
+   * actually recognise a sheep by. It is not the mark. It is the shape: horns
+   * or no horns, woolly or shorn, and then the colour of the animal itself.
+   * Shape survives a glance too fast to register hue, and colour you can name
+   * - "the black one with horns" is a thing you can hold in your head, where
+   * "the one with the teal blob on its flank" is a thing you have to decode.
    *
-   * Each pane hashes to one colour, worn twice - the raddle on the fleece and
-   * the tag on the ear - plus where the paint landed, and the shade of the
-   * face. Status stays the fleece colour and the pose; the paint is outlined
-   * in the card's own colour so it reads as paint on top of the animal rather
-   * than a change to the animal itself.
+   * So the sheep is identity, whole: breed, horns, coat. Nine breeds, three
+   * horns, three coats - 81 animals, most of which differ in silhouette
+   * before they differ in colour.
+   *
+   * That is only possible because status moved off the animal and onto the
+   * row: see `.agent-row` in the stylesheet, where a five-pixel spine down the
+   * left edge carries what the fleece used to. The pose still carries it too -
+   * grazing, head up, ear pricked, asleep - but a pose is not enough on its
+   * own for `blocked`, which is the one state that must never be missed.
    * ------------------------------------------------------------------------ */
 
   /* FNV-1a, because the ids being hashed are short and nearly identical -
      "wE:p1" and "wJ:p1" differ in one character, and a weaker hash hands them
-     the same colour. */
+     the same animal. */
   function fnv1a(text) {
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) {
@@ -813,91 +817,158 @@
     return hash >>> 0;
   }
 
-  /* One colour per sheep, far enough apart from each other to be named across
-     a room. They do not have to avoid the status colours: a raddle mark is a
-     blob with a card-coloured outline on a whole animal of another colour. */
-  const TAGS = [
-    "#ff5fa8", "#ff8c1a", "#ffd43b", "#7ee63c", "#12d18a", "#00c2d6",
-    "#3b8dff", "#8b5cff", "#d45cff", "#ff4d4d", "#c98a4b", "#5ff0ff",
+  /* Breeds, near enough to real ones to be nameable: a white sheep with a
+     black face is a Suffolk, a dark one with a pale face is a badger face.
+     Each carries its own face colour rather than picking one at random,
+     because the pairing is what makes it read as an animal - and because a
+     face has to stay off its own fleece to be a face at all.
+
+     `patch` is a second fleece colour for the spotted ones. */
+  const BREEDS = [
+    { id: "white", fleece: "#eef1f6", face: "#ccd4e1" },
+    { id: "suffolk", fleece: "#e9edf4", face: "#2c3242" },
+    { id: "cream", fleece: "#e8dcb9", face: "#b8a878" },
+    { id: "oatmeal", fleece: "#d8c9a8", face: "#6f6650" },
+    { id: "tan", fleece: "#cfa26b", face: "#a97c49" },
+    { id: "brown", fleece: "#8d5c3c", face: "#e0d4c4" },
+    { id: "grey", fleece: "#9aa2b1", face: "#6d7688" },
+    { id: "charcoal", fleece: "#4a5162", face: "#d7dce6" },
+    { id: "black", fleece: "#333a49", face: "#20252f" },
+    { id: "badger", fleece: "#5c6678", face: "#e3e8f1" },
+    { id: "spotted", fleece: "#edf0f6", face: "#8d5c3c", patch: "#8d5c3c" },
+    { id: "jacob", fleece: "#c3c9d4", face: "#333a49", patch: "#333a49" },
   ];
 
-  /* Where the paint went. Big shapes: at this size a mark smaller than the
-     face is a smudge nobody can tell from another smudge. */
-  const RADDLE = {
-    shoulder: '<circle cx="13" cy="16.5" r="5"/>',
-    flank: '<circle cx="24.5" cy="17" r="4.6"/>',
-    rump: '<circle cx="30.5" cy="15" r="4.4"/>',
-    back: '<rect x="13" y="7.5" width="13" height="5.4" rx="2.7"/>',
-    belly: '<rect x="10" y="19" width="14" height="5" rx="2.5"/>',
+  /* Horns: the cue that survives being small. Drawn in one canonical frame -
+     base at the origin, curling back over the skull - and then placed by
+     whatever the pose did with the head. */
+  const HORNS = {
+    none: "",
+    curl: "M0 0 q-3.4 -0.6 -4.3 2.1 q-0.7 2.3 1.9 3",
+    spiral: "M0 0 q-4.2 -1.2 -5.4 2.2 q-1 3 2.2 4 q2.6 0.8 3.1 -1.6 q0.4 -1.9 -1.6 -2.3",
   };
-  const COATS = [
-    ["shoulder"],
-    ["flank"],
-    ["rump"],
-    ["back"],
-    ["belly"],
-    ["shoulder", "rump"],
-    ["back", "flank"],
-    ["shoulder", "belly"],
-  ];
+  const HORN_KINDS = ["none", "curl", "spiral"];
 
-  // Face shades a breed might come in. All stay light enough for a dark eye.
-  const FACES = ["#dfe5f0", "#cbb392", "#a7b0c2"];
+  // Woolly, shorn, or woolly with a fringe down over the eyes.
+  const COATS = ["woolly", "shorn", "fringe"];
 
   function sheepMarks(seed) {
     const hash = fnv1a(String(seed || ""));
     return {
-      tag: TAGS[hash % TAGS.length],
-      coat: COATS[(hash >>> 5) % COATS.length],
-      face: FACES[(hash >>> 11) % FACES.length],
+      breed: BREEDS[hash % BREEDS.length],
+      horn: HORN_KINDS[(hash >>> 5) % HORN_KINDS.length],
+      coat: COATS[(hash >>> 11) % COATS.length],
+      // A dark muzzle on a pale face, a pale one on a dark face. Real, and it
+      // is the cheapest way to tell two of one breed apart.
+      muzzle: ((hash >>> 17) & 1) === 1,
     };
   }
 
+  /* The body, in two passes.
+
+     A black sheep on a dark card is a hole in the row unless something draws
+     its edge, and stroking the shapes themselves puts a line through every
+     place two of them overlap - the fleece would come out as a diagram of the
+     circles it is made of. So the same shapes are drawn twice: once in the
+     card's colour with a fat stroke, and once filled on top. The first pass
+     leaves a halo, the second covers every internal line of it. */
   function sheepBody(dy, legs, marks) {
-    const paint = marks.coat.map((where) => RADDLE[where]).join("");
+    const woolly = `
+      ${legs ? '<rect x="11" y="21" width="5" height="12" rx="2.5"/>' : ""}
+      ${legs ? '<rect x="23" y="21" width="5" height="12" rx="2.5"/>' : ""}
+      <circle cx="11.5" cy="16" r="7.5"/>
+      <circle cx="18" cy="11" r="8"/>
+      <circle cx="25.5" cy="11.5" r="7.5"/>
+      <circle cx="31" cy="16" r="7"/>
+      <rect x="5" y="13" width="27" height="13" rx="6.5"/>`;
+    /* Shorn: the same animal a week after the clippers - no cloud line, a
+       slimmer barrel, and more daylight under it. */
+    const shorn = `
+      ${legs ? '<rect x="12" y="21" width="4.4" height="13" rx="2.2"/>' : ""}
+      ${legs ? '<rect x="23" y="21" width="4.4" height="13" rx="2.2"/>' : ""}
+      <rect x="6" y="13.5" width="27" height="11.5" rx="5.75"/>
+      <circle cx="30.5" cy="17" r="6"/>`;
+    const shape = marks.coat === "shorn" ? shorn : woolly;
+    const patches = marks.breed.patch
+      ? `<g fill="${marks.breed.patch}">
+           <circle cx="13.5" cy="16.5" r="4.6"/>
+           <circle cx="27" cy="13.5" r="3.8"/>
+         </g>`
+      : "";
     return `
       <g transform="translate(0 ${dy})">
-        <g fill="currentColor">
-          ${legs ? '<rect x="11" y="21" width="5" height="12" rx="2.5"/>' : ""}
-          ${legs ? '<rect x="23" y="21" width="5" height="12" rx="2.5"/>' : ""}
-          <circle cx="11.5" cy="16" r="7.5"/>
-          <circle cx="18" cy="11" r="8"/>
-          <circle cx="25.5" cy="11.5" r="7.5"/>
-          <circle cx="31" cy="16" r="7"/>
-          <rect x="5" y="13" width="27" height="13" rx="6.5"/>
-        </g>
-        <g class="sheep-raddle" style="fill:${marks.tag}">${paint}</g>
+        <g class="sheep-edge">${shape}</g>
+        <g fill="currentColor">${shape}</g>
+        ${patches}
       </g>`;
   }
 
-  /* Each pose puts the ear somewhere else, so the tag hanging from it is part
-     of the pose rather than something laid over the top. */
+  /* A horn placed on a head: the card-coloured stroke underneath is the same
+     outline the face and ear carry, and it is what keeps a pale horn off a
+     pale fleece and a dark one off the card. */
+  function hornAt(kind, x, y, rotate) {
+    const path = HORNS[kind];
+    if (!path) return "";
+    const at = `translate(${x} ${y}) rotate(${rotate})`;
+    return `
+      <g transform="${at}" fill="none" stroke-linecap="round">
+        <path class="sheep-horn-edge" d="${path}"/>
+        <path class="sheep-horn" d="${path}"/>
+      </g>`;
+  }
+
+  // A fringe hangs off the forehead, so it belongs to the head, not the body.
+  function fringeAt(x, y, rotate) {
+    return `
+      <g transform="translate(${x} ${y}) rotate(${rotate})" fill="currentColor">
+        <ellipse class="sheep-edge-fill" cx="0" cy="0" rx="4.4" ry="3"/>
+      </g>`;
+  }
+
+  /* Each pose moves the head, so everything hanging off it - the ear, the
+     horn, the fringe - is part of the pose rather than laid over the top. */
   const HEADS = {
     // Head down in the grass.
     graze: (m) => `
       <ellipse class="sheep-ear" cx="33.2" cy="15.2" rx="3" ry="1.8" transform="rotate(-42 33.2 15.2)"/>
-      <circle class="sheep-tag" cx="34.6" cy="13.6" r="2.7" style="fill:${m.tag}"/>
-      <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6" style="fill:${m.face}"/>
-      <circle class="sheep-eye" cx="38.2" cy="18" r="1.2"/>`,
+      ${hornAt(m.horn, 34.4, 15.4, 20)}
+      <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
+      ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.5" cy="20.5" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
+      ${m.coat === "fringe" ? fringeAt(34.6, 16.4, 20) : ""}
+      <circle class="sheep-eye" cx="38.2" cy="18" r="1.2" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Head up, ear resting: done, waiting on you.
     stand: (m) => `
       <ellipse class="sheep-ear" cx="32.4" cy="9" rx="3" ry="1.8" transform="rotate(-38 32.4 9)"/>
-      <circle class="sheep-tag" cx="33.6" cy="7.2" r="2.7" style="fill:${m.tag}"/>
-      <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6" style="fill:${m.face}"/>
-      <circle class="sheep-eye" cx="38.2" cy="11.4" r="1.2"/>`,
+      ${hornAt(m.horn, 33.8, 9.2, 0)}
+      <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
+      ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.3" cy="13.7" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
+      ${m.coat === "fringe" ? fringeAt(34.8, 9.4, 0) : ""}
+      <circle class="sheep-eye" cx="38.2" cy="11.4" r="1.2" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Ear pricked straight up: something is asking for an answer.
     alert: (m) => `
       <ellipse class="sheep-ear" cx="33.6" cy="6.2" rx="3.2" ry="1.7" transform="rotate(-72 33.6 6.2)"/>
-      <circle class="sheep-tag" cx="34.4" cy="3.6" r="2.7" style="fill:${m.tag}"/>
-      <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6" style="fill:${m.face}"/>
-      <circle class="sheep-eye" cx="38.6" cy="8.8" r="1.3"/>`,
+      ${hornAt(m.horn, 34.2, 7, -8)}
+      <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
+      ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.7" cy="11.3" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
+      ${m.coat === "fringe" ? fringeAt(35.2, 7, -8) : ""}
+      <circle class="sheep-eye" cx="38.6" cy="8.8" r="1.3" style="fill:${eyeOn(m.breed.face)}"/>`,
     // Lying down, eye shut, legs folded under.
     sleep: (m) => `
       <ellipse class="sheep-ear" cx="32.6" cy="20.4" rx="3" ry="1.8" transform="rotate(-30 32.6 20.4)"/>
-      <circle class="sheep-tag" cx="33.4" cy="18.4" r="2.7" style="fill:${m.tag}"/>
-      <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6" style="fill:${m.face}"/>
+      ${hornAt(m.horn, 33.8, 20.6, 14)}
+      <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6" style="fill:${m.breed.face}"/>
+      ${m.muzzle ? `<ellipse class="sheep-muzzle" cx="39.3" cy="25.7" rx="2" ry="1.6" style="fill:${eyeOn(m.breed.face)}"/>` : ""}
+      ${m.coat === "fringe" ? fringeAt(34.8, 21.6, 14) : ""}
       <path class="sheep-lid" d="M36.4 24.2 q1.6 1.4 3.2 0"/>`,
   };
+
+  /* An eye has to be the opposite of the face it sits in: a dark pupil on a
+     black-faced Suffolk is not a subtle eye, it is no eye. */
+  function eyeOn(face) {
+    const n = parseInt(face.slice(1), 16);
+    const light = ((n >> 16) * 0.299 + ((n >> 8) & 255) * 0.587 + (n & 255) * 0.114) > 110;
+    return light ? "#12161f" : "#e8edf6";
+  }
 
   /* Nobody home: bare ground where the sheep would stand. Quieter than the
      animals on purpose - it marks the rows with nothing running. */
@@ -995,14 +1066,20 @@
     const status = knownStatus(agent.status);
     const label = agent.name || agent.pane_id;
     const headline = agent.title || label;
+    /* The fleece is whose sheep it is. An empty pasture has no sheep and so no
+       breed - it keeps the muted colour the stylesheet gives it, which an
+       inline one would quietly win against. */
+    const fleece = status === "unknown"
+      ? ""
+      : ` style="color:${sheepMarks(agent.pane_id).breed.fleece}"`;
     let sub = "";
     if (label !== headline && label !== groupName) sub = label;
     else if (!agent.title) sub = agent.cwd || "";
     return `
       <div class="agent-row-wrap">
         <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
-        <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${status}">${sheepSvg(status, agent.pane_id)}</span>
+        <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
+          <span class="sheep-wrap ${status}"${fleece}>${sheepSvg(status, agent.pane_id)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}

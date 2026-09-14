@@ -5,57 +5,80 @@ the iOS limits that shaped them.
 
 ## The flock
 
-The project list draws one sheep per project. Colour carries the status, and so
-does the posture — a silhouette needs no legend:
+The overview draws one sheep per pane, and the split is deliberate: **the sheep
+is who, the row is what**.
 
-| State | Sheep | Motion |
+### The row says what it is doing
+
+| State | Row | Sheep |
 |---|---|---|
-| Working 🟡 | grazing, head down | munching bob |
-| Idle 🟢 | standing, head up | still |
-| Blocked 🔴 | head up, ear pricked | twitch |
-| Done 🔵 | lying down asleep | slow breathing |
-| Unknown ⚪ | no sheep — empty pasture | none |
+| Working 🟡 | amber spine | grazing, head down — munching bob |
+| Idle 🟢 | green spine | standing, head up |
+| Blocked 🔴 | red spine **and a tinted card** | head up, ear pricked — twitch |
+| Done 🔵 | blue spine | lying down asleep — slow breathing |
+| Unknown ⚪ | grey spine | no sheep — empty pasture |
 
-Idle stands rather than sleeps on purpose: it is the state that most wants
-answering, so it must not look like the dormant one. The pane with no agent at
-all is the empty pasture. Every animation stops under
-`prefers-reduced-motion`.
+The spine is five pixels down the left edge of the card, drawn as an inset
+shadow so the corner radius clips it and the swipe-to-close underneath does not
+have to know about it. It is louder than a coloured animal ever was, and it
+stays scannable down a list of projects rather than needing you to look at one
+sheep.
 
-The sheep is inline SVG so the fleece can inherit each row's colour, which is
-also why the face and ear are pale with a card-coloured outline: a dark muzzle
-disappears into the dark card and leaves a headless blob.
+Blocked gets the card tinted as well. Posture carries a lot, but posture alone
+is weaker than colour for the one state that must never be missed — and with
+status off the fleece, a sleeping black sheep and a working black sheep differ
+only in pose and in the row around them. That edge has to be unmissable, not a
+hairline.
 
-### Telling two of them apart
+Every animation stops under `prefers-reduced-motion`.
 
-Status is a colour and a posture, so two agents working on the same project are
-the same animal twice — and the overview groups them into exactly that
-situation. Shepherds have the problem too, and solved it long before software
-did: every sheep wears a numbered ear tag, and you learn the markings on the
-ones you see daily.
+### The sheep says which one it is
 
-A real flock is *raddled*: a bright blob of paint sprayed on the fleece, with
-an ear tag to match, because a mark you have to squint at is no mark at all at
-the far end of a field. The same holds at the far end of a phone. The first
-attempt here was subtle — small dark patches, a tint on the muzzle — and at 34
-pixels wide it read as noise. Subtlety is for things you look *at*; this is a
-thing you glance at.
+Two agents on one project used to be the same animal twice, and grouping the
+list by project is exactly what puts them side by side.
 
-So each pane hashes to one colour and wears it twice: sprayed across the
-fleece, and again on the ear tag. Where the paint landed is hashed too — eight
-layouts over shoulder, flank, rump, back and belly — as is one of three face
-shades. That is 288 sheep, and a herd of a dozen panes comes out all-distinct;
-the test asserts it over the pane ids Herdr actually hands out, which differ in
-one character (`wE:p1`, `wJ:p1`) and are exactly where a weaker hash than
-FNV-1a gives the whole flock the same colour. The animal itself also grew to
-44×34, because the markings are the reason for drawing an animal rather than a
-dot.
+The first answer was paint: a raddle mark in a hashed colour, the way a real
+flock is sprayed. It worked, but it asks the wrong question. You do not
+recognise a sheep by its mark — you recognise it by its shape, and then by what
+colour the animal is. Shape survives a glance too fast to register hue, and
+colour you can name: *the black one with horns* is a thing you can hold in your
+head, where *the one with the teal blob on its flank* is a thing you decode.
 
-Identity never touches what status owns. The fleece colour and the pose stay
-status; the paint sits on top of them, outlined in the card's colour the way
-the face and ear are — without that outline a yellow mark on an amber sheep is
-one shape again. Because the seed is the pane id, a sheep is the same animal
-across a reload, a gateway restart and the phone's whole life, and a new pane
-is a new sheep.
+So the whole animal is identity, hashed from the pane id with FNV-1a:
+
+* **Horns** — hornless, a short curl, or a full spiral. The strongest cue at 44
+  pixels, because it changes the outline.
+* **Coat** — woolly (the cloud line), shorn (a smooth, slimmer barrel with more
+  daylight under it), or a fringe down over the eyes.
+* **Breed** — twelve, near enough to real ones to be nameable: white, Suffolk
+  (white with a black face), cream, oatmeal, tan, brown, grey, charcoal, black,
+  badger face, spotted, Jacob. Each carries its own face colour, because the
+  pairing is what makes it read as an animal and a face has to stay off its own
+  fleece to be a face at all.
+* **Muzzle** — dark on a pale face, pale on a dark one, or none. The cheapest
+  way to tell two of one breed apart.
+
+That is 216 animals, most of which differ in silhouette before they differ in
+colour; over the pane ids Herdr actually hands out, two dozen panes come out
+with twenty-two distinct sheep. The test asserts that, and that both shape axes
+actually vary — a hash that quietly settled on one horn would leave the flock
+looking hashed but identical.
+
+### Outlines, and the hole in the row
+
+Everything laid over the body is outlined in the card's own colour: face, ear,
+fringe, horn. That was true when the fleece was a status colour and it matters
+more now, because a sheep can be black and a black sheep on a dark card is a
+hole rather than an animal.
+
+The body itself cannot simply be stroked: it is four overlapping circles and a
+rectangle, and stroking them draws a line through every place two of them meet
+— the fleece comes out as a diagram of its own construction. So the shapes are
+drawn twice, once in the card's colour with a fat stroke and once filled on top.
+The first pass leaves a halo; the second covers every internal line of it.
+
+A horn gets the same treatment by the only means a stroke allows: the same path
+drawn twice, card-coloured and fatter underneath.
 
 ## The order of the flock
 

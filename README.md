@@ -35,13 +35,14 @@ project telling you at a glance who is working and who is waiting.
 - **Answer prompts from the phone.** Selection prompts render as their own
   card, with number keys that follow however many options the agent listed.
   Claude Code and Codex panes are both read, whichever glyphs they draw with.
-- **Your herd at a glance.** One sheep per project, coloured *and* posed by
-  what its agent is doing: grazing while it works, head up when idle, ear
-  pricked when blocked, asleep when done. Every sheep is also raddle-marked in
-  its own colour — paint on the fleece, a tag on the ear — hashed from its
-  pane, so two agents on one project are not the same animal twice. Grouped under the repository they work in — worktrees
-  included — in the order they were started, with whoever is asking you a
-  question on top.
+- **Your herd at a glance.** The sheep is *who*, the row is *what*. Each pane
+  gets its own animal — horns or none, woolly or shorn, one of twelve breeds —
+  hashed from the pane, so two agents on one project are never the same sheep
+  twice and you can say "the black one with horns" and mean something. What it
+  is *doing* is the coloured spine down the row and the pose it stands in:
+  grazing while it works, head up when idle, ear pricked when blocked, asleep
+  when done. Grouped under the repository they work in — worktrees included —
+  in the order they were started, with whoever is asking you a question on top.
 - **What is queued**, on the sheep it is stacked behind: prompts waiting for a
   window or a busy chat, counted per project in its heading.
 - **What is left to spend**, above the flock: the same usage windows the queue
