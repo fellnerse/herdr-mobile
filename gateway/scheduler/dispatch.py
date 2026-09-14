@@ -108,13 +108,15 @@ class Dispatcher:
         be read by an agent that has finished the one in front of it, not
         stacked into a session all at once.
 
-        Nothing here consults usage. A prompt somebody typed is theirs to spend
-        their own window on, down to the last percent, and a queue that decides
-        otherwise is a queue that stops working exactly when it is wanted. The
-        only thing that defers a pane is that pane having hit the wall
-        mid-turn, which parks it until the window it ran out of reopens.
+        A prompt somebody typed is theirs to spend their own window on, down to
+        the last percent: a queue that stops at 85% stops exactly when it is
+        most wanted, and the 15% it was protecting is days of perfectly good
+        weekly window. But "down to the last percent" has an end, and this is
+        it. A window with nothing left in it cannot take the prompt - handing
+        it over would spend it against a wall and lose the text in a refusal -
+        so a pane whose agent is out waits for the window to reopen.
         """
-        ready = []
+        ready = {}
         for pane_id in db.waiting_panes(conn):
             self.herdr.report_queued(pane_id, db.count_waiting(conn, pane_id))
             # A stalled pane is not asked about at all: it is waiting out a
@@ -131,11 +133,40 @@ class Dispatcher:
                 continue
             self.reported.discard(pane_id)
             if status in READY:
-                ready.append(pane_id)
+                # Grouped by the agent in the pane: a Claude window says
+                # nothing about what a Codex pane may spend, and holding one on
+                # the other's wall is how a working agent ends up waiting for a
+                # limit that was never its own.
+                ready.setdefault(self.herdr.agent_kind(pane_id) or "", []).append(pane_id)
 
-        for pane_id in ready:
-            if (prompt := db.next_for_pane(conn, pane_id)) is not None:
-                self.deliver(conn, prompt)
+        for agent, panes in ready.items():
+            if self.out_of_window(agent, panes):
+                continue
+            for pane_id in panes:
+                if (prompt := db.next_for_pane(conn, pane_id)) is not None:
+                    self.deliver(conn, prompt)
+
+    def out_of_window(self, agent: str, panes: list) -> bool:
+        """Whether this agent has nothing left to spend.
+
+        Only a window that is actually out holds anything - not `threshold`,
+        which is a colour on a bar, and not a reading nobody could take. Not
+        knowing is not the same as knowing there is nothing left, and a hold is
+        forever: nothing retries a prompt the sweep declined to send, so an
+        agent that cannot be priced is delivered to and the wall detection
+        catches it if that was optimistic.
+        """
+        try:
+            current = quota.current(agent)
+        except quota.QuotaError as e:
+            log.info("no usage reading for %s, delivering anyway: %s", agent or "?", e)
+            return False
+        if spent := current.spent():
+            names = ", ".join(f"{b.name} {b.utilization:.0f}%" for b in spent)
+            log.info("holding %d %s pane(s): %s; back at %s",
+                     len(panes), agent or "?", names, current.resume_at() or "the next reset")
+            return True
+        return False
 
     def report_blocked(self, conn: sqlite3.Connection, pane_id: str) -> None:
         """Say that a pane has stopped on a question with work stacked behind it.

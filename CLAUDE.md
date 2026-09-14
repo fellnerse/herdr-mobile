@@ -129,9 +129,10 @@ its `label`, not its `number` — see `tabNumber`.
 **The queue waits for the window.** Prompts from the phone go to `/api/queue`
 rather than straight to an agent: `gateway/scheduler/` holds them in SQLite and
 `dispatch.py` sends them as soon as the pane can take one (or immediately, via
-`/api/queue/{id}/send`) — **usage never gates
-delivery**; only a pane that hit the wall mid-turn is parked, until the window
-it exhausted reopens. `quota.py` reads usage per agent, since Claude and Codex
+`/api/queue/{id}/send`). **Only a window that is actually out holds a prompt** —
+100% or a lock that was earned, never `threshold` and never an unreadable
+reading; a hold is forever, since nothing retries what the sweep declined to
+send. `quota.py` reads usage per agent, since Claude and Codex
 spend different subscriptions, and has
 two sources for each: what the API says (Claude only, token from the Keychain on
 macOS) and what the agent wrote down itself (`.claude.json`'s cached reading,
