@@ -2039,7 +2039,7 @@
     if (!q) return '<div class="quota-note">Reading usage…</div>';
     const agents = q.agents || [];
     if (!agents.length) return '<div class="quota-note">No agents running.</div>';
-    return agents.map((a) => agentQuotaHtml(a, q.threshold)).join("");
+    return agents.map((a) => agentQuotaHtml(a)).join("");
   }
 
   // "five_hour" is what the endpoint calls it; "5h" is what fits on a phone.
@@ -2063,7 +2063,7 @@
     return `${at.getDate()}.${at.getMonth() + 1}. ${time}`;
   }
 
-  function agentQuotaHtml(a, threshold) {
+  function agentQuotaHtml(a) {
     const name = (a.agent || "agent").replace(/^./, (c) => c.toUpperCase());
     if (a.ok === false) {
       // Not knowing is not the same as having nothing left: the queue keeps
@@ -2084,7 +2084,8 @@
     const live = windows.filter((b) => !b.expired);
     const lead = live.reduce((worst, b) => (!worst || b.utilization > worst.utilization ? b : worst), null);
     const pct = lead ? Math.max(0, Math.min(100, lead.utilization)) : 0;
-    const cls = lead && lead.blocking ? "over" : lead && pct >= threshold * 0.8 ? "warn" : "";
+    // Amber is a warning and red is a wall; nothing is held back for amber.
+    const cls = lead && lead.spent ? "over" : lead && lead.warning ? "warn" : "";
 
     const detail = windows
       .map((b) => {
@@ -2093,7 +2094,7 @@
         const label = [windowLabel(b.name), when].filter(Boolean).join(", ");
         // A window that has rolled over is not at the percentage it was.
         const value = b.expired ? "—" : `${b.utilization.toFixed(0)}%`;
-        return `<span class="usage-window${b.expired ? " spent" : ""}">${escapeHtml(value)}
+        return `<span class="usage-window${b.expired ? " past" : ""}">${escapeHtml(value)}
           <span class="usage-when">(${escapeHtml(label)})</span></span>`;
       })
       .join('<span class="usage-sep">·</span>');
@@ -2102,7 +2103,8 @@
        believing it and the strip says so rather than showing a wall that is not
        there. The bars are the last thing we were told, not the truth - and it
        is the one thing here worth a sentence, because no colour can say "these
-       numbers are stale". */
+       numbers are stale". A window that is merely full needs no commentary:
+       its own colour is the sentence. */
     const note = a.expired
       ? '<div class="quota-note">last known reading — running anyway until usage can be read</div>'
       : "";

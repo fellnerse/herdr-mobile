@@ -1391,7 +1391,7 @@ html, body {
 .usage-window { white-space: nowrap; }
 
 /* A window that has already come back carries no percentage worth reading. */
-.usage-window.spent { color: var(--text-muted); }
+.usage-window.past { color: var(--text-muted); }
 
 .usage-when { color: var(--text-muted); }
 

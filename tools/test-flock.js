@@ -729,9 +729,9 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     threshold: 85,
     agents: [{
       agent: "claude", ok: true, blocked: false, buckets: [
-        { name: "five_hour", utilization: 74, resets_at: soon, blocking: false, expired: false },
-        { name: "seven_day", utilization: 9, resets_at: week, blocking: false, expired: false },
-        { name: "seven_day_opus", utilization: 0, resets_at: null, blocking: false, expired: false },
+        { name: "five_hour", utilization: 74, resets_at: soon, spent: false, warning: false, expired: false },
+        { name: "seven_day", utilization: 9, resets_at: week, spent: false, warning: false, expired: false },
+        { name: "seven_day_opus", utilization: 0, resets_at: null, spent: false, warning: false, expired: false },
       ],
     }],
   });
@@ -753,10 +753,10 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
   check("a reset next week carries its date", /^\d{1,2}\.\d{1,2}\./.test(u.resetLabel(week)), true);
   check("and nothing is nothing", u.resetLabel(null), "");
 
-  /* Above the flock the threshold is answering a question nobody asked; in the
-     queue it is the line the queue stops sending at. */
-  check("the overview does not explain the queue", /Queue sends below/.test(html), false);
-  check("the queue does", /Queue sends below 85%/.test(u.quotaHtml(true)), true);
+  /* A window with anything left in it is yours to spend, so there is nothing
+     to explain and nothing to warn about - the bar says it. */
+  check("a window that has room says nothing else", /quota-note/.test(html), false);
+  check("and no threshold is ever explained", /85%/.test(html), false);
 
   // A window that has already come back is not at the percentage it was: the
   // strip must not draw a full bar for a wall that is gone.
@@ -764,14 +764,26 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     threshold: 85,
     agents: [{
       agent: "codex", ok: true, blocked: false, buckets: [
-        { name: "five_hour", utilization: 98, resets_at: gone, blocking: false, expired: true },
-        { name: "seven_day", utilization: 40, resets_at: week, blocking: false, expired: false },
+        { name: "five_hour", utilization: 98, resets_at: gone, spent: false, warning: true, expired: true },
+        { name: "seven_day", utilization: 40, resets_at: week, spent: false, warning: false, expired: false },
       ],
     }],
   }).quotaHtml(false);
-  check("an expired window shows no percentage", /class="usage-window spent">\s*—/.test(rolled), true);
+  check("an expired window shows no percentage", /class="usage-window past">\s*—/.test(rolled), true);
   check("and says it reset rather than that it resets", /reset \d/.test(rolled), true);
   check("the bar is the window that is still running", /width:40%/.test(rolled), true);
+
+  const out = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "claude", ok: true, blocked: true, resume_at: soon, buckets: [
+        { name: "five_hour", utilization: 100, resets_at: soon, spent: true, warning: true, expired: false },
+      ],
+    }],
+  }).quotaHtml();
+  check("a window with nothing left says when it comes back",
+        /Nothing left until \d/.test(out), true);
+  check("and draws its bar as a wall", /class="usage-bar over"/.test(out), true);
 
   // An agent nobody can price keeps delivering, so the strip does not shout.
   const unknown = loadUsage({

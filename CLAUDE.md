@@ -127,13 +127,15 @@ its `label`, not its `number` — see `tabNumber`.
 
 **The queue waits for the window.** Prompts from the phone go to `/api/queue`
 rather than straight to an agent: `gateway/scheduler/` holds them in SQLite and
-`dispatch.py` sends them when `quota.py` says that agent's window has room —
-per agent, since Claude and Codex spend different subscriptions. `quota.py` has
+`dispatch.py` sends them as soon as the pane can take one — **usage never gates
+delivery**; only a pane that hit the wall mid-turn is parked, until the window
+it exhausted reopens. `quota.py` reads usage per agent, since Claude and Codex
+spend different subscriptions, and has
 two sources for each: what the API says (Claude only, token from the Keychain on
 macOS) and what the agent wrote down itself (`.claude.json`'s cached reading,
-Codex's rollout `rate_limits`), which needs no credentials. An agent that cannot
-be priced is delivered to rather than held — a hold is forever, and nothing
-retries it. `docs/scheduler.md` is the detail.
+Codex's rollout `rate_limits`), which needs no credentials. A reading expires
+with the window it describes: a `resets_at` in the past means the percentage
+belongs to a window that is gone. `docs/scheduler.md` is the detail.
 
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's

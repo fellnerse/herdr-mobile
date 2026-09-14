@@ -1256,11 +1256,11 @@ def agent_quota(agent: str) -> dict:
     try:
         current = sched_quota.current(agent)
     except sched_quota.QuotaError as e:
-        # Not knowing is its own state, and not a blocked one: the queue
-        # delivers to an agent it cannot price.
+        # Not knowing is its own state, and not a blocked one: nothing is held
+        # back for an agent nobody can price.
         return {"agent": agent, "ok": False, "error": str(e), "buckets": [],
                 "blocked": False}
-    resume_at = current.resume_at(threshold)
+    resume_at = current.resume_at()
     return {
         "agent": agent,
         "ok": True,
@@ -1272,7 +1272,9 @@ def agent_quota(agent: str) -> dict:
         # `api` was asked and told; `observed` is what the agent wrote down
         # itself, which is as fresh as its last turn.
         "source": current.source,
-        "blocked": bool(current.blockers(threshold)),
+        # Spent, not merely full: a window with anything left in it is not a
+        # reason to stop, and `threshold` only decides when the bar goes amber.
+        "blocked": bool(current.spent()),
         "resume_at": resume_at.isoformat() if resume_at else None,
         "buckets": [
             {
@@ -1280,7 +1282,8 @@ def agent_quota(agent: str) -> dict:
                 "utilization": b.utilization,
                 "resets_at": b.resets_at.isoformat() if b.resets_at else None,
                 "locked_reason": b.locked_reason,
-                "blocking": b.is_blocking(threshold),
+                "spent": b.is_spent(),
+                "warning": not b.is_expired() and b.utilization >= threshold,
                 # The window has since rolled over: the percentage describes a
                 # window that is gone, so it is not worth drawing as usage.
                 "expired": b.is_expired(),

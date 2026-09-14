@@ -84,7 +84,10 @@ moved, parked every prompt on a machine for a day.
   itself, but then everything behind the first prompt runs against whatever the
   subscription looks like by the time it gets there — which is the entire thing
   this queue exists to decide.
-- **Admission control.** A prompt only goes out below `threshold` (default 85%).
+- **No admission control.** A prompt somebody typed is theirs to spend their own
+  window on, down to the last percent, so nothing in delivery consults usage.
+  A queue that stops at 85% stops exactly when the phone is most wanted, and
+  the 13% it was protecting is five days of perfectly good weekly window.
 - **The wall.** When a window runs out mid-turn, `esc` halts it and a resume
   prompt is queued *in front* of everything else for that chat. There is no
   separate pause state: a resume is just a prompt that jumps the queue.
@@ -180,7 +183,7 @@ it.
 | | |
 |---|---|
 | `GET /api/queue` | queued prompts; `?pane_id=` or `?state=` to filter |
-| `GET /api/queue/quota` | usage windows per agent, with the threshold and each one's next reset |
+| `GET /api/queue/quota` | usage windows per agent: what each has spent, when it resets, and whether it is out |
 | `POST /api/queue` | `{prompt, pane_id}` — the only send path; answers `delivered: "terminal"` when the pane had no agent and the text was typed instead |
 | `POST /api/queue/{id}/update` | `{prompt}`, while it is still waiting |
 | `POST /api/queue/{id}/delete` | drop it |
@@ -207,7 +210,7 @@ restart.
 
 | Key | Default | |
 |---|---|---|
-| `threshold` | `85.0` | stop delivering above this percentage |
+| `threshold` | `85.0` | the line the usage bar turns amber at — a warning, not a gate |
 | `poll_seconds` | `60` | worst-case sweep interval if the event stream drops |
 | `agent_kind` | `claude` | |
 | `agent_args` | `[]` | passed to a relaunched session on the cold path |

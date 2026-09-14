@@ -52,9 +52,15 @@ from . import STATE_DIR
 
 CACHE = STATE_DIR / "quota-cache.json"
 
-# How full a window may get before we stop admitting new work. Leaves headroom
-# so a task that starts just under the line can still finish its turn.
+# The line the strip turns amber at. It is a warning and nothing else: a prompt
+# somebody typed is never held back for it, because the window is theirs to
+# spend down to the last percent.
 DEFAULT_THRESHOLD = 85.0
+
+# What counts as actually out. The endpoint reports a locked window outright;
+# short of that, a percentage this high means the next turn is the one that
+# gets cut off, and only then is there anything worth waiting for.
+EXHAUSTED = 99.0
 
 # Backoff when a bucket is exhausted but reports no reset time.
 BLIND_BACKOFF_SECONDS = 15 * 60
@@ -95,15 +101,25 @@ class Bucket:
         """
         return self.resets_at is not None and self.resets_at <= (now or _now())
 
-    def is_blocking(self, threshold: float) -> bool:
-        # A lock does not roll over on its own, so it is exempt from expiry:
-        # an account that has been shut off stays shut off until somebody sees
-        # to it.
+    def is_spent(self) -> bool:
+        """Whether this window has nothing left in it.
+
+        Not "nearly full": a window at 87% has 13% to give, and a queue that
+        will not spend it is a queue that has stopped working for you. Only a
+        window the provider has locked, or one within a percent of the top, is
+        worth waiting out.
+        """
+        # A lock does not roll over on its own, so it is exempt from expiry: an
+        # account that has been shut off stays shut off until somebody sees to
+        # it.
         if self.locked_reason is not None:
             return True
         if self.is_expired():
             return False
-        return self.utilization >= threshold
+        return self.utilization >= EXHAUSTED
+
+    def is_blocking(self, threshold: float = EXHAUSTED) -> bool:
+        return self.is_spent()
 
 
 @dataclass(frozen=True)
@@ -138,10 +154,10 @@ class Quota:
         """
         return self.stale and _now() - self.fetched_at > _seconds(BLIND_BACKOFF_SECONDS)
 
-    def blockers(self, threshold: float = DEFAULT_THRESHOLD) -> list[Bucket]:
-        """The windows that are full, as best we can tell.
+    def spent(self) -> list[Bucket]:
+        """The windows with nothing left in them, as best we can tell.
 
-        An expired cache blocks nothing. Holding on a reading we know is too old
+        An expired cache says nothing. Holding on a reading we know is too old
         to be true is the failure that has no way out: usage cannot be re-read
         to clear it, so the queue stays frozen until a person notices -- which
         is the entire thing it exists not to need. Admitting work on a stale
@@ -154,7 +170,10 @@ class Quota:
             # is still there in the morning -- so it is the one thing an old
             # reading is still allowed to say.
             return [b for b in self.buckets if b.locked_reason is not None]
-        return [b for b in self.buckets if b.is_blocking(threshold)]
+        return [b for b in self.buckets if b.is_spent()]
+
+    def blockers(self, threshold: float = DEFAULT_THRESHOLD) -> list[Bucket]:
+        return self.spent()
 
     def resume_at(self, threshold: float = DEFAULT_THRESHOLD) -> datetime | None:
         """When the earliest blocking window frees up.

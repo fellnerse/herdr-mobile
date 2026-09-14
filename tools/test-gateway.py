@@ -681,8 +681,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scheduler import quota
-from scheduler import dispatch as sched_dispatch
-from scheduler.config import Config
 
 # Claude Code's own cache, as it sits in .claude.json: the endpoint's payload,
 # stamped with the account it belongs to and when it was taken.
@@ -781,62 +779,47 @@ check("an hour Codex invents later still reads", quota._codex_window_name(120), 
 check("and so does a day", quota._codex_window_name(2880), "2_day")
 check("nothing at all is still a name", quota._codex_window_name(None), "window")
 
-# -- holding, and the far more dangerous not-holding -------------------------
+# -- what counts as out of usage --------------------------------------------
 
-# A hold is forever: nothing retries a prompt the sweep declined to send. So it
-# takes a reading that actually says the window is full. "I could not find out"
-# parked every prompt on this machine for a day, which is the bug this asserts
-# against.
-
-class FakePane:
-    def __init__(self, kind):
-        self.kind = kind
-
-    def agent_kind(self, pane_id):
-        return self.kind
+# A window is not a wall until it has nothing left. 87% of a weekly window is
+# five days of perfectly good usage, and a queue that will not spend it is a
+# queue that stopped working for the person typing into it. Only a locked
+# window, or one within a percent of the top, is worth waiting out.
+past = datetime.now(timezone.utc) - timedelta(minutes=30)
+ahead = datetime.now(timezone.utc) + timedelta(hours=2)
 
 
-def held(reading, threshold=85.0):
-    dispatcher = sched_dispatch.Dispatcher.__new__(sched_dispatch.Dispatcher)
-    dispatcher.herdr = FakePane("claude")
-    original = quota.current
-    quota.current = reading
-    try:
-        return dispatcher.held_on_quota("claude", ["w1:p1"], Config(threshold=threshold))
-    finally:
-        quota.current = original
+def bucket(util, resets_at=None, locked=None):
+    return quota.Bucket("five_hour", util, resets_at, locked)
 
 
-def reading(*utilizations):
-    def read(agent, *a, **kw):
-        return quota.Quota(
-            tuple(quota.Bucket(f"w{i}", u, None, None) for i, u in enumerate(utilizations)),
-            datetime.now(timezone.utc), stale=False, agent=agent, source="api")
-    return read
-
-
-def refuses(agent, *a, **kw):
-    raise quota.QuotaError("no credentials, no cache, no note")
-
+check("most of a window gone is not a window spent", bucket(87.0, ahead).is_spent(), False)
+check("nor is nearly all of it", bucket(98.0, ahead).is_spent(), False)
+check("all of it is", bucket(100.0, ahead).is_spent(), True)
+check("and a window the provider locked is, whatever it reads",
+      bucket(3.0, ahead, "over_limit").is_spent(), True)
 
 # A window whose reset time has passed has rolled over: an agent that finished
 # a turn at 98% an hour before its window reopened is not at 98% now, and it is
-# certainly not full.
-past = datetime.now(timezone.utc) - timedelta(minutes=30)
-ahead = datetime.now(timezone.utc) + timedelta(hours=2)
-check("a window that has come back does not block",
-      quota.Bucket("five_hour", 98.0, past, None).is_blocking(85.0), False)
-check("one that has not still does",
-      quota.Bucket("five_hour", 98.0, ahead, None).is_blocking(85.0), True)
+# certainly not out.
+check("a window that has come back is not spent", bucket(100.0, past).is_spent(), False)
+check("and it knows it has come back", bucket(98.0, past).is_expired(), True)
 check("a window with no reset time is taken at its word",
-      quota.Bucket("five_hour", 98.0, None, None).is_blocking(85.0), True)
-check("and an expired window knows it", 
-      quota.Bucket("five_hour", 98.0, past, None).is_expired(), True)
+      bucket(100.0, None).is_spent(), True)
 
-check("a full window holds its panes", held(reading(91.0)), True)
-check("an open one does not", held(reading(40.0, 8.0)), False)
-check("the threshold is the line", held(reading(85.0)), True)
-check("a window nobody can read delivers rather than parks", held(refuses), False)
+# The threshold is a colour on a bar and nothing else now. Whatever it is set
+# to, a window with room in it is spendable.
+check("the threshold does not decide what is spent",
+      [b.is_spent() for b in (bucket(86.0, ahead), bucket(99.5, ahead))], [False, True])
+
+# Nothing in the queue's delivery path asks about usage any more: a prompt
+# somebody typed goes when the pane can take it, and the only thing that defers
+# a pane is that pane having hit the wall mid-turn.
+sweep_source = (Path(__file__).resolve().parent.parent
+                / "gateway" / "scheduler" / "dispatch.py").read_text()
+sweep_body = sweep_source[sweep_source.index("    def sweep("):sweep_source.index("    def report_blocked(")]
+check("delivery does not consult usage", "quota" in sweep_body, False)
+check("but a pane that hit the wall is still parked", "self.stalls" in sweep_body, True)
 
 # ---------------------------------------------------------------------------
 # Picking back up after a usage window, which has exactly two ways to silently
