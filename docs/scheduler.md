@@ -64,6 +64,13 @@ reached; Codex publishes no endpoint, so the note is all there is. A reading
 says which it is, and the phone says "as of its last turn" rather than pretending
 it is live.
 
+**A reading expires with the window it describes.** A note saying 98% was true
+until that window reset; after the reset it is not stale but wrong, and a Codex
+pane that finished a turn shortly before its window reopened would otherwise
+read as full all afternoon. A bucket whose `resets_at` has passed blocks
+nothing, and the phone draws it with no percentage at all rather than an old
+one.
+
 **Not knowing is not the same as knowing there is nothing left.** A hold is
 forever — nothing retries a prompt the sweep declined to send — so it takes a
 reading that actually says the window is full. An agent nobody can price is

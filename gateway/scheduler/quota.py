@@ -71,16 +71,37 @@ class Bucket:
     resets_at: datetime | None
     locked_reason: str | None
 
+    def is_expired(self, now: datetime = None) -> bool:
+        """Whether this window has since rolled over.
+
+        A reading an agent wrote down is only true until the window it
+        describes resets. Past that the percentage is not stale, it is wrong:
+        a Codex pane that finished a turn at 98% an hour before its window
+        reopened would otherwise read as full all afternoon, and hold every
+        prompt behind a wall that is no longer there.
+        """
+        return self.resets_at is not None and self.resets_at <= (now or _now())
+
+    def is_expired(self, now: datetime = None) -> bool:
+        """Whether this window has since rolled over.
+
+        A utilization figure describes one window. Once that window's reset has
+        passed the number is about a window that no longer exists, and a full
+        one says nothing about the empty one that replaced it - a Codex pane
+        that finished a turn at 98% an hour before its window reopened would
+        otherwise read as full all afternoon, and "100%, reset an hour ago"
+        blocks forever while being the exact shape of a window that has already
+        come back.
+        """
+        return self.resets_at is not None and self.resets_at <= (now or _now())
+
     def is_blocking(self, threshold: float) -> bool:
+        # A lock does not roll over on its own, so it is exempt from expiry:
+        # an account that has been shut off stays shut off until somebody sees
+        # to it.
         if self.locked_reason is not None:
             return True
-        # A utilization figure describes one window. Once that window's reset
-        # has passed, the number is about a window that no longer exists, and a
-        # full one says nothing about the empty one that replaced it. This is
-        # only ever true of a cached reading -- and it is the reading a queue
-        # gets stuck on, because "100%, reset an hour ago" blocks forever while
-        # being the exact shape of a window that has already reopened.
-        if self.resets_at is not None and self.resets_at <= _now():
+        if self.is_expired():
             return False
         return self.utilization >= threshold
 

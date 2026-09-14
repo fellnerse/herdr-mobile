@@ -1281,6 +1281,9 @@ def agent_quota(agent: str) -> dict:
                 "resets_at": b.resets_at.isoformat() if b.resets_at else None,
                 "locked_reason": b.locked_reason,
                 "blocking": b.is_blocking(threshold),
+                # The window has since rolled over: the percentage describes a
+                # window that is gone, so it is not worth drawing as usage.
+                "expired": b.is_expired(),
             }
             for b in current.buckets
         ],
