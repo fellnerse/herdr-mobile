@@ -8,7 +8,6 @@ import os
 import sys
 import time
 import json
-import socket
 import hashlib
 import threading
 import mimetypes
@@ -20,74 +19,28 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import push
 import gitdiff
 import wsproto
+from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
 from terminal import TerminalStream, TerminalError
+from scheduler import config as sched_config
+from scheduler import db as sched_db
+from scheduler import quota as sched_quota
+from scheduler.dispatch import Scheduler
 
-
-def default_socket_path() -> str:
-    """Locate herdr.sock: explicit env, then the current user's config dir, then root's."""
-    candidates = [
-        Path.home() / ".config/herdr/herdr.sock",
-        Path("/root/.config/herdr/herdr.sock"),
-    ]
-    for c in candidates:
-        if c.exists():
-            return str(c)
-    return str(candidates[0])
-
-
-HERDR_SOCKET_PATH = os.environ.get("HERDR_SOCKET") or default_socket_path()
 # The console attaches to Herdr's client socket, which sits beside the RPC one
 # and speaks the protocol a real Herdr GUI speaks.
 HERDR_CLIENT_SOCKET_PATH = (
     os.environ.get("HERDR_CLIENT_SOCKET")
     or str(Path(HERDR_SOCKET_PATH).with_name("herdr-client.sock"))
 )
+
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("SHEEPIT_PORT") or os.environ.get("PORT", "3009"))
 # The PWA lives beside the gateway, not inside it.
 WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
 
-
-def call_herdr_rpc(method: str, params: dict = None, timeout: float = 5.0) -> dict:
-    """Send JSON-RPC request to Herdr UNIX domain socket and return response."""
-    if not os.path.exists(HERDR_SOCKET_PATH):
-        return {
-            "id": "",
-            "error": {
-                "code": "socket_not_found",
-                "message": f"Herdr socket not found at {HERDR_SOCKET_PATH}",
-            },
-        }
-
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    try:
-        s.connect(HERDR_SOCKET_PATH)
-        req = {"id": "sheepit", "method": method, "params": params or {}}
-        payload = json.dumps(req).encode("utf-8") + b"\n"
-        s.sendall(payload)
-
-        chunks = []
-        while True:
-            chunk = s.recv(16384)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            if b"\n" in chunk:
-                break
-
-        raw_data = b"".join(chunks).decode("utf-8", errors="replace")
-        line = raw_data.split("\n", 1)[0].strip()
-        if not line:
-            return {"id": "", "error": {"code": "empty_response", "message": "Empty response from Herdr"}}
-        return json.loads(line)
-    except socket.timeout:
-        return {"id": "", "error": {"code": "timeout", "message": "Timeout communicating with Herdr"}}
-    except Exception as e:
-        return {"id": "", "error": {"code": "socket_error", "message": str(e)}}
-    finally:
-        s.close()
-
+# The dispatch thread, once `run` starts it. Held so a freshly queued prompt can
+# nudge it awake instead of waiting out a poll.
+SCHEDULER = None
 
 
 
@@ -491,6 +444,26 @@ class HerdrHandler(BaseHTTPRequestHandler):
             })
             return
 
+        # API: usage windows. Free to ask - it is the same endpoint Claude Code
+        # uses for its own limits and costs no tokens.
+        if path == "/api/queue/quota":
+            self.send_json({"ok": True, **quota_payload()})
+            return
+
+        # API: queued prompts, for every chat or just one
+        if path == "/api/queue":
+            conn = sched_db.connect()
+            try:
+                prompts = [
+                    vars(p) for p in sched_db.list_prompts(
+                        conn, qs.get("pane_id", [None])[0], qs.get("state", [None])[0]
+                    )
+                ]
+            finally:
+                conn.close()
+            self.send_json({"ok": True, "prompts": prompts})
+            return
+
         # API: Path completion for a pane, rooted at its working directory
         # /api/agents/{pane_id}/files?q=<prefix>
         if path.startswith("/api/agents/") and path.endswith("/files"):
@@ -636,6 +609,96 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "sent": push.broadcast()})
             return
 
+        # API: queue a prompt for a chat. The dispatcher delivers it as soon as
+        # that pane is free and the subscription has room - which, for an idle
+        # pane in an open window, is within the second.
+        if path == "/api/queue":
+            prompt = (body.get("prompt") or "").strip()
+            pane_id = (body.get("pane_id") or "").strip()
+            if not prompt:
+                self.send_json({"ok": False, "error": "Empty prompt"}, 400)
+                return
+            if not pane_id:
+                self.send_json({"ok": False, "error": "No chat given"}, 400)
+                return
+
+            pane = call_herdr_rpc("pane.get", {"pane_id": pane_id}).get("result", {}).get("pane")
+            if not pane:
+                self.send_json({"ok": False, "error": f"No such chat: {pane_id}"}, 404)
+                return
+
+            # A pane with no agent in it is a shell, and the queue has nothing
+            # to deliver into: holding here waits on an agent that nothing will
+            # ever start. So it goes to the terminal as typed input, which is
+            # also what lets `claude` sent from the phone open the session.
+            status = pane.get("agent_status")
+            if not status or status == "unknown":
+                res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
+                if "error" not in res:
+                    res = call_herdr_rpc(
+                        "pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]}
+                    )
+                if "error" in res:
+                    self.send_json(res, 400)
+                    return
+                self.send_json({"ok": True, "delivered": "terminal"})
+                return
+
+            conn = sched_db.connect()
+            try:
+                prompt_id = sched_db.add(
+                    conn,
+                    pane_id=pane_id,
+                    prompt=prompt,
+                    # Recorded now so a prompt can outlive the pane it was
+                    # queued for: this is what a reboot resumes from.
+                    workspace_id=pane.get("workspace_id"),
+                    session_uuid=(pane.get("agent_session") or {}).get("value"),
+                    cwd=pane.get("cwd"),
+                )
+            finally:
+                conn.close()
+            if SCHEDULER is not None:
+                SCHEDULER.wake()
+            self.send_json({"ok": True, "id": prompt_id})
+            return
+
+        # API: act on a queued prompt. /api/queue/{id}/{delete|update}
+        if path.startswith("/api/queue/"):
+            parts = path.strip("/").split("/")
+            # ["api", "queue", "<id>", "<action>"]
+            if len(parts) == 4 and parts[2].isdigit():
+                prompt_id, action = int(parts[2]), parts[3]
+                conn = sched_db.connect()
+                try:
+                    queued = sched_db.get(conn, prompt_id)
+                    if queued is None:
+                        self.send_json({"ok": False, "error": "No such prompt"}, 404)
+                        return
+                    if action == "delete":
+                        sched_db.delete(conn, prompt_id)
+                    elif action == "update":
+                        # Only while it is still ours. Once delivered it is part
+                        # of a conversation, and editing the row would change
+                        # what the queue claims was said.
+                        if queued.state != "waiting":
+                            self.send_json(
+                                {"ok": False, "error": f"Already {queued.state}"}, 409
+                            )
+                            return
+                        text = (body.get("prompt") or "").strip()
+                        if not text:
+                            self.send_json({"ok": False, "error": "Empty prompt"}, 400)
+                            return
+                        sched_db.update(conn, prompt_id, prompt=text)
+                    else:
+                        self.send_json({"ok": False, "error": "Unknown action"}, 400)
+                        return
+                finally:
+                    conn.close()
+                self.send_json({"ok": True, "id": prompt_id, "action": action})
+                return
+
         # API: Create a workspace
         if path == "/api/workspaces":
             res = call_herdr_rpc("workspace.create", {})
@@ -657,37 +720,9 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
                 return
 
-        # API: Send prompt to agent
-        # /api/agents/{pane_id}/prompt
-        if path.startswith("/api/agents/") and path.endswith("/prompt"):
-            parts = path.split("/")
-            if len(parts) == 5:
-                pane_id = unquote(parts[3])
-                text = body.get("text", "").strip()
-                if not text:
-                    self.send_json({"ok": False, "error": "Empty prompt text"}, 400)
-                    return
-
-                # Send prompt to agent
-                res = call_herdr_rpc("agent.prompt", {
-                    "target": pane_id,
-                    "text": text,
-                })
-
-                if "error" in res:
-                    # If agent.prompt fails (e.g. agent not recognized or blocked), try pane.send_text
-                    fallback_res = call_herdr_rpc("pane.send_text", {
-                        "pane_id": pane_id,
-                        "text": text + "\n",
-                    })
-                    if "error" in fallback_res:
-                        self.send_json(res, 400)
-                        return
-                    self.send_json({"ok": True, "method": "pane.send_text"})
-                    return
-
-                self.send_json({"ok": True, "method": "agent.prompt", "result": res.get("result")})
-                return
+        # Prompts do not have a direct route any more: everything the phone
+        # sends goes through /api/queue, which is what lets a message typed at
+        # 4am wait for the window instead of failing against an empty one.
 
         # API: Send keys (e.g. ctrl+c, esc, enter)
         # /api/agents/{pane_id}/keys
@@ -840,11 +875,46 @@ class StatusWatcher(threading.Thread):
         }
 
 
+def quota_payload() -> dict:
+    """Usage windows, shaped for the phone.
+
+    `current` memoises the round trip to Anthropic, which matters here: the
+    phone polls this while the queue is open.
+    """
+    try:
+        current = sched_quota.current()
+    except sched_quota.QuotaError as e:
+        return {"ok": False, "error": str(e), "buckets": []}
+    threshold = sched_config.load().threshold
+    resume_at = current.resume_at(threshold)
+    return {
+        "stale": current.stale,
+        "threshold": threshold,
+        "blocked": bool(current.blockers(threshold)),
+        "resume_at": resume_at.isoformat() if resume_at else None,
+        "buckets": [
+            {
+                "name": b.name,
+                "utilization": b.utilization,
+                "resets_at": b.resets_at.isoformat() if b.resets_at else None,
+                "locked_reason": b.locked_reason,
+                "blocking": b.is_blocking(threshold),
+            }
+            for b in current.buckets
+        ],
+    }
+
+
 def run():
+    global SCHEDULER
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     server_address = (HOST, PORT)
     httpd = ThreadingHTTPServer(server_address, HerdrHandler)
     StatusWatcher().start()
+    # Config is re-read every pass, so editing scheduler.json takes effect
+    # without a restart.
+    SCHEDULER = Scheduler(sched_config.load)
+    SCHEDULER.start()
     print(f"SheepIt gateway listening on http://{HOST}:{PORT}")
     print(f"Herdr socket target: {HERDR_SOCKET_PATH}")
     try:

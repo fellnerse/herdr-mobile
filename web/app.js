@@ -24,6 +24,12 @@
     isSending: false,
     listSignature: null,
     swiping: false,
+    queue: [],
+    quota: null,
+    quotaAt: 0,
+    queueOpen: false,
+    queueSignature: null,
+    editingId: null,
   };
 
   // DOM Elements
@@ -67,6 +73,20 @@
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
+  const elBtnQueue = document.getElementById("btn-queue");
+  const elQueueBadge = document.getElementById("queue-badge");
+  const elQueueView = document.getElementById("queue-view");
+  const elBtnCloseQueue = document.getElementById("btn-close-queue");
+  const elQuotaStrip = document.getElementById("quota-strip");
+  const elTaskList = document.getElementById("task-list");
+  const elBtnNewTask = document.getElementById("btn-new-task");
+  const elTaskSheet = document.getElementById("task-sheet");
+  const elTaskPrompt = document.getElementById("task-prompt");
+  const elTaskError = document.getElementById("task-error");
+  const elBtnSubmitTask = document.getElementById("btn-submit-task");
+  const elBtnCancelTask = document.getElementById("btn-cancel-task");
+  const elTaskSheetTitle = document.getElementById("task-sheet-title");
+  const elTaskSheetCwd = document.getElementById("task-sheet-cwd");
   const elBtnConsole = document.getElementById("btn-console");
   const elConsoleView = document.getElementById("console-view");
   const elConsoleTerm = document.getElementById("console-term");
@@ -1037,7 +1057,10 @@
     elSheetBackdrop.classList.add("hidden");
   }
 
-  // Send Prompt
+  /* Send a prompt - which means queue it. There is deliberately only one path:
+     into a free chat with usage left this lands within the second, and into a
+     busy one or an empty window it waits, without you having to know which of
+     those you were in when you typed it. */
   async function submitPrompt(e) {
     if (e) e.preventDefault();
     const text = elPromptInput.value.trim();
@@ -1048,15 +1071,15 @@
     triggerHaptic();
 
     try {
-      const res = await fetch(`/api/agents/${encodeURIComponent(state.activePaneId)}/prompt`, {
+      const res = await fetch("/api/queue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ prompt: text, pane_id: state.activePaneId }),
       });
+      const data = await res.json();
 
-      if (!res.ok) {
-        const errData = await res.json();
-        alert("Prompt failed: " + (errData.error?.message || errData.error || "Unknown error"));
+      if (!data.ok) {
+        alert("Prompt failed: " + (data.error?.message || data.error || "Unknown error"));
         return;
       }
 
@@ -1068,6 +1091,9 @@
       elBtnSend.disabled = true;
 
       state.isUserScrolledUp = false;
+      // The badge should show it the moment it is queued, whether or not it
+      // has been handed over yet.
+      fetchQueue();
       setTimeout(() => {
         fetchAgents();
         fetchHistory(true);
@@ -1220,10 +1246,296 @@
     elBtnSend.disabled = elPromptInput.value.trim().length === 0;
   }
 
+  /* ------------------------------------------------------------- Queue --- */
+
+  /* A queued prompt is either still ours or it never made it. Delivered ones
+     are filtered out in fetchQueue and never reach this list. */
+  const QUEUE_WORD = {
+    waiting: "waiting",
+    failed: "failed",
+  };
+
+  function quotaIsStale() {
+    return Date.now() - state.quotaAt > 30000;
+  }
+
+  async function fetchQueue() {
+    try {
+      const res = await fetch("/api/queue");
+      const data = await res.json();
+      if (!data.ok) return;
+      /* What the queue shows is what is still owed: prompts holding for a
+         window or a busy chat, plus anything that failed and is going nowhere.
+         A delivered prompt belongs to the conversation now - it is in the
+         transcript, and leaving it here only buries what still needs you. */
+      state.queue = (data.prompts || []).filter((p) => p.state !== "sent");
+      renderQueueBadge();
+      if (state.queueOpen) renderTaskList();
+    } catch (err) {
+      /* The connection dot already says the gateway is unreachable; a failed
+         queue poll should not also blank the list you were reading. */
+    }
+  }
+
+  async function fetchQuota() {
+    if (!quotaIsStale()) return;
+    try {
+      const res = await fetch("/api/queue/quota");
+      state.quota = await res.json();
+      state.quotaAt = Date.now();
+      if (state.queueOpen) renderQuota();
+    } catch (err) {
+      /* keep the last reading */
+    }
+  }
+
+  function renderQueueBadge() {
+    const n = state.queue.length;
+    elQueueBadge.textContent = String(n);
+    elQueueBadge.classList.toggle("hidden", n === 0);
+  }
+
+  function relTime(iso) {
+    if (!iso) return "";
+    const secs = (new Date(iso).getTime() - Date.now()) / 1000;
+    if (secs <= 0) return "now";
+    const mins = Math.round(secs / 60);
+    if (mins < 60) return `${mins}m`;
+    return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}m`;
+  }
+
+  function renderQuota() {
+    const q = state.quota;
+    if (!q) {
+      elQuotaStrip.innerHTML = '<div class="quota-note">Reading usage…</div>';
+      return;
+    }
+    if (q.ok === false) {
+      elQuotaStrip.innerHTML =
+        `<div class="quota-note blocked">${escapeHtml(q.error || "usage unavailable")}</div>`;
+      return;
+    }
+
+    /* Buckets that are empty and have no window carry no information - they
+       are plan slots this account does not use. */
+    const shown = (q.buckets || []).filter((b) => b.utilization > 0 || b.resets_at);
+    const rows = shown
+      .map((b) => {
+        const pct = Math.max(0, Math.min(100, b.utilization));
+        const near = pct >= q.threshold * 0.8;
+        const cls = b.blocking ? "over" : near ? "warn" : "";
+        const name = b.name.replace(/_/g, " ");
+        return `
+          <div class="quota-row ${cls}">
+            <span class="quota-name">${escapeHtml(name)}</span>
+            <span class="quota-track"><span class="quota-fill" style="width:${pct}%"></span></span>
+            <span class="quota-pct">${pct.toFixed(0)}%</span>
+          </div>`;
+      })
+      .join("");
+
+    const note = q.blocked
+      ? `<div class="quota-note blocked">No usage left — next window in ${escapeHtml(relTime(q.resume_at))}</div>`
+      : `<div class="quota-note">Clear to run · pauses at ${q.threshold.toFixed(0)}%</div>`;
+
+    elQuotaStrip.innerHTML = rows + note + (q.stale
+      ? '<div class="quota-note">cached — could not reach the usage endpoint</div>'
+      : "");
+  }
+
+  // Which chat a prompt is queued for, named the way the picker names it.
+  function chatName(paneId) {
+    const agent = state.agents.find((a) => a.pane_id === paneId);
+    return agent ? agent.name || paneId : paneId;
+  }
+
+  // Same trick as the project list: only redraw when something actually moved.
+  function queueSignature() {
+    return state.queue
+      .map((p) => [p.id, p.state, p.pane_id, p.last_error].join(""))
+      .join("");
+  }
+
+  function renderTaskList() {
+    if (state.queue.length === 0) {
+      state.queueSignature = null;
+      elTaskList.innerHTML =
+        '<div class="history-empty">Nothing queued. Tap New to queue a prompt.</div>';
+      return;
+    }
+    const signature = queueSignature();
+    if (signature === state.queueSignature) return;
+    state.queueSignature = signature;
+
+    elTaskList.innerHTML = state.queue
+      .map((p) => {
+        const word = QUEUE_WORD[p.state] || p.state;
+        const failed = p.state === "failed";
+        /* Opening the chat is the only way to clear a prompt stuck behind a
+           question, so it is offered on every row: the transcript and the key
+           palette are both there. */
+        return `
+          <div class="task-row ${failed ? "attention" : ""}">
+            <span class="task-main">
+              <span class="task-prompt">${escapeHtml(p.prompt || "")}</span>
+              <span class="task-meta">${escapeHtml(chatName(p.pane_id))}</span>
+              ${failed && p.last_error
+                  ? `<span class="task-why">${escapeHtml(p.last_error)}</span>`
+                  : ""}
+            </span>
+            <span class="task-side">
+              <span class="status-badge status-${escapeHtml(p.state)}">${escapeHtml(word)}</span>
+              <span class="task-acts">
+                <button class="task-act accent" data-task-open="${escapeHtml(p.pane_id)}">Open</button>
+                ${p.state === "waiting"
+                    ? `<button class="task-act" data-task-edit="${p.id}">Edit</button>`
+                    : ""}
+                <button class="task-act danger" data-task-delete="${p.id}">Delete</button>
+              </span>
+            </span>
+          </div>`;
+      })
+      .join("");
+  }
+
+  async function taskAction(id, action) {
+    triggerHaptic();
+    try {
+      const res = await fetch(`/api/queue/${id}/${action}`, { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "failed");
+      state.queueSignature = null;
+      await fetchQueue();
+    } catch (err) {
+      alert(`Could not ${action} prompt: ${err.message}`);
+    }
+  }
+
+  function openQueue() {
+    triggerHaptic();
+    state.queueOpen = true;
+    state.queueSignature = null;
+    elQueueView.classList.remove("hidden");
+    renderQuota();
+    renderTaskList();
+    fetchQueue();
+    fetchQuota();
+  }
+
+  function closeQueue() {
+    state.queueOpen = false;
+    elQueueView.classList.add("hidden");
+  }
+
+  /* The chat a new prompt is aimed at: whichever one you are looking at. That
+     is the whole targeting model - there is no project to pick, because the
+     session already sits in one. */
+  function queueTarget(prompt) {
+    return prompt ? prompt.pane_id : state.activePaneId;
+  }
+
+  async function openTaskSheet(prompt) {
+    triggerHaptic();
+    state.editingId = prompt ? prompt.id : null;
+    elTaskError.classList.add("hidden");
+    elTaskSheetTitle.textContent = prompt ? "Edit queued prompt" : "Queue a prompt";
+    elTaskSheetCwd.textContent = queueTarget(prompt)
+      ? `for ${chatName(queueTarget(prompt))}, when it is free`
+      : "pick a chat first";
+    elBtnSubmitTask.textContent = prompt ? "Save" : "Queue it";
+    elTaskPrompt.value = prompt ? prompt.prompt || "" : "";
+
+    elSheetBackdrop.classList.add("over-queue");
+    elSheetBackdrop.classList.remove("hidden");
+    elTaskSheet.classList.remove("hidden");
+    if (!prompt) elTaskPrompt.focus();
+  }
+
+  function closeTaskSheet() {
+    elTaskSheet.classList.add("hidden");
+    elSheetBackdrop.classList.add("hidden");
+    elSheetBackdrop.classList.remove("over-queue");
+  }
+
+  async function submitTask() {
+    const prompt = elTaskPrompt.value.trim();
+    if (!prompt) {
+      showTaskError("Say what it should do.");
+      return;
+    }
+    const editing = state.editingId;
+    const paneId = editing ? null : state.activePaneId;
+    if (!editing && !paneId) {
+      showTaskError("Pick a chat to queue this for.");
+      return;
+    }
+    const url = editing ? `/api/queue/${editing}/update` : "/api/queue";
+    elBtnSubmitTask.disabled = true;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editing ? { prompt } : { prompt, pane_id: paneId }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "could not save");
+      elTaskPrompt.value = "";
+      closeTaskSheet();
+      state.queueSignature = null;
+      await fetchQueue();
+    } catch (err) {
+      showTaskError(err.message);
+    } finally {
+      elBtnSubmitTask.disabled = false;
+    }
+  }
+  function showTaskError(message) {
+    elTaskError.textContent = message;
+    elTaskError.classList.remove("hidden");
+  }
+
+  /* Hand a task's pane to the main view, so its question can be answered with
+     the key palette that is already there. */
+  function openTaskPane(paneId) {
+    closeQueue();
+    if (state.agents.some((a) => a.pane_id === paneId)) {
+      selectAgent(paneId);
+    } else {
+      /* The pane exists but Herdr has not listed it yet, or it is gone. Select
+         it anyway: the transcript fetch will say which. */
+      state.activePaneId = paneId;
+      state.historyText = "";
+      fetchHistory(true);
+    }
+  }
+
+  elBtnQueue.addEventListener("click", openQueue);
+  elBtnCloseQueue.addEventListener("click", closeQueue);
+  elBtnNewTask.addEventListener("click", () => openTaskSheet(null));
+  elBtnCancelTask.addEventListener("click", closeTaskSheet);
+  elBtnSubmitTask.addEventListener("click", submitTask);
+
+  elTaskList.addEventListener("click", (e) => {
+    const open = e.target.closest("[data-task-open]");
+    if (open) return openTaskPane(open.dataset.taskOpen);
+    const edit = e.target.closest("[data-task-edit]");
+    if (edit) {
+      const queued = state.queue.find((p) => String(p.id) === edit.dataset.taskEdit);
+      if (queued) openTaskSheet(queued);
+      return;
+    }
+    const del = e.target.closest("[data-task-delete]");
+    if (del) return taskAction(del.dataset.taskDelete, "delete");
+  });
+
   // Poll loop
   async function loop() {
     await fetchAgents();
     await fetchHistory();
+    // Cheap: a local SQLite read. Keeps the header badge honest even when the
+    // queue is closed.
+    await fetchQueue();
+    if (state.queueOpen) await fetchQuota();
   }
 
   function startPolling() {
@@ -1558,7 +1870,13 @@
 
   elBtnSettings.addEventListener("click", openSheet);
   elBtnCloseSheet.addEventListener("click", closeSheet);
-  elSheetBackdrop.addEventListener("click", closeSheet);
+  /* One backdrop serves both sheets, so it has to dismiss whichever is up -
+     closing only the settings sheet left the task sheet stranded on screen
+     with nothing behind it to tap. */
+  elSheetBackdrop.addEventListener("click", () => {
+    if (!elTaskSheet.classList.contains("hidden")) closeTaskSheet();
+    else closeSheet();
+  });
 
   elHistoryContainer.addEventListener("scroll", onHistoryScroll, { passive: true });
   elBtnScrollBottom.addEventListener("click", () => scrollToBottom(true));

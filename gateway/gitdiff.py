@@ -206,7 +206,10 @@ def file_diff(cwd: str, rel_path: str) -> dict:
     else:
         # No index entry, so there is nothing to diff against but an empty
         # file. --no-index makes git do exactly that, and exits 1 doing it.
-        patch = run_git(root, ["diff", "--no-color", "--no-index", "--",
+        # It also numbers its prefixes 1/ and 2/ rather than a/ and b/, so
+        # they are named explicitly and every patch reads the same way.
+        patch = run_git(root, ["diff", "--no-color", "--no-index",
+                               "--src-prefix=a/", "--dst-prefix=b/", "--",
                                os.devnull, rel_path], DIFF_TIMEOUT)
 
     truncated = len(patch.encode("utf-8", errors="replace")) > MAX_DIFF_BYTES

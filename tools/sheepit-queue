@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Terminal access to the SheepIt prompt queue.
+
+Reads and writes the same SQLite queue the gateway's dispatcher drives. There is
+deliberately no `run` command: the dispatcher lives in the gateway, and a second
+one racing it on the same queue would deliver every prompt twice.
+"""
+
+import argparse
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
+
+from herdr_rpc import call_herdr_rpc  # noqa: E402
+from scheduler import config as sched_config  # noqa: E402
+from scheduler import db, quota  # noqa: E402
+
+MARK = {
+    "waiting": "·",
+    "sent": "✓",
+    "failed": "✗",
+}
+
+
+def _rel(when) -> str:
+    if when is None:
+        return "—"
+    delta = (when - datetime.now(timezone.utc)).total_seconds()
+    if delta <= 0:
+        return "now"
+    hours, minutes = divmod(int(delta // 60), 60)
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+
+
+def cmd_quota(args) -> int:
+    cfg = sched_config.load()
+    try:
+        current = quota.fetch()
+    except quota.QuotaError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if current.stale:
+        print(f"(cached at {current.fetched_at:%Y-%m-%d %H:%M} UTC — endpoint unreachable)\n")
+
+    width = max((len(b.name) for b in current.buckets), default=10)
+    for b in current.buckets:
+        filled = min(24, int(b.utilization / 100 * 24))
+        bar = "█" * filled + "░" * (24 - filled)
+        flag = " LOCKED" if b.locked_reason else ""
+        over = " ←" if b.is_blocking(cfg.threshold) else ""
+        print(f"{b.name:<{width}}  {bar} {b.utilization:5.1f}%  "
+              f"resets in {_rel(b.resets_at):>7}{flag}{over}")
+
+    print()
+    if current.blockers(cfg.threshold):
+        print(f"blocked at {cfg.threshold:.0f}% — next window {_rel(current.resume_at(cfg.threshold))}")
+    else:
+        print(f"clear to run (threshold {cfg.threshold:.0f}%)")
+    return 0
+
+
+def _chats() -> dict:
+    """pane_id -> a name worth printing, for whatever Herdr has open."""
+    out = {}
+    for pane in call_herdr_rpc("pane.list").get("result", {}).get("panes", []):
+        out[pane.get("pane_id")] = pane.get("cwd", "").rsplit("/", 1)[-1]
+    return out
+
+
+def cmd_chats(args) -> int:
+    """The pane ids to queue against, which is the only id this tool needs."""
+    agents = call_herdr_rpc("agent.list").get("result", {}).get("agents", [])
+    if not agents:
+        print("no chats open")
+        return 0
+    for a in agents:
+        print(f"{a.get('pane_id'):<8} {a.get('agent_status', '?'):<8} {a.get('cwd', '')}")
+    return 0
+
+
+def cmd_add(args) -> int:
+    conn = db.connect()
+    pane = call_herdr_rpc("pane.get", {"pane_id": args.pane}).get("result", {}).get("pane")
+    if not pane:
+        print(f"error: no chat {args.pane} (try `sheepit-queue chats`)", file=sys.stderr)
+        return 1
+
+    # No agent in the pane means no queue: it is a shell, and a shell takes the
+    # text typed at it. Same rule the gateway's own send path follows.
+    status = pane.get("agent_status")
+    if not status or status == "unknown":
+        call_herdr_rpc("pane.send_text", {"pane_id": args.pane, "text": args.prompt})
+        res = call_herdr_rpc("pane.send_keys", {"pane_id": args.pane, "keys": ["enter"]})
+        if "error" in res:
+            print(f"error: {res['error'].get('message')}", file=sys.stderr)
+            return 1
+        print(f"typed into {args.pane} (no agent there to queue for)")
+        return 0
+
+    prompt_id = db.add(
+        conn,
+        pane_id=args.pane,
+        prompt=args.prompt,
+        workspace_id=pane.get("workspace_id"),
+        session_uuid=(pane.get("agent_session") or {}).get("value"),
+        cwd=pane.get("cwd"),
+    )
+    print(f"queued #{prompt_id} for {args.pane}")
+    return 0
+
+
+def cmd_list(args) -> int:
+    conn = db.connect()
+    prompts = db.list_prompts(conn, args.pane, args.state)
+    if not prompts:
+        print("nothing queued")
+        return 0
+    names = _chats()
+    for p in prompts:
+        head = p.prompt.splitlines()[0][:52]
+        where = names.get(p.pane_id) or p.pane_id
+        print(f"{MARK.get(p.state, ' ')} #{p.id:<4} {p.state:<8} {head}  [{where}]")
+        if p.last_error:
+            print(f"          └─ {p.last_error}")
+    return 0
+
+
+def cmd_show(args) -> int:
+    conn = db.connect()
+    queued = db.get(conn, args.id)
+    if queued is None:
+        print(f"error: no prompt #{args.id}", file=sys.stderr)
+        return 1
+    for key, value in vars(queued).items():
+        if value not in (None, ""):
+            print(f"{key:<16} {value}")
+    return 0
+
+
+def cmd_rm(args) -> int:
+    conn = db.connect()
+    db.delete(conn, args.id)
+    print(f"removed #{args.id}")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="sheepit-queue", description=__doc__)
+    sub = p.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("quota", help="show usage windows").set_defaults(func=cmd_quota)
+    sub.add_parser("chats", help="list chats you can queue against").set_defaults(func=cmd_chats)
+
+    add = sub.add_parser("add", help="queue a prompt for a chat")
+    add.add_argument("prompt")
+    add.add_argument("--pane", required=True, help="pane id of the chat, e.g. wM:p1")
+    add.set_defaults(func=cmd_add)
+
+    ls = sub.add_parser("list", help="list queued prompts")
+    ls.add_argument("--pane", help="only this chat")
+    ls.add_argument("--state", choices=db.STATES)
+    ls.set_defaults(func=cmd_list)
+
+    show = sub.add_parser("show", help="show one queued prompt")
+    show.add_argument("id", type=int)
+    show.set_defaults(func=cmd_show)
+
+    rm = sub.add_parser("rm", help="delete a queued prompt")
+    rm.add_argument("id", type=int)
+    rm.set_defaults(func=cmd_rm)
+
+    args = p.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
