@@ -1315,6 +1315,22 @@ html, body {
   gap: 9px;
 }
 
+/* Whose window this is. Only drawn when more than one agent is running, so a
+   machine with a single agent keeps the strip it always had. */
+.quota-agent {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.quota-agent:not(:first-child) {
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 .quota-row {
   display: grid;
   grid-template-columns: 4.5rem 1fr auto;

@@ -2023,46 +2023,66 @@
     return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}m`;
   }
 
-  /* How much subscription is left. The queue shows it because it decides what
-     it may start, and the overview shows it because it is the same question
-     asked about the herd already running: what is there left to spend. */
+  /* How much subscription is left, per agent. The queue shows it because it
+     decides what it may start, and the overview shows it because it is the
+     same question asked about the herd already running: what is there left to
+     spend. Two agents have two subscriptions and two answers - a Claude window
+     says nothing about what a Codex pane may spend - so each gets its own
+     block, and only the agents actually on this machine are drawn. */
   function quotaHtml() {
     const q = state.quota;
     if (!q) return '<div class="quota-note">Reading usage…</div>';
-    if (q.ok === false) {
-      return `<div class="quota-note blocked">${escapeHtml(q.error || "usage unavailable")}</div>`;
+    const agents = q.agents || [];
+    if (!agents.length) return '<div class="quota-note">No agents running.</div>';
+    const many = agents.length > 1;
+    return agents.map((a) => agentQuotaHtml(a, q.threshold, many)).join("");
+  }
+
+  function agentQuotaHtml(a, threshold, named) {
+    const head = named
+      ? `<div class="quota-agent">${escapeHtml(a.agent || "agent")}</div>`
+      : "";
+    if (a.ok === false) {
+      // Not knowing is not the same as having nothing left: the queue keeps
+      // delivering, so this says what is missing rather than crying wolf.
+      return `${head}<div class="quota-note">${escapeHtml(a.error || "no usage reading")}</div>`;
     }
 
     /* Buckets that are empty and have no window carry no information - they
        are plan slots this account does not use. */
-    const shown = (q.buckets || []).filter((b) => b.utilization > 0 || b.resets_at);
-    const rows = shown
+    const rows = (a.buckets || [])
+      .filter((b) => b.utilization > 0 || b.resets_at)
       .map((b) => {
         const pct = Math.max(0, Math.min(100, b.utilization));
-        const near = pct >= q.threshold * 0.8;
+        const near = pct >= threshold * 0.8;
         const cls = b.blocking ? "over" : near ? "warn" : "";
-        const name = b.name.replace(/_/g, " ");
         return `
           <div class="quota-row ${cls}">
-            <span class="quota-name">${escapeHtml(name)}</span>
+            <span class="quota-name">${escapeHtml(b.name.replace(/_/g, " "))}</span>
             <span class="quota-track"><span class="quota-fill" style="width:${pct}%"></span></span>
             <span class="quota-pct">${pct.toFixed(0)}%</span>
           </div>`;
       })
       .join("");
 
-    // An expired reading is too old to hold work on, so the queue has stopped
-    // believing it and the strip says so rather than showing a wall that is not
-    // there. The bars above are the last thing we were told, not the truth.
-    const note = q.expired
+    /* An expired reading is too old to hold work on, so the queue has stopped
+       believing it and the strip says so rather than showing a wall that is not
+       there. The bars above are the last thing we were told, not the truth. */
+    const note = a.expired
       ? '<div class="quota-note">last known reading — running anyway until usage can be read</div>'
-      : q.blocked
-      ? `<div class="quota-note blocked">No usage left — next window in ${escapeHtml(relTime(q.resume_at))}</div>`
-      : `<div class="quota-note">Clear to run · pauses at ${q.threshold.toFixed(0)}%</div>`;
+      : a.blocked
+      ? `<div class="quota-note blocked">No usage left — next window in ${escapeHtml(relTime(a.resume_at))}</div>`
+      : `<div class="quota-note">Clear to run · pauses at ${threshold.toFixed(0)}%</div>`;
 
-    return rows + note + (q.stale
-      ? `<div class="quota-note">cached — ${escapeHtml(q.reason || "could not reach the usage endpoint")}</div>`
-      : "");
+    /* Where the reading came from. `observed` is the agent's own note of its
+       last turn, which is worth saying: it is right, but only as of then. */
+    const since = a.source === "observed"
+      ? '<div class="quota-note">as of its last turn</div>'
+      : a.stale
+      ? `<div class="quota-note">cached — ${escapeHtml(a.reason || "could not reach the usage endpoint")}</div>`
+      : "";
+
+    return head + rows + note + since;
   }
 
   // Both strips carry the same reading; whichever view is up draws it.
