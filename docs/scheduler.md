@@ -60,9 +60,22 @@ read: Claude Code caches its last reading in `.claude.json`, stamped with the
 account it belongs to, and Codex records the rate limits of every turn in its
 session rollout — a five-hour window and a seven-day one, the same shape under
 different names. Claude falls back to its own note when the endpoint cannot be
-reached; Codex publishes no endpoint, so the note is all there is. A reading
-says which it is, and the phone says "as of its last turn" rather than pretending
-it is live.
+reached.
+
+**Codex is read off its own screen as well**, because the rollout is only
+written when the model answers. A window that resets while nobody is working
+still reads as full on disk — a pane finished a turn at 98%, the window
+reopened two hours later, and the file still said 98% that evening. What
+`/status` prints was fetched when somebody asked for it, so the gateway reads
+the panes, parses the box when it is on screen, and takes whichever reading is
+newer. Note that the box states what is **left**, not what is spent: "6% left"
+is 94% gone.
+
+If nothing has been read for fifteen minutes, one idle Codex pane is asked —
+`/status`, typed in as a prompt. Two conditions, both necessary: the pane is
+`idle`, and **its composer is empty**. A half-written prompt on screen would be
+submitted along with the command, which is somebody's unfinished sentence sent
+to their own agent; that pane is skipped and the older reading stands.
 
 **A reading expires with the window it describes.** A note saying 98% was true
 until that window reset; after the reset it is not stale but wrong, and a Codex
@@ -71,12 +84,20 @@ read as full all afternoon. A bucket whose `resets_at` has passed blocks
 nothing, and the phone draws it with no percentage at all rather than an old
 one.
 
-**Not knowing is not the same as knowing there is nothing left.** A hold is
-forever — nothing retries a prompt the sweep declined to send — so it takes a
-reading that actually says the window is full. An agent nobody can price is
-delivered to, and the wall detection below is what catches it if that was
-optimistic. The opposite rule, which held everything whenever a credential
-moved, parked every prompt on a machine for a day.
+**Usage does not gate delivery at all**, so not knowing what is left costs
+nothing: a prompt goes as soon as the pane can take it. A window therefore
+matters in exactly two places — the strip, where it is information, and the
+wall, where a banner is confirmed against it.
+
+"Spent" in that second place means locked *after* being used, or within a
+percent of the top. Not `threshold`, which is only where the bar turns amber.
+And not a slot the plan never included, which is locked from the day it was
+born and says nothing about what anybody spent.
+
+When a spent window does not say when it reopens, that is `None`, and the
+caller applies its own backoff. It used to answer "fifteen minutes from now",
+a time that moved every time it was asked — the phone read 22:40, then 22:41 a
+minute later, for a window that was not out at all.
 
 ## Delivery
 

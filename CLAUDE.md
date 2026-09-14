@@ -133,9 +133,13 @@ it exhausted reopens. `quota.py` reads usage per agent, since Claude and Codex
 spend different subscriptions, and has
 two sources for each: what the API says (Claude only, token from the Keychain on
 macOS) and what the agent wrote down itself (`.claude.json`'s cached reading,
-Codex's rollout `rate_limits`), which needs no credentials. A reading expires
-with the window it describes: a `resets_at` in the past means the percentage
-belongs to a window that is gone. `docs/scheduler.md` is the detail.
+Codex's rollout `rate_limits`), which needs no credentials — plus, for Codex,
+the `/status` box parsed off the pane, since its rollout only moves when the
+model answers. A reading expires with the window it describes: a `resets_at` in
+the past means the percentage belongs to a window that is gone. Asking a pane
+for `/status` needs an idle pane **and an empty composer**, or the command is
+submitted along with whatever somebody was typing. `docs/scheduler.md` is the
+detail.
 
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's
