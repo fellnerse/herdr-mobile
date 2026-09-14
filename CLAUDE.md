@@ -38,6 +38,7 @@ node tools/test-transcript.js                   # pane parser, both agents
 node tools/test-diff.js                         # diff rendering, unified + split
 node tools/test-drafts.js                       # per-project drafts
 node tools/test-flock.js                        # the overview: grouping, order, rows
+node tools/test-queue.js                        # the queue above the composer
 python3 tools/test-gateway.py                   # bincode, framing, git, notifications
 
 tools/sheepit-queue list | add | cancel         # the prompt queue from a terminal
@@ -49,7 +50,7 @@ python3 tools/make-bleat.py                     # regenerate web/bleat.wav
 
 There is no runner, no lint and no formatter: each suite is a standalone script
 that prints failures and exits non-zero, so "run one test" means run one of the
-five suites. Restart `server.py` after changing the gateway; changing `web/` only
+six suites. Restart `server.py` after changing the gateway; changing `web/` only
 needs a reload.
 
 Environment: `SHEEPIT_PORT` (or `PORT`, default 3009), `HOST` (default
@@ -127,7 +128,8 @@ its `label`, not its `number` — see `tabNumber`.
 
 **The queue waits for the window.** Prompts from the phone go to `/api/queue`
 rather than straight to an agent: `gateway/scheduler/` holds them in SQLite and
-`dispatch.py` sends them as soon as the pane can take one — **usage never gates
+`dispatch.py` sends them as soon as the pane can take one (or immediately, via
+`/api/queue/{id}/send`) — **usage never gates
 delivery**; only a pane that hit the wall mid-turn is parked, until the window
 it exhausted reopens. `quota.py` reads usage per agent, since Claude and Codex
 spend different subscriptions, and has

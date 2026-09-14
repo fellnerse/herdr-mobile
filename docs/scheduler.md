@@ -148,6 +148,20 @@ for the same reason: the banner says go and ask, usage says yes or no. Acting on
 matched text directly parks a healthy chat that merely mentioned running out of
 usage — which is a thing agents say to each other constantly.
 
+## Where it is seen
+
+In the chat it was typed into, above the box it was typed in. A queued prompt
+is one line of text and three things you can do to it: **Edit**, which takes it
+back into the composer where the keyboard already is, **Send now**, which hands
+it over whatever the agent is in the middle of, and **Delete**.
+
+It used to have a tab of its own, listing every chat's prompts. That put the
+one thing you might want to take back two taps away from the place you would
+notice it was still sitting there, and made a queue of one look like an
+administrative system. The project list carries the same fact in a word — a row
+with prompts behind it says `2 queued` beside what its agent is doing — and
+that is the only place the queue is visible from outside its own chat.
+
 ## Visibility
 
 Automatic is not the same as invisible.
@@ -208,6 +222,7 @@ it.
 | `GET /api/queue/quota` | usage windows per agent: what each has spent, when it resets, and whether it is out |
 | `POST /api/queue` | `{prompt, pane_id}` — the only send path; answers `delivered: "terminal"` when the pane had no agent and the text was typed instead |
 | `POST /api/queue/{id}/update` | `{prompt}`, while it is still waiting |
+| `POST /api/queue/{id}/send` | hand it over now, whatever the agent is doing |
 | `POST /api/queue/{id}/delete` | drop it |
 
 ## Terminal
