@@ -87,6 +87,14 @@ nothing else. A sweep runs every `poll_seconds` regardless. Queueing a prompt is
 invisible to Herdr, so the HTTP side nudges the dispatcher directly rather than
 letting a message typed into an idle chat wait out a poll.
 
+The wall is the one exception, because the subscription is the only thing
+watching for it — everything else is re-read anyway. So with no stream to hear
+it from, the dispatcher reads each waiting pane itself and looks for the banner.
+**That hit is routed through the same `hit_the_wall` a subscribed match is**, and
+for the same reason: the banner says go and ask, usage says yes or no. Acting on
+matched text directly parks a healthy chat that merely mentioned running out of
+usage — which is a thing agents say to each other constantly.
+
 ## Visibility
 
 Automatic is not the same as invisible.

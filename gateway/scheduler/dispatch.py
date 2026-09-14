@@ -311,6 +311,36 @@ class Dispatcher:
         self.stalls.pop(pane_id, None)
         log.info("revived %s as %s from session %s", pane_id, target, prompt.session_uuid)
 
+    def poll_for_wall(self, conn: sqlite3.Connection, pane_ids: list[str],
+                      cfg: Config) -> None:
+        """Look for the limit banner ourselves, when the stream is not there.
+
+        Events are a latency optimisation everywhere else in this file, because
+        every other thing they report is re-read on the next sweep anyway. The
+        wall is the exception: the subscription is the only thing watching for
+        it, so a dropped stream means a pane that runs out mid-turn stays halted
+        until a person notices. This is the floor under that.
+
+        A hit here is a reason to go and ask, never a verdict. It goes through
+        `hit_the_wall` exactly like a subscribed match does, so usage still
+        decides and the rule holds in both paths. Reading the text and acting on
+        it directly is the tempting version and the wrong one: it parks a
+        perfectly healthy chat that merely mentioned running out of usage, which
+        is a thing agents say to each other all day.
+        """
+        for pane_id in pane_ids:
+            # Stalled panes are already parked, and a banner sitting on their
+            # screen is the one that put them there.
+            if self.stalls.get(pane_id, 0.0) > time.monotonic():
+                continue
+            try:
+                text = self.herdr.pane_read(pane_id)
+            except HerdrError as e:
+                log.debug("could not read %s while polling for the wall: %s", pane_id, e)
+                continue
+            if LIMIT_RE.search(text):
+                self.hit_the_wall(conn, pane_id, cfg)
+
     # --- the loop ------------------------------------------------------
 
     def tick(self, conn: sqlite3.Connection, cfg: Config) -> None:
@@ -323,6 +353,12 @@ class Dispatcher:
             self.events.ensure(subscriptions(panes))
         except HerdrError as e:
             log.warning("cannot subscribe, falling back to polling: %s", e)
+
+        # Only with no stream to hear it from: a live subscription already
+        # reports the banner, and sampling as well would just read every pane
+        # once a minute to be told what we were about to be told anyway.
+        if not self.events.connected:
+            self.poll_for_wall(conn, panes, cfg)
 
         for event in self.events.poll(cfg.poll_seconds):
             kind = event.get("event")

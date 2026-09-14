@@ -132,6 +132,27 @@ class Herdr:
     def agent_list(self) -> list:
         return self.call("agent.list").get("agents", [])
 
+    def pane_read(self, pane_id: str, lines: int = 60,
+                  source: str = "recent_unwrapped") -> str:
+        """Recent output from a pane, as plain text.
+
+        Two traps here, both found the hard way, and both of which fail by
+        quietly returning nothing rather than by raising:
+
+        - The socket spells the source `recent_unwrapped`. The CLI takes the
+          hyphenated `recent-unwrapped`, and the socket does not accept it.
+        - The payload is nested under `read`. Reading `result["text"]` directly
+          returns empty every single time, which silently disables whatever was
+          searching the output and looks exactly like a pane with nothing in it.
+        """
+        result = self.call("pane.read", {
+            "pane_id": pane_id,
+            "source": source,
+            "lines": lines,
+            "strip_ansi": True,
+        })
+        return (result.get("read") or {}).get("text", "")
+
     def notify(self, title: str, body: str = None) -> None:
         try:
             self.call("notification.show", {"title": title, "body": body})
