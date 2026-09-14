@@ -1305,27 +1305,6 @@ html, body {
 
 /* ---------------------------------------------------------------- Queue --- */
 
-/* Count of tasks wanting a person, on the header's queue button. Same badge
-   geometry as the connection dot, widened for a numeral. */
-.queue-badge {
-  position: absolute;
-  top: 0;
-  right: 0;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--status-blocked);
-  border: 1.5px solid var(--bg-surface);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 12px;
-  text-align: center;
-}
-
-.queue-badge.hidden { display: none; }
-
 /* Usage windows, above the list */
 .quota-strip {
   flex-shrink: 0;
@@ -1465,147 +1444,86 @@ html, body {
 
 .quota-note.blocked { color: var(--status-blocked); }
 
-/* Task rows reuse the project row's card, minus the swipe wrapper. */
-.task-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 11px;
-  width: 100%;
-  margin-bottom: 8px;
-  padding: 13px 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  text-align: left;
-}
-
-.task-row.attention { border-color: rgba(248, 81, 73, 0.45); }
-
-.task-main {
-  flex: 1;
-  min-width: 0;
+/* What is waiting to go to this chat, stacked above the box it was typed in.
+   The dock is already the busiest corner of the screen, so a queued prompt is
+   one line of text and three words of action - and it is only ever here, for
+   the chat in front of you, rather than in a list of everybody's. */
+.chat-queue {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
+  padding: 8px 12px 2px;
+  max-height: 38vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
-.task-prompt {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  /* Two lines is enough to recognise a task; the rest is in the branch. */
+.chat-queue.hidden { display: none; }
+
+.chat-queued {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 9px 11px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
+.chat-queued.attention { border-color: rgba(248, 81, 73, 0.45); }
+
+.chat-queued-state {
+  grid-row: 1;
+  align-self: center;
+}
+
+.chat-queued-text {
+  grid-row: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  /* Two lines of a prompt is enough to know which one it is. */
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.task-meta {
-  font-family: var(--font-mono);
+.chat-queued-why {
+  grid-column: 1 / -1;
   font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.task-why {
-  font-size: 12px;
   color: var(--status-blocked);
 }
 
-.task-side {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 7px;
-}
-
-.task-acts {
+.chat-queued-acts {
+  grid-column: 1 / -1;
   display: flex;
   gap: 6px;
 }
 
-.task-act {
-  padding: 4px 9px;
+.chat-queued-act {
+  padding: 5px 10px;
   background: var(--bg-hover);
   border: 1px solid var(--border-subtle);
-  border-radius: 9px;
+  border-radius: 7px;
   color: var(--text-secondary);
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 
-.task-act:active { filter: brightness(1.3); }
-.task-act.danger { color: var(--status-blocked); }
+.chat-queued-act:active { filter: brightness(1.3); }
+.chat-queued-act.accent { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }
+.chat-queued-act.danger { color: var(--status-blocked); }
 
 /* A queued prompt's states are not agent states, so they need their own chips. */
 .status-waiting { background: rgba(139, 148, 158, 0.15); color: var(--status-unknown); }
 .status-sent { background: rgba(88, 166, 255, 0.15); color: var(--status-done); }
 .status-failed { background: rgba(248, 81, 73, 0.15); color: var(--status-blocked); }
 
-/* Queue-a-prompt sheet */
-.task-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 11px 4px;
-}
 
-.task-field label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.task-textarea,
-.task-input {
-  width: 100%;
-  padding: 11px 12px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 15px;
-  resize: none;
-}
-
-.task-input { font-family: var(--font-mono); font-size: 13px; }
-
-.task-textarea:focus,
-.task-input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-}
-
-.task-error {
-  margin: 0 4px 4px;
-  padding: 9px 11px;
-  background: rgba(248, 81, 73, 0.12);
-  border-radius: 10px;
-  color: var(--status-blocked);
-  font-size: 13px;
-}
-
-.task-error.hidden { display: none; }
-
-.sheet-btn-primary {
-  background: var(--accent-primary);
-  border-color: transparent;
-  color: #fff;
-  font-weight: 600;
-}
-
-/* The queue is a full-screen layer (z 30) and the task sheet opens from
-   inside it, so both it and its backdrop have to clear that. */
-#task-sheet { z-index: 41; }
-.sheet-backdrop.over-queue { z-index: 40; }
-
-.task-act.accent { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }
 
 /* ---------------------------------------------------------------------------
    The console and the changed files

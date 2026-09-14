@@ -30,7 +30,6 @@
     queue: [],
     quota: null,
     quotaAt: 0,
-    queueOpen: false,
     queueSignature: null,
     editingId: null,
   };
@@ -79,21 +78,8 @@
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
-  const elBtnQueue = document.getElementById("btn-queue");
-  const elQueueBadge = document.getElementById("queue-badge");
-  const elQueueView = document.getElementById("queue-view");
-  const elBtnCloseQueue = document.getElementById("btn-close-queue");
-  const elQuotaStrip = document.getElementById("quota-strip");
   const elPickerQuota = document.getElementById("picker-quota");
-  const elTaskList = document.getElementById("task-list");
-  const elBtnNewTask = document.getElementById("btn-new-task");
-  const elTaskSheet = document.getElementById("task-sheet");
-  const elTaskPrompt = document.getElementById("task-prompt");
-  const elTaskError = document.getElementById("task-error");
-  const elBtnSubmitTask = document.getElementById("btn-submit-task");
-  const elBtnCancelTask = document.getElementById("btn-cancel-task");
-  const elTaskSheetTitle = document.getElementById("task-sheet-title");
-  const elTaskSheetCwd = document.getElementById("task-sheet-cwd");
+  const elChatQueue = document.getElementById("chat-queue");
   const elBtnConsole = document.getElementById("btn-console");
   const elConsoleView = document.getElementById("console-view");
   const elConsoleTerm = document.getElementById("console-term");
@@ -1445,6 +1431,7 @@
 
     renderAgentBar();
     renderActiveAgentMeta();
+    renderChatQueue();
     fetchHistory(true);
   }
 
@@ -1971,7 +1958,7 @@
   /* A queued prompt is either still ours or it never made it. Delivered ones
      are filtered out in fetchQueue and never reach this list. */
   const QUEUE_WORD = {
-    waiting: "waiting",
+    waiting: "queued",
     failed: "failed",
   };
 
@@ -1989,8 +1976,7 @@
          A delivered prompt belongs to the conversation now - it is in the
          transcript, and leaving it here only buries what still needs you. */
       state.queue = (data.prompts || []).filter((p) => p.state !== "sent");
-      renderQueueBadge();
-      if (state.queueOpen) renderTaskList();
+      renderChatQueue();
       // The herd is polled before the queue, so the counts on the rows arrive
       // a beat later than the rows do. The signature keeps this cheap: it only
       // redraws when a number actually moved.
@@ -2007,16 +1993,10 @@
       const res = await fetch("/api/queue/quota");
       state.quota = await res.json();
       state.quotaAt = Date.now();
-      if (state.queueOpen || state.pickerOpen) renderQuota();
+      if (state.pickerOpen) renderQuota();
     } catch (err) {
       /* keep the last reading */
     }
-  }
-
-  function renderQueueBadge() {
-    const n = state.queue.length;
-    elQueueBadge.textContent = String(n);
-    elQueueBadge.classList.toggle("hidden", n === 0);
   }
 
   function relTime(iso) {
@@ -2126,9 +2106,7 @@
 
   // Both strips carry the same reading; whichever view is up draws it.
   function renderQuota() {
-    const html = quotaHtml();
-    elQuotaStrip.innerHTML = html;
-    elPickerQuota.innerHTML = html;
+    elPickerQuota.innerHTML = quotaHtml();
   }
 
   // Which chat a prompt is queued for, named the way the picker names it.
@@ -2137,183 +2115,91 @@
     return agent ? agent.name || paneId : paneId;
   }
 
-  // Same trick as the project list: only redraw when something actually moved.
+  /* What is waiting to go to this chat, drawn directly above the box it was
+     typed into. It used to live behind its own tab, which put the one thing
+     you might want to take back two taps away from the place you would notice
+     it was still sitting there. */
   function queueSignature() {
     return state.queue
-      .map((p) => [p.id, p.state, p.pane_id, p.last_error].join(""))
-      .join("");
+      .map((p) => [p.id, p.state, p.pane_id, p.prompt, p.last_error].join("\u001f"))
+      .join("\u001e");
   }
 
-  function renderTaskList() {
-    if (state.queue.length === 0) {
+  function queuedFor(paneId) {
+    return state.queue.filter((p) => p.pane_id === paneId && p.state !== "sent");
+  }
+
+  function renderChatQueue() {
+    const queued = queuedFor(state.activePaneId);
+    if (!queued.length) {
+      elChatQueue.classList.add("hidden");
+      elChatQueue.innerHTML = "";
       state.queueSignature = null;
-      elTaskList.innerHTML =
-        '<div class="history-empty">Nothing queued. Tap New to queue a prompt.</div>';
       return;
     }
-    const signature = queueSignature();
-    if (signature === state.queueSignature) return;
+    const signature = queueSignature() + state.activePaneId;
+    if (signature === state.queueSignature && !elChatQueue.classList.contains("hidden")) return;
     state.queueSignature = signature;
 
-    elTaskList.innerHTML = state.queue
+    elChatQueue.classList.remove("hidden");
+    elChatQueue.innerHTML = queued
       .map((p) => {
-        const word = QUEUE_WORD[p.state] || p.state;
         const failed = p.state === "failed";
-        /* Opening the chat is the only way to clear a prompt stuck behind a
-           question, so it is offered on every row: the transcript and the key
-           palette are both there. */
+        const word = QUEUE_WORD[p.state] || p.state;
         return `
-          <div class="task-row ${failed ? "attention" : ""}">
-            <span class="task-main">
-              <span class="task-prompt">${escapeHtml(p.prompt || "")}</span>
-              <span class="task-meta">${escapeHtml(chatName(p.pane_id))}</span>
-              ${failed && p.last_error
-                  ? `<span class="task-why">${escapeHtml(p.last_error)}</span>`
-                  : ""}
-            </span>
-            <span class="task-side">
-              <span class="status-badge status-${escapeHtml(p.state)}">${escapeHtml(word)}</span>
-              <span class="task-acts">
-                <button class="task-act accent" data-task-open="${escapeHtml(p.pane_id)}">Open</button>
-                ${p.state === "waiting"
-                    ? `<button class="task-act" data-task-edit="${p.id}">Edit</button>`
-                    : ""}
-                <button class="task-act danger" data-task-delete="${p.id}">Delete</button>
-              </span>
+          <div class="chat-queued ${failed ? "attention" : ""}">
+            <span class="chat-queued-state status-badge status-${escapeHtml(p.state)}">${escapeHtml(word)}</span>
+            <span class="chat-queued-text">${escapeHtml(p.prompt || "")}</span>
+            ${failed && p.last_error
+                ? `<span class="chat-queued-why">${escapeHtml(p.last_error)}</span>`
+                : ""}
+            <span class="chat-queued-acts">
+              <button type="button" class="chat-queued-act" data-queue-edit="${p.id}">Edit</button>
+              <button type="button" class="chat-queued-act accent" data-queue-send="${p.id}">Send now</button>
+              <button type="button" class="chat-queued-act danger" data-queue-delete="${p.id}">Delete</button>
             </span>
           </div>`;
       })
       .join("");
   }
 
-  async function taskAction(id, action) {
+  async function queueAction(id, action) {
     triggerHaptic();
     try {
       const res = await fetch(`/api/queue/${id}/${action}`, { method: "POST" });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "failed");
+      if (!data.ok) throw new Error((data.error && data.error.message) || data.error || "failed");
       state.queueSignature = null;
       await fetchQueue();
+      if (action === "send") setTimeout(() => fetchHistory(true), 300);
     } catch (err) {
-      alert(`Could not ${action} prompt: ${err.message}`);
+      alert(`Could not ${action === "send" ? "send" : action} the prompt: ${err.message}`);
     }
   }
 
-  function openQueue() {
+  /* Editing a queued prompt takes it back: the text lands in the composer,
+     where it can be changed with the keyboard that is already open, and the
+     row goes. Sending it again queues it again. Nothing is lost on the way -
+     a composer full of text is a draft, and drafts are kept per project. */
+  async function editQueued(id) {
+    const queued = state.queue.find((p) => String(p.id) === String(id));
+    if (!queued) return;
     triggerHaptic();
-    state.queueOpen = true;
-    state.queueSignature = null;
-    elQueueView.classList.remove("hidden");
-    renderQuota();
-    renderTaskList();
-    fetchQueue();
-    fetchQuota();
+    elPromptInput.value = queued.prompt || "";
+    autoResizeTextarea();
+    saveDraft();
+    elBtnSend.disabled = !elPromptInput.value.trim();
+    elPromptInput.focus();
+    await queueAction(id, "delete");
   }
 
-  function closeQueue() {
-    state.queueOpen = false;
-    elQueueView.classList.add("hidden");
-  }
-
-  /* The chat a new prompt is aimed at: whichever one you are looking at. That
-     is the whole targeting model - there is no project to pick, because the
-     session already sits in one. */
-  function queueTarget(prompt) {
-    return prompt ? prompt.pane_id : state.activePaneId;
-  }
-
-  async function openTaskSheet(prompt) {
-    triggerHaptic();
-    state.editingId = prompt ? prompt.id : null;
-    elTaskError.classList.add("hidden");
-    elTaskSheetTitle.textContent = prompt ? "Edit queued prompt" : "Queue a prompt";
-    elTaskSheetCwd.textContent = queueTarget(prompt)
-      ? `for ${chatName(queueTarget(prompt))}, when it is free`
-      : "pick a chat first";
-    elBtnSubmitTask.textContent = prompt ? "Save" : "Queue it";
-    elTaskPrompt.value = prompt ? prompt.prompt || "" : "";
-
-    elSheetBackdrop.classList.add("over-queue");
-    elSheetBackdrop.classList.remove("hidden");
-    elTaskSheet.classList.remove("hidden");
-    if (!prompt) elTaskPrompt.focus();
-  }
-
-  function closeTaskSheet() {
-    elTaskSheet.classList.add("hidden");
-    elSheetBackdrop.classList.add("hidden");
-    elSheetBackdrop.classList.remove("over-queue");
-  }
-
-  async function submitTask() {
-    const prompt = elTaskPrompt.value.trim();
-    if (!prompt) {
-      showTaskError("Say what it should do.");
-      return;
-    }
-    const editing = state.editingId;
-    const paneId = editing ? null : state.activePaneId;
-    if (!editing && !paneId) {
-      showTaskError("Pick a chat to queue this for.");
-      return;
-    }
-    const url = editing ? `/api/queue/${editing}/update` : "/api/queue";
-    elBtnSubmitTask.disabled = true;
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editing ? { prompt } : { prompt, pane_id: paneId }),
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "could not save");
-      elTaskPrompt.value = "";
-      closeTaskSheet();
-      state.queueSignature = null;
-      await fetchQueue();
-    } catch (err) {
-      showTaskError(err.message);
-    } finally {
-      elBtnSubmitTask.disabled = false;
-    }
-  }
-  function showTaskError(message) {
-    elTaskError.textContent = message;
-    elTaskError.classList.remove("hidden");
-  }
-
-  /* Hand a task's pane to the main view, so its question can be answered with
-     the key palette that is already there. */
-  function openTaskPane(paneId) {
-    closeQueue();
-    if (state.agents.some((a) => a.pane_id === paneId)) {
-      selectAgent(paneId);
-    } else {
-      /* The pane exists but Herdr has not listed it yet, or it is gone. Select
-         it anyway: the transcript fetch will say which. */
-      state.activePaneId = paneId;
-      state.historyText = "";
-      fetchHistory(true);
-    }
-  }
-
-  elBtnQueue.addEventListener("click", openQueue);
-  elBtnCloseQueue.addEventListener("click", closeQueue);
-  elBtnNewTask.addEventListener("click", () => openTaskSheet(null));
-  elBtnCancelTask.addEventListener("click", closeTaskSheet);
-  elBtnSubmitTask.addEventListener("click", submitTask);
-
-  elTaskList.addEventListener("click", (e) => {
-    const open = e.target.closest("[data-task-open]");
-    if (open) return openTaskPane(open.dataset.taskOpen);
-    const edit = e.target.closest("[data-task-edit]");
-    if (edit) {
-      const queued = state.queue.find((p) => String(p.id) === edit.dataset.taskEdit);
-      if (queued) openTaskSheet(queued);
-      return;
-    }
-    const del = e.target.closest("[data-task-delete]");
-    if (del) return taskAction(del.dataset.taskDelete, "delete");
+  elChatQueue.addEventListener("click", (e) => {
+    const edit = e.target.closest("[data-queue-edit]");
+    if (edit) return editQueued(edit.dataset.queueEdit);
+    const send = e.target.closest("[data-queue-send]");
+    if (send) return queueAction(send.dataset.queueSend, "send");
+    const del = e.target.closest("[data-queue-delete]");
+    if (del) return queueAction(del.dataset.queueDelete, "delete");
   });
 
   // Poll loop
@@ -2323,7 +2209,7 @@
     // Cheap: a local SQLite read. Keeps the header badge honest even when the
     // queue is closed.
     await fetchQueue();
-    if (state.queueOpen || state.pickerOpen) await fetchQuota();
+    if (state.pickerOpen) await fetchQuota();
   }
 
   function startPolling() {
