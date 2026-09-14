@@ -2131,7 +2131,7 @@
   /* Why a prompt is still sitting there. A queue that holds without saying so
      is indistinguishable from one that is broken - which is exactly how it
      looked when a window ran out and the strip above said nothing about the
-     chat below it. Send now is the way past it, so the line says that too. */
+     chat below it. */
   function holdingNote() {
     const row = (state.agents || []).find((a) => a.pane_id === state.activePaneId);
     const kind = row && row.agent;
@@ -2142,7 +2142,7 @@
     const name = kind.replace(/^./, (c) => c.toUpperCase());
     return `<div class="chat-queue-note">${escapeHtml(name)} has nothing left${
       back ? ` until ${escapeHtml(back)}` : ""
-    } — Send now goes anyway</div>`;
+    }</div>`;
   }
 
   function renderChatQueue() {

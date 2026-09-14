@@ -117,7 +117,8 @@ minute later, for a window that was not out at all.
   percent" has an end. A window with nothing left cannot take the prompt —
   handing it over spends it against a wall and loses the text in a refusal — so
   a pane whose agent is out waits for the window to reopen, and the chat says
-  so above the composer. **Send now** goes anyway.
+  so above the composer. **Send now** goes anyway — it is a button under the
+  prompt, not a sentence beside it.
 - **The wall.** When a window runs out mid-turn, `esc` halts it and a resume
   prompt is queued *in front* of everything else for that chat. There is no
   separate pause state: a resume is just a prompt that jumps the queue.

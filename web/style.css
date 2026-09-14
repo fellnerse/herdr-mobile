@@ -1485,22 +1485,36 @@ html, body {
   color: var(--status-blocked);
 }
 
+/* Three equal buttons across the row rather than three small ones bunched at
+   the left: a thumb reaching into the dock has the whole width to aim at, and
+   the one that deletes is as far from the one that sends as the row allows. */
 .chat-queued-acts {
   grid-column: 1 / -1;
   display: flex;
-  gap: 6px;
+  gap: 8px;
+  margin-top: 3px;
 }
 
+/* 42px tall, which is what a finger actually needs. The old 24px rows were
+   the size of the text in them. */
 .chat-queued-act {
-  padding: 5px 10px;
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
   background: var(--bg-hover);
   border: 1px solid var(--border-subtle);
-  border-radius: 7px;
+  border-radius: 9px;
   color: var(--text-secondary);
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .chat-queued-act:active { filter: brightness(1.3); }

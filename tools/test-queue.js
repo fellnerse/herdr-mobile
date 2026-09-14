@@ -157,8 +157,8 @@ const waiting = (id, pane, prompt) => ({ id, pane_id: pane, state: "waiting", pr
   q.renderChatQueue();
   check("a held prompt says which agent is out",
         /Codex has nothing left until 19\.9\./.test(q.el.innerHTML), true);
-  check("and that there is a way past it",
-        /Send now goes anyway/.test(q.el.innerHTML), true);
+  check("and stops there - the buttons under it say the rest",
+        /goes anyway|Send now goes/.test(q.el.innerHTML), false);
 
   // The same chat with room left says nothing: a queue waiting its turn behind
   // a busy agent is working exactly as intended.
