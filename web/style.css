@@ -347,10 +347,13 @@ html, body {
 /* The flock: one sheep per project, tinted by what its agent is doing. The
    fleece is currentColor, so a single colour on the wrapper drives the whole
    animal and the eye stays readable against it. */
+/* Bigger than it was: the markings that tell one sheep from another are the
+   whole point of drawing an animal rather than a dot, and at 34px they were
+   freckles. */
 .sheep-wrap {
   flex-shrink: 0;
-  width: 34px;
-  height: 26px;
+  width: 44px;
+  height: 34px;
   display: flex;
   align-items: center;
   color: var(--status-unknown);
@@ -374,12 +377,18 @@ html, body {
 .sheep-ear { stroke-width: 1; }
 .sheep-eye { fill: var(--bg-card); }
 
-/* The ear tag: this sheep's own colour, hashed from its pane, so two agents
-   on the same project are not the same animal twice. Outlined like the ear it
-   hangs from, or it reads as a stray pixel rather than a tag. */
-.sheep-tag {
+/* This sheep's own colour, hashed from its pane, so two agents on the same
+   project are not the same animal twice. It is worn twice: sprayed on the
+   fleece the way a flock is raddle-marked, and again on the ear tag.
+
+   Both are outlined in the card's colour, which is what keeps them reading as
+   paint and plastic laid on the animal - without it a mark the same lightness
+   as the fleece under it simply disappears, and a yellow sheep wearing a
+   yellow mark is one shape again. */
+.sheep-tag,
+.sheep-raddle {
   stroke: var(--bg-card);
-  stroke-width: 1.1;
+  stroke-width: 1.2;
 }
 
 /* A shut eye for a sleeping sheep: the lid takes the card's colour so it reads
@@ -393,6 +402,7 @@ html, body {
 
 .agent-row.active .sheep-face,
 .agent-row.active .sheep-tag,
+.agent-row.active .sheep-raddle,
 .agent-row.active .sheep-ear { stroke: var(--bg-hover); }
 
 .agent-row.active .sheep-eye { fill: var(--bg-hover); }

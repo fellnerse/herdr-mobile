@@ -781,20 +781,26 @@
   /* ------------------------------------------------------- Telling them apart
    *
    * Status is a colour and a posture, and two agents working on the same
-   * project are therefore the same animal twice. A shepherd has this problem
-   * too and solved it long before software did: every sheep wears a numbered
-   * ear tag, and you learn the markings on the ones you look at daily.
+   * project are therefore the same animal twice - which is exactly what
+   * grouping the list by project puts side by side.
    *
-   * So each pane gets its own: a tag colour, a patch of darker fleece, and the
-   * shade of its face, all hashed out of the pane id. It is deterministic -
-   * the same pane is the same sheep across a reload, a restart, and this
-   * phone's whole life - and it is drawn in the space status does not use.
-   * Status stays the fleece and the pose; identity is the small stuff.
+   * Shepherds have the problem and answered it with paint. A flock is marked
+   * with raddle - a bright blob sprayed on the fleece - and tagged in the ear
+   * to match, because a mark you have to squint at is no mark at all at the
+   * far end of a field. The same holds at the far end of a phone: the sheep
+   * here are 42 pixels wide, so identity has to be a big saturated patch of
+   * one colour, not a freckle.
+   *
+   * Each pane hashes to one colour, worn twice - the raddle on the fleece and
+   * the tag on the ear - plus where the paint landed, and the shade of the
+   * face. Status stays the fleece colour and the pose; the paint is outlined
+   * in the card's own colour so it reads as paint on top of the animal rather
+   * than a change to the animal itself.
    * ------------------------------------------------------------------------ */
 
   /* FNV-1a, because the ids being hashed are short and nearly identical -
      "wE:p1" and "wJ:p1" differ in one character, and a weaker hash hands them
-     the same tag. */
+     the same colour. */
   function fnv1a(text) {
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) {
@@ -804,22 +810,33 @@
     return hash >>> 0;
   }
 
-  /* Tag colours, chosen to stay apart from each other at the size of a pip and
-     to sit on any fleece: a sheep's status colour is the whole animal, so the
-     tag never has to compete with it. */
+  /* One colour per sheep, far enough apart from each other to be named across
+     a room. They do not have to avoid the status colours: a raddle mark is a
+     blob with a card-coloured outline on a whole animal of another colour. */
   const TAGS = [
-    "#ff7ab6", "#ff9f45", "#ffd43b", "#9ae64c", "#3ddc97", "#2ec4d6",
-    "#4d9dff", "#8b7bff", "#c77dff", "#ff6b6b", "#d9b38c", "#7de3ff",
+    "#ff5fa8", "#ff8c1a", "#ffd43b", "#7ee63c", "#12d18a", "#00c2d6",
+    "#3b8dff", "#8b5cff", "#d45cff", "#ff4d4d", "#c98a4b", "#5ff0ff",
   ];
 
-  // Patches of darker fleece. Ink over whatever colour the status painted.
-  const PATCH = {
-    a: '<circle cx="13.5" cy="17.5" r="3.2"/>',
-    b: '<circle cx="21" cy="14.5" r="2.6"/>',
-    c: '<circle cx="26.5" cy="18.5" r="2.8"/>',
-    d: '<circle cx="17" cy="20.5" r="2.4"/>',
+  /* Where the paint went. Big shapes: at this size a mark smaller than the
+     face is a smudge nobody can tell from another smudge. */
+  const RADDLE = {
+    shoulder: '<circle cx="13" cy="16.5" r="5"/>',
+    flank: '<circle cx="24.5" cy="17" r="4.6"/>',
+    rump: '<circle cx="30.5" cy="15" r="4.4"/>',
+    back: '<rect x="13" y="7.5" width="13" height="5.4" rx="2.7"/>',
+    belly: '<rect x="10" y="19" width="14" height="5" rx="2.5"/>',
   };
-  const FLEECES = [[], ["a"], ["c"], ["a", "c"], ["b", "d"], ["a", "b"], ["c", "d"], ["a", "b", "c"]];
+  const COATS = [
+    ["shoulder"],
+    ["flank"],
+    ["rump"],
+    ["back"],
+    ["belly"],
+    ["shoulder", "rump"],
+    ["back", "flank"],
+    ["shoulder", "belly"],
+  ];
 
   // Face shades a breed might come in. All stay light enough for a dark eye.
   const FACES = ["#dfe5f0", "#cbb392", "#a7b0c2"];
@@ -828,13 +845,13 @@
     const hash = fnv1a(String(seed || ""));
     return {
       tag: TAGS[hash % TAGS.length],
-      fleece: FLEECES[(hash >>> 5) % FLEECES.length],
+      coat: COATS[(hash >>> 5) % COATS.length],
       face: FACES[(hash >>> 11) % FACES.length],
     };
   }
 
   function sheepBody(dy, legs, marks) {
-    const patches = marks.fleece.map((key) => PATCH[key]).join("");
+    const paint = marks.coat.map((where) => RADDLE[where]).join("");
     return `
       <g transform="translate(0 ${dy})">
         <g fill="currentColor">
@@ -846,7 +863,7 @@
           <circle cx="31" cy="16" r="7"/>
           <rect x="5" y="13" width="27" height="13" rx="6.5"/>
         </g>
-        <g fill="#05070c" opacity="0.22">${patches}</g>
+        <g class="sheep-raddle" style="fill:${marks.tag}">${paint}</g>
       </g>`;
   }
 
@@ -856,25 +873,25 @@
     // Head down in the grass.
     graze: (m) => `
       <ellipse class="sheep-ear" cx="33.2" cy="15.2" rx="3" ry="1.8" transform="rotate(-42 33.2 15.2)"/>
-      <circle class="sheep-tag" cx="34.6" cy="13.6" r="2.1" style="fill:${m.tag}"/>
+      <circle class="sheep-tag" cx="34.6" cy="13.6" r="2.7" style="fill:${m.tag}"/>
       <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6" style="fill:${m.face}"/>
       <circle class="sheep-eye" cx="38.2" cy="18" r="1.2"/>`,
     // Head up, ear resting: done, waiting on you.
     stand: (m) => `
       <ellipse class="sheep-ear" cx="32.4" cy="9" rx="3" ry="1.8" transform="rotate(-38 32.4 9)"/>
-      <circle class="sheep-tag" cx="33.6" cy="7.2" r="2.1" style="fill:${m.tag}"/>
+      <circle class="sheep-tag" cx="33.6" cy="7.2" r="2.7" style="fill:${m.tag}"/>
       <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6" style="fill:${m.face}"/>
       <circle class="sheep-eye" cx="38.2" cy="11.4" r="1.2"/>`,
     // Ear pricked straight up: something is asking for an answer.
     alert: (m) => `
       <ellipse class="sheep-ear" cx="33.6" cy="6.2" rx="3.2" ry="1.7" transform="rotate(-72 33.6 6.2)"/>
-      <circle class="sheep-tag" cx="34.4" cy="3.6" r="2.1" style="fill:${m.tag}"/>
+      <circle class="sheep-tag" cx="34.4" cy="3.6" r="2.7" style="fill:${m.tag}"/>
       <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6" style="fill:${m.face}"/>
       <circle class="sheep-eye" cx="38.6" cy="8.8" r="1.3"/>`,
     // Lying down, eye shut, legs folded under.
     sleep: (m) => `
       <ellipse class="sheep-ear" cx="32.6" cy="20.4" rx="3" ry="1.8" transform="rotate(-30 32.6 20.4)"/>
-      <circle class="sheep-tag" cx="33.4" cy="18.4" r="2.1" style="fill:${m.tag}"/>
+      <circle class="sheep-tag" cx="33.4" cy="18.4" r="2.7" style="fill:${m.tag}"/>
       <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6" style="fill:${m.face}"/>
       <path class="sheep-lid" d="M36.4 24.2 q1.6 1.4 3.2 0"/>`,
   };

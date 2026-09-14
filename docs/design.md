@@ -33,18 +33,29 @@ situation. Shepherds have the problem too, and solved it long before software
 did: every sheep wears a numbered ear tag, and you learn the markings on the
 ones you see daily.
 
-So each pane gets its own, hashed out of its pane id: a tag colour from twelve,
-a patch of darker fleece from eight layouts, and one of three face shades. That
-is 288 sheep, and a herd of a dozen panes comes out all-distinct — the test
-asserts it over the pane ids Herdr actually hands out, which differ in one
-character (`wE:p1`, `wJ:p1`) and are exactly where a weaker hash than FNV-1a
-gives the whole flock the same tag.
+A real flock is *raddled*: a bright blob of paint sprayed on the fleece, with
+an ear tag to match, because a mark you have to squint at is no mark at all at
+the far end of a field. The same holds at the far end of a phone. The first
+attempt here was subtle — small dark patches, a tint on the muzzle — and at 34
+pixels wide it read as noise. Subtlety is for things you look *at*; this is a
+thing you glance at.
 
-The markings live in the space status does not use. The fleece colour and the
-pose stay status; identity is the small stuff — a pip on the ear, a dark patch,
-the shade of a muzzle — and neither can be read off the other. Because the seed
-is the pane id, a sheep is the same animal across a reload, a gateway restart,
-and the phone's whole life, and a new pane is a new sheep.
+So each pane hashes to one colour and wears it twice: sprayed across the
+fleece, and again on the ear tag. Where the paint landed is hashed too — eight
+layouts over shoulder, flank, rump, back and belly — as is one of three face
+shades. That is 288 sheep, and a herd of a dozen panes comes out all-distinct;
+the test asserts it over the pane ids Herdr actually hands out, which differ in
+one character (`wE:p1`, `wJ:p1`) and are exactly where a weaker hash than
+FNV-1a gives the whole flock the same colour. The animal itself also grew to
+44×34, because the markings are the reason for drawing an animal rather than a
+dot.
+
+Identity never touches what status owns. The fleece colour and the pose stay
+status; the paint sits on top of them, outlined in the card's colour the way
+the face and ear are — without that outline a yellow mark on an amber sheep is
+one shape again. Because the seed is the pane id, a sheep is the same animal
+across a reload, a gateway restart and the phone's whole life, and a new pane
+is a new sheep.
 
 ## The order of the flock
 

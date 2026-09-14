@@ -44,7 +44,7 @@ function loadMarks() {
   const to = src.indexOf("  /* Everything a row draws.");
   if (from < 0 || to < 0) throw new Error(`marks anchors moved in ${SRC}`);
   return new Function(
-    `${src.slice(from, to)} return { sheepMarks, sheepSvg, TAGS, FLEECES, FACES, knownStatus };`
+    `${src.slice(from, to)} return { sheepMarks, sheepSvg, TAGS, COATS, FACES, knownStatus };`
   )();
 }
 
@@ -282,7 +282,7 @@ function order(agents, pickerHidden = true, held = []) {
   const m = loadMarks();
   const key = (id) => {
     const marks = m.sheepMarks(id);
-    return `${marks.tag}|${marks.fleece.join("")}|${marks.face}`;
+    return `${marks.tag}|${marks.coat.join("")}|${marks.face}`;
   };
 
   /* A sheep that changes its markings is not an identity, it is noise. The
@@ -307,8 +307,8 @@ function order(agents, pickerHidden = true, held = []) {
   const tag = m.sheepMarks("wJ:p1").tag;
   check("the tag survives a change of status",
         [working.includes(tag), blocked.includes(tag)], [true, true]);
-  check("and so does the patch of dark fleece",
-        [working, blocked].map((svg) => svg.includes('cx="13.5" cy="17.5"')), [true, true]);
+  check("and so does the raddle on the fleece",
+        [working, blocked].map((svg) => svg.split(tag).length - 1), [2, 2]);
 
   // Nobody home is nobody to tell apart.
   check("an empty pasture wears no tag", m.sheepSvg("unknown", "wJ:p1").includes("sheep-tag"), false);
