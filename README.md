@@ -49,6 +49,10 @@ project telling you at a glance who is working and who is waiting.
   the home screen icon.
 - **A bleat.** A sheep answers when an agent stops and needs you, if the app is
   open.
+- **Send a screenshot.** The paperclip beside the composer opens the photo
+  library or the camera; the image is scaled down on the phone, written beside
+  the work, and its path goes into the prompt for the agent to read. Git never
+  sees it.
 - **Native dictation.** Talk to your agent using the iOS keyboard's mic.
 - **Drafts that stay put.** A half-written prompt belongs to the project it
   was typed for: switch away to check on another agent, come back, and it is
@@ -170,6 +174,26 @@ It only sounds while the app is open and in front of you — a notification
 cannot carry a custom sound on iOS, so this is not a replacement for the one
 above. iOS also refuses to let a page make any noise until it has been touched
 once, so the first tap anywhere in the app is what unlocks it.
+
+### Sending a screenshot
+
+Nothing to turn on. Tap the **paperclip** left of the composer and pick a photo,
+take one, or choose a file; iOS offers all three. The image is scaled to 1600px
+on the phone before it goes anywhere — a screenshot stays a PNG so its text
+stays sharp — and lands in `.sheepit/` inside the directory the agent is
+working in, with `@.sheepit/<name>.png` typed into the composer for you. Add
+your question around it and send.
+
+It goes *beside* the work on purpose: an agent reads a file in its own working
+directory without stopping to ask permission, which is the whole point of
+sending a picture from a phone. The directory is added to `.git/info/exclude`
+on first use — ignored for this clone only, nothing committed, nothing in the
+changed-files view — and images older than a week are cleared out as new ones
+arrive.
+
+The thumbnail strip above the composer shows what is attached. It is drawn from
+the paths in the text, so deleting the path (or tapping **×**) un-attaches the
+image; what you can see is exactly what will be sent.
 
 ### Dictation
 

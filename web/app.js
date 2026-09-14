@@ -54,6 +54,9 @@
   const elPromptInput = document.getElementById("prompt-input");
   const elTerminalInput = document.getElementById("terminal-input");
   const elCompleteBar = document.getElementById("complete-bar");
+  const elBtnAttach = document.getElementById("btn-attach");
+  const elAttachInput = document.getElementById("attach-input");
+  const elAttachStrip = document.getElementById("attach-strip");
   const elTerminalInputRow = document.getElementById("terminal-input-row");
   const elBtnAdopt = document.getElementById("btn-adopt");
   const elBtnCycleMode = document.getElementById("btn-cycle-mode");
@@ -1092,6 +1095,7 @@
     touchAgent(paneId);
     state.activePaneId = paneId;
     restoreDraft(paneId);
+    renderAttachments();
     state.historyText = "";
     elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
     triggerHaptic();
@@ -1219,6 +1223,7 @@
       clearDraft(state.activePaneId);
       elPromptInput.value = "";
       hideCompletions();
+      renderAttachments();
       autoResizeTextarea();
       elBtnSend.disabled = true;
 
@@ -1377,6 +1382,185 @@
     elPromptInput.style.height = `${Math.min(elPromptInput.scrollHeight, cap)}px`;
     elBtnSend.disabled = elPromptInput.value.trim().length === 0;
   }
+
+  /* -------------------------------------------------------- Attachments ---
+   *
+   * A screenshot is the one thing the phone has that the laptop does not, and
+   * there was no way to hand one over: Claude Code pastes images from the
+   * clipboard of the machine it runs on, and the console forwards keystrokes
+   * rather than bytes. So the image goes up to the gateway, which writes it
+   * beside the work, and the prompt carries its path - a thing both agents
+   * already understand.
+   *
+   * The composer's text is the attachment. Thumbnails are drawn from whatever
+   * paths are still in it, so deleting the path takes the picture with it and
+   * the two can never disagree about what is being sent.
+   * ---------------------------------------------------------------------- */
+
+  // Long edge of what gets uploaded. A phone photo is four thousand pixels
+  // wide, an agent reads it at a fraction of that, and the difference is
+  // several seconds of someone's cellular connection.
+  const MAX_EDGE = 1600;
+  // Below this a screenshot goes up untouched: re-encoding costs the crispness
+  // that makes the text in it readable, which is usually the point of sending
+  // one.
+  const KEEP_AS_IS = 1.2 * 1024 * 1024;
+
+  // path -> object URL of the image that was uploaded to it.
+  const attachUrls = new Map();
+
+  /* Scale an image down before it goes anywhere. Everything here is allowed to
+     fail: if the browser will not decode it, the original bytes are still a
+     perfectly good upload. */
+  async function shrinkImage(file) {
+    const isPng = file.type === "image/png";
+    try {
+      const bitmap = await createImageBitmap(file);
+      const longest = Math.max(bitmap.width, bitmap.height);
+      const scale = Math.min(1, MAX_EDGE / longest);
+      if (scale === 1 && file.size <= KEEP_AS_IS) {
+        bitmap.close();
+        return file;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const type = isPng ? "image/png" : "image/jpeg";
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, 0.86));
+      return blob || file;
+    } catch (err) {
+      return file; // HEIC on a browser that will not decode it, say
+    }
+  }
+
+  async function uploadAttachment(file) {
+    if (!state.activePaneId) return null;
+    const blob = await shrinkImage(file);
+    const res = await fetch(`/api/agents/${encodeURIComponent(state.activePaneId)}/attach`, {
+      method: "POST",
+      headers: { "Content-Type": blob.type || file.type || "image/png" },
+      body: blob,
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "the gateway would not take it");
+    attachUrls.set(data.path, URL.createObjectURL(blob));
+    return data.path;
+  }
+
+  /* Put the path where the caret is, as an @mention: that is how you point an
+     agent at a file by hand, and it is what the completion bar already writes. */
+  function insertAttachment(path) {
+    const value = elPromptInput.value;
+    const at = elPromptInput.selectionStart ?? value.length;
+    const before = value.slice(0, at);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const text = `${lead}@${path} `;
+    elPromptInput.value = before + text + value.slice(at);
+    const caret = at + text.length;
+    try {
+      elPromptInput.setSelectionRange(caret, caret);
+    } catch (err) {
+      /* not focused; the text is what matters */
+    }
+    autoResizeTextarea();
+    rememberDraft();
+  }
+
+  async function attachFiles(files) {
+    if (!files || !files.length) return;
+    if (!state.activePaneId) return;
+    triggerHaptic();
+    setAttachBusy(true);
+    for (const file of files) {
+      try {
+        const path = await uploadAttachment(file);
+        if (path) insertAttachment(path);
+      } catch (err) {
+        /* Not an alert(): iOS stops showing those in an installed web app
+           once a few have been dismissed, and a silently dropped screenshot
+           looks exactly like one that went. */
+        showAttachError(err.message);
+      }
+    }
+    setAttachBusy(false);
+    renderAttachments();
+  }
+
+  function setAttachBusy(busy) {
+    elBtnAttach.classList.toggle("busy", busy);
+    elBtnAttach.disabled = busy;
+  }
+
+  function showAttachError(message) {
+    elAttachStrip.classList.remove("hidden");
+    elAttachStrip.innerHTML =
+      `<div class="attach-error">Could not attach it — ${escapeHtml(message)}</div>`;
+  }
+
+  // Every attachment path currently sitting in the composer, in order.
+  const RE_ATTACHED = /@(\.sheepit\/[A-Za-z0-9._-]+)/g;
+
+  function attachedPaths() {
+    return [...elPromptInput.value.matchAll(RE_ATTACHED)].map((m) => m[1]);
+  }
+
+  function renderAttachments() {
+    const paths = attachedPaths();
+    if (!paths.length) {
+      elAttachStrip.classList.add("hidden");
+      elAttachStrip.innerHTML = "";
+      return;
+    }
+    elAttachStrip.classList.remove("hidden");
+    elAttachStrip.innerHTML = paths
+      .map((path) => {
+        const url = attachUrls.get(path);
+        const name = path.split("/").pop();
+        return `
+          <span class="attach-chip" title="${escapeHtml(path)}">
+            ${url ? `<img src="${url}" alt="">` : ""}
+            <span class="attach-name">${escapeHtml(name)}</span>
+            <button type="button" class="attach-drop" data-path="${escapeHtml(path)}" aria-label="Remove">×</button>
+          </span>`;
+      })
+      .join("");
+  }
+
+  /* Dropping a thumbnail takes the path out of the composer, which is the only
+     thing that was ever going to be sent. The file stays on the machine; the
+     inbox clears itself out after a week. */
+  function dropAttachment(path) {
+    elPromptInput.value = elPromptInput.value
+      .replace(`@${path}`, "")
+      .replace(/[ \t]{2,}/g, " ")
+      .trimStart();
+    const url = attachUrls.get(path);
+    if (url) URL.revokeObjectURL(url);
+    attachUrls.delete(path);
+    autoResizeTextarea();
+    rememberDraft();
+    renderAttachments();
+    triggerHaptic();
+  }
+
+  elBtnAttach.addEventListener("click", () => {
+    if (!state.activePaneId) return;
+    elAttachInput.click();
+  });
+
+  elAttachInput.addEventListener("change", async () => {
+    const files = [...(elAttachInput.files || [])];
+    // Let the same file be picked twice in a row.
+    elAttachInput.value = "";
+    await attachFiles(files);
+  });
+
+  elAttachStrip.addEventListener("click", (e) => {
+    const drop = e.target.closest(".attach-drop");
+    if (drop) dropAttachment(drop.dataset.path);
+  });
 
   /* ------------------------------------------------------------- Queue --- */
 
@@ -2093,6 +2277,9 @@
     autoResizeTextarea();
     scheduleCompletion();
     rememberDraft();
+    // Deleting a path is how you un-attach an image, so the strip follows the
+    // text rather than keeping its own list to fall out of step with.
+    renderAttachments();
   });
   // Tapping a chip blurs the textarea, so the bar must outlive the blur long
   // enough for the click to land on it.

@@ -10,8 +10,11 @@ import time
 import json
 import hashlib
 import logging
+import secrets
 import threading
 import mimetypes
+import contextlib
+import subprocess
 from pathlib import Path
 from urllib.parse import urlparse, urlsplit, parse_qs, unquote
 from http import HTTPStatus
@@ -252,6 +255,112 @@ def last_finished() -> dict:
         return {"at": at, "age": age, "agents": list(_LAST_FINISHED["agents"])}
 
 
+# ---------------------------------------------------------------- attachments
+#
+# A screenshot is the one thing a phone has that a laptop does not, and until
+# now there was no way to hand one to an agent: Claude Code pastes images from
+# the clipboard of the machine it runs on, which is not the machine you are
+# holding, and the console forwards keystrokes rather than bytes.
+#
+# So the phone uploads the image and the gateway writes it down beside the
+# work. The prompt then carries its path, which is a thing both agents already
+# understand.
+
+# What an agent can be handed, and what the file is called when it lands. The
+# content type decides the extension - never the name the client sent, which is
+# a string from a phone and belongs to nobody this server trusts.
+ATTACH_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/heic": ".heic",
+    "image/heif": ".heic",
+}
+
+# Three orders of magnitude above every other route, so it gets its own
+# ceiling rather than lifting the one that keeps the rest small. The phone
+# scales images down before sending; this is the room for one that arrives
+# whole anyway.
+MAX_ATTACHMENT = 16 * 1024 * 1024
+
+# Images land in the directory the agent is already working in, because
+# anywhere else costs a permission prompt per image on the desktop - and a
+# question you have to answer before the agent may look at the screenshot you
+# just sent is the whole problem again.
+INBOX = ".sheepit"
+
+# Long enough to still be there when you come back to the conversation, short
+# enough that a project does not silently collect every screenshot ever sent.
+INBOX_TTL = 7 * 86400
+
+
+def _git_exclude_inbox(root: Path) -> None:
+    """Keep the inbox out of the repository without touching a tracked file.
+
+    `.git/info/exclude` is `.gitignore` for one clone only: nobody else gets it
+    and it is never committed, which is exactly right for a directory this
+    machine's phone writes into. `--git-path` is what finds it in a linked
+    worktree, where `.git` is a file pointing elsewhere.
+    """
+    try:
+        found = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-path", "info/exclude"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+        if found.returncode != 0:
+            return  # not a repository; nothing to exclude it from
+        exclude = Path(found.stdout.strip())
+        if not exclude.is_absolute():
+            exclude = root / exclude
+        line = f"{INBOX}/"
+        existing = exclude.read_text() if exclude.exists() else ""
+        if line in existing.split():
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with exclude.open("a") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write(f"# images sent from SheepIt\n{line}\n")
+    except (OSError, subprocess.SubprocessError):
+        pass  # an un-excluded image is untidy; a failed upload is broken
+
+
+def _prune_inbox(inbox: Path) -> None:
+    cutoff = time.time() - INBOX_TTL
+    try:
+        for old in inbox.iterdir():
+            with contextlib.suppress(OSError):
+                if old.is_file() and old.stat().st_mtime < cutoff:
+                    old.unlink()
+    except OSError:
+        pass
+
+
+def save_attachment(cwd: str, data: bytes, content_type: str) -> str:
+    """Write an image beside the work and return the path to put in a prompt.
+
+    The path comes back relative to the agent's own directory: shorter to read
+    on a phone, and it is what the agent is already rooted at.
+    """
+    suffix = ATTACH_TYPES.get((content_type or "").split(";")[0].strip().lower())
+    if not suffix:
+        raise ValueError("that is not an image this can pass on")
+    root = Path(cwd)
+    if not root.is_dir():
+        raise ValueError("the pane is not anywhere this can write to")
+    inbox = root / INBOX
+    inbox.mkdir(parents=True, exist_ok=True)
+    _git_exclude_inbox(root)
+    _prune_inbox(inbox)
+    # Named for when it arrived, with enough randomness that two phones in the
+    # same second do not land on one file.
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    name = f"{stamp}-{secrets.token_hex(2)}{suffix}"
+    (inbox / name).write_bytes(data)
+    return f"{INBOX}/{name}"
+
+
 # A body large enough to be a mistake or a wedge. Every route here takes a
 # handful of short fields.
 MAX_BODY = 256 * 1024
@@ -264,7 +373,9 @@ CSP = "; ".join([
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    # blob: is the thumbnail of an image you just attached, drawn from the file
+    # the phone already has rather than fetched back off the gateway.
+    "img-src 'self' data: blob:",
     "connect-src 'self'",
     "media-src 'self'",
     "worker-src 'self'",
@@ -589,12 +700,55 @@ class HerdrHandler(BaseHTTPRequestHandler):
         # Serve static frontend files
         self.serve_static(path, head_only=self.head_only)
 
+    def handle_attach(self, pane_id: str) -> None:
+        """Take an image from the phone and put it where the agent can read it."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = -1
+        if length <= 0:
+            self.send_json({"ok": False, "error": "Nothing arrived"}, 400)
+            return
+        if length > MAX_ATTACHMENT:
+            self.send_json({"ok": False, "error": "That image is too big to send"},
+                           HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+
+        cwd = pane_cwd(pane_id)
+        if not cwd:
+            self.send_json({"ok": False, "error": "No such pane"}, 404)
+            return
+
+        data = self.rfile.read(length)
+        if len(data) != length:
+            self.send_json({"ok": False, "error": "The upload was cut short"}, 400)
+            return
+        try:
+            rel = save_attachment(cwd, data, self.headers.get("Content-Type", ""))
+        except ValueError as e:
+            self.send_json({"ok": False, "error": str(e)}, 400)
+            return
+        except OSError as e:
+            self.send_json({"ok": False, "error": f"Could not write it: {e}"}, 500)
+            return
+        self.send_json({"ok": True, "path": rel, "bytes": len(data)})
+
     def do_POST(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
         if not self.guard_origin(path):
             return
+
+        # An image arrives as itself rather than as JSON, and it is far too big
+        # for the ceiling the rest of these routes live under, so it is served
+        # before the body is read as anything.
+        # /api/agents/{pane_id}/attach
+        if path.startswith("/api/agents/") and path.endswith("/attach"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                self.handle_attach(unquote(parts[3]))
+                return
 
         # Read JSON body. Content-Length is the client's claim about it, so it
         # is checked rather than believed: every route here takes a few short
