@@ -2128,6 +2128,23 @@
     return state.queue.filter((p) => p.pane_id === paneId && p.state !== "sent");
   }
 
+  /* Why a prompt is still sitting there. A queue that holds without saying so
+     is indistinguishable from one that is broken - which is exactly how it
+     looked when a window ran out and the strip above said nothing about the
+     chat below it. Send now is the way past it, so the line says that too. */
+  function holdingNote() {
+    const row = (state.agents || []).find((a) => a.pane_id === state.activePaneId);
+    const kind = row && row.agent;
+    if (!kind || !state.quota) return "";
+    const reading = (state.quota.agents || []).find((a) => a.agent === kind);
+    if (!reading || !reading.blocked) return "";
+    const back = resetLabel(reading.resume_at);
+    const name = kind.replace(/^./, (c) => c.toUpperCase());
+    return `<div class="chat-queue-note">${escapeHtml(name)} has nothing left${
+      back ? ` until ${escapeHtml(back)}` : ""
+    } — Send now goes anyway</div>`;
+  }
+
   function renderChatQueue() {
     const queued = queuedFor(state.activePaneId);
     if (!queued.length) {
@@ -2136,12 +2153,13 @@
       state.queueSignature = null;
       return;
     }
-    const signature = queueSignature() + state.activePaneId;
+    const note = holdingNote();
+    const signature = queueSignature() + state.activePaneId + note;
     if (signature === state.queueSignature && !elChatQueue.classList.contains("hidden")) return;
     state.queueSignature = signature;
 
     elChatQueue.classList.remove("hidden");
-    elChatQueue.innerHTML = queued
+    elChatQueue.innerHTML = note + queued
       .map((p) => {
         const failed = p.state === "failed";
         const word = QUEUE_WORD[p.state] || p.state;

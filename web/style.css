@@ -1441,6 +1441,14 @@ html, body {
 
 .chat-queue.hidden { display: none; }
 
+/* Why nothing is moving. Only ever drawn when a window is actually out, which
+   is the one case where something you sent will sit there. */
+.chat-queue-note {
+  padding: 2px 2px 4px;
+  font-size: 11px;
+  color: var(--status-blocked);
+}
+
 .chat-queued {
   display: grid;
   grid-template-columns: auto 1fr;
