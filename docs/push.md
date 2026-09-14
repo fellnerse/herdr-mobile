@@ -1,13 +1,13 @@
 # Notifications on iOS
 
-Get told the moment an agent stops working — off your tailnet, on cellular,
-with the phone locked.
+Get told the moment an agent wants you — off your tailnet, on cellular, with
+the phone locked.
 
 ## Turning them on
 
 1. **Install the app to the home screen.** Web Push does not work in a Safari
    tab, only in an installed web app (iOS 16.4+).
-2. Open it from the home screen, then **gear → Notify when an agent finishes**,
+2. Open it from the home screen, then **gear → Notify when an agent needs you**,
    and accept the iOS prompt.
 
 Delivery goes through Apple's push service rather than your tailnet, which is
@@ -37,22 +37,26 @@ cannot do. Rather than take a dependency, SheepIt sends an empty push and lets
 the service worker fetch what it needs on wake.
 
 That costs something the payload would have carried for free: *which* agent
-just finished. The list alone cannot say — it only shows who is waiting now, so
+just stopped. The list alone cannot say — it only shows who is waiting now, so
 a notification built from it can describe the herd but never the event. So the
-gateway remembers. The watcher that spots the working → stopped transition
-records the panes it saw in `/api/push/last`, and `sw.js` reads that alongside
-`/api/agents`:
+gateway remembers. The watcher records the panes it saw stop in
+`/api/push/last`, and `sw.js` reads that alongside `/api/agents`:
 
 ```text
 title:  muskelmuskel finished          ← from /api/push/last
-body:   3 agents waiting for you       ← from /api/agents
+body:   Rewrite the importer · 2 more waiting
 ```
 
 Two agents stopping in the same sweep become *"muskelmuskel and ib-orbit
-finished"*; more than two, *"muskelmuskel and 3 others finished"*. A record
-older than two minutes is ignored as stale — a push arriving long after the
-event falls back to describing the list, as does a gateway that cannot be
-reached at all.
+finished"*; more than two, *"muskelmuskel and 3 others finished"*. One stopped
+on a question says *needs you* instead. A record older than two minutes is
+ignored as stale, and so is a gateway that cannot be reached at all: both fall
+back to *"An agent is waiting for you"*.
+
+What the notification will never do is lead with the herd's total. Reading
+*"3 agents waiting"* every time one agent finished made a single event look
+like every agent calling at once — so the count comes last, as *"2 more
+waiting"*, and only when there are others.
 
 The same handler sets the badge count, and collapses repeats into one
 notification so a burst of finishing agents does not become a burst of alerts.
@@ -62,6 +66,24 @@ name — and sometimes its terminal title — **on the lock screen**, where it i
 readable without unlocking the phone. Titles are whatever the agent set them
 to, which is usually what you asked it to do. The record itself is dropped
 after two minutes on both sides of the wire.
+
+## What earns a notification
+
+Only two things: a turn that has finished with nobody having looked at it yet
+(`done`), and an agent stopped on a question (`blocked`). The watcher polls
+`agent.list` every three seconds and pushes when a pane that has been working
+lands in one of them — once per piece of work, because the pane has to go back
+to `working` before it can be news again.
+
+`idle` is deliberately not on the list, and leaving it there is what made the
+phone buzz for everything. Herdr reports the prompt box as `idle`, and Claude
+Code passes through it constantly: every `/clear`, every interrupt, every pane
+you opened and never used. The one thing `idle` never means is that somebody
+finished something.
+
+A sweep where a pane merely drops out of `agent.list` — detection blinking,
+usually — says nothing either: the pane is remembered as having been working,
+and it notifies when it lands somewhere that wants you.
 
 ## Testing and troubleshooting
 

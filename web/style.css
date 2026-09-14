@@ -219,6 +219,52 @@ html, body {
   padding: 8px 12px max(12px, var(--safe-bottom)) 12px;
 }
 
+/* One project, its sheep beneath it. The heading sticks to the top of the
+   list while you scroll past a project with a lot of them, so the flock you
+   are looking at always says whose it is. */
+.agent-group { margin-bottom: 14px; }
+
+.agent-group-head {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 2px 6px;
+  padding: 6px 2px;
+  background: var(--bg-base);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.agent-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* The only thing in a heading worth colouring: somebody is waiting on you. */
+.agent-group-waiting {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--status-blocked);
+}
+
 /* Row sits in a clipping wrapper so the Close action can hide behind it. */
 .agent-row-wrap {
   position: relative;

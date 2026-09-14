@@ -179,7 +179,7 @@ Two consequences worth knowing:
 
 | | |
 |---|---|
-| `GET /api/agents` | The herd: one row per pane, with status, cwd and recency. |
+| `GET /api/agents` | The herd: one row per pane, with status, cwd, the project it belongs to, and recency. |
 | `GET /api/agents/{pane}/history` | Scrollback as text or ANSI. |
 | `GET /api/agents/{pane}/changes` | What git says the agent changed. |
 | `GET /api/agents/{pane}/diff?path=` | One file's unified diff. |

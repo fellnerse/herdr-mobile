@@ -14,6 +14,8 @@
     activity: {},
     drafts: {},
     order: [],
+    groups: [],
+    pickerOpen: false,
     bleat: true,
     statuses: null,
     showKeys: true,
@@ -78,6 +80,7 @@
   const elQueueView = document.getElementById("queue-view");
   const elBtnCloseQueue = document.getElementById("btn-close-queue");
   const elQuotaStrip = document.getElementById("quota-strip");
+  const elPickerQuota = document.getElementById("picker-quota");
   const elTaskList = document.getElementById("task-list");
   const elBtnNewTask = document.getElementById("btn-new-task");
   const elTaskSheet = document.getElementById("task-sheet");
@@ -152,8 +155,11 @@
     const before = state.statuses;
     state.statuses = now;
     if (!before) return; // first sweep: everything looks new, nothing finished
+    /* The same event the gateway pushes for: an agent that was working has
+       stopped somewhere it needs you. Bleating at `idle` too meant a sheep
+       answered every interrupt and every `/clear`. */
     const finished = Object.keys(now).some(
-      (id) => before[id] === "working" && now[id] && now[id] !== "working"
+      (id) => before[id] === "working" && WAITING.includes(now[id])
     );
     if (finished) playBleat();
   }
@@ -695,7 +701,8 @@
 
       state.agents = data.agents || [];
       bleatForFinished(state.agents);
-      sortAgentsByRecency();
+      trackActivity();
+      orderAgents();
       renderAgentBar();
       updateBadge();
 
@@ -724,8 +731,12 @@
      the only thing that can still change - it counts the agents waiting on
      you, and clears itself as you answer them. Needs an installed web app and
      granted notification permission; anywhere else the call is simply absent
-     or a no-op. */
-  const WAITING = ["idle", "done", "blocked"];
+     or a no-op.
+
+     Waiting means a turn that ended with nobody looking at it yet, or a
+     question on screen. A pane parked at its prompt is not waiting for
+     anything, and counting those kept a number on the icon all day. */
+  const WAITING = ["done", "blocked"];
 
   function updateBadge() {
     if (!("setAppBadge" in navigator)) return;
@@ -840,22 +851,52 @@
      its HTML restarts each sheep's graze mid-cycle and throws away the row a
      swipe is holding open - so redraw only when one of these actually moved. */
   function agentListSignature() {
-    return state.agents
-      .map((a) =>
+    return state.groups
+      .map((group) =>
         [
-          a.pane_id,
-          a.workspace_id,
-          a.status,
-          a.name,
-          a.title || a.cwd,
-          agoLabel(a.pane_id),
-          a.pane_id === state.activePaneId ? "1" : "",
-        ].join("\u001f")
+          group.key,
+          group.name,
+          ...group.agents.map((a) =>
+            [
+              a.pane_id,
+              a.workspace_id,
+              a.status,
+              a.name,
+              a.title || a.cwd,
+              agoLabel(a.pane_id),
+              a.pane_id === state.activePaneId ? "1" : "",
+            ].join("\u001f")
+          ),
+        ].join("\u001e")
       )
-      .join("\u001e");
+      .join("\u001d");
   }
 
-  // Full-screen project list
+  function agentRowHtml(agent) {
+    const isActive = agent.pane_id === state.activePaneId;
+    const status = knownStatus(agent.status);
+    const subtitle = agent.title || agent.cwd || "";
+    return `
+      <div class="agent-row-wrap">
+        <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+        <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
+          <span class="sheep-wrap ${status}">${sheepSvg(status)}</span>
+          <span class="agent-row-text">
+            <span class="agent-row-name">${escapeHtml(agent.name || agent.pane_id)}</span>
+            <span class="agent-row-title">${escapeHtml(subtitle)}</span>
+          </span>
+          <span class="agent-row-side">
+            <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
+            <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
+          </span>
+        </button>
+      </div>
+    `;
+  }
+
+  /* The full-screen overview: a heading per project, that project's own sheep
+     under it. The heading counts the ones asking you something, because that
+     is the number the list was opened to find. */
   function renderAgentList() {
     if (state.agents.length === 0) {
       state.listSignature = null;
@@ -869,27 +910,20 @@
     if (signature === state.listSignature) return;
     state.listSignature = signature;
 
-    elAgentList.innerHTML = state.agents
-      .map((agent) => {
-        const isActive = agent.pane_id === state.activePaneId;
-        const status = knownStatus(agent.status);
-        const subtitle = agent.title || agent.cwd || "";
+    elAgentList.innerHTML = state.groups
+      .map((group) => {
+        const waiting = group.agents.filter(wantsInput).length;
+        const tally = waiting
+          ? `<span class="agent-group-waiting">${waiting} waiting</span>`
+          : `<span class="agent-group-count">${group.agents.length}</span>`;
         return `
-          <div class="agent-row-wrap">
-            <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
-            <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-              <span class="sheep-wrap ${status}">${sheepSvg(status)}</span>
-              <span class="agent-row-text">
-                <span class="agent-row-name">${escapeHtml(agent.name || agent.pane_id)}</span>
-                <span class="agent-row-title">${escapeHtml(subtitle)}</span>
-              </span>
-              <span class="agent-row-side">
-                <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
-                <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
-              </span>
-            </button>
-          </div>
-        `;
+          <section class="agent-group">
+            <h2 class="agent-group-head">
+              <span class="agent-group-name">${escapeHtml(group.name)}</span>
+              ${tally}
+            </h2>
+            ${group.agents.map(agentRowHtml).join("")}
+          </section>`;
       })
       .join("");
   }
@@ -939,11 +973,15 @@
 
   function openPicker() {
     triggerHaptic();
+    state.pickerOpen = true;
     renderAgentList();
+    renderQuota();
+    fetchQuota();
     elAgentPicker.classList.remove("hidden");
   }
 
   function closePicker() {
+    state.pickerOpen = false;
     elAgentPicker.classList.add("hidden");
   }
 
@@ -1283,7 +1321,7 @@
       const res = await fetch("/api/queue/quota");
       state.quota = await res.json();
       state.quotaAt = Date.now();
-      if (state.queueOpen) renderQuota();
+      if (state.queueOpen || state.pickerOpen) renderQuota();
     } catch (err) {
       /* keep the last reading */
     }
@@ -1304,16 +1342,14 @@
     return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}m`;
   }
 
-  function renderQuota() {
+  /* How much subscription is left. The queue shows it because it decides what
+     it may start, and the overview shows it because it is the same question
+     asked about the herd already running: what is there left to spend. */
+  function quotaHtml() {
     const q = state.quota;
-    if (!q) {
-      elQuotaStrip.innerHTML = '<div class="quota-note">Reading usage…</div>';
-      return;
-    }
+    if (!q) return '<div class="quota-note">Reading usage…</div>';
     if (q.ok === false) {
-      elQuotaStrip.innerHTML =
-        `<div class="quota-note blocked">${escapeHtml(q.error || "usage unavailable")}</div>`;
-      return;
+      return `<div class="quota-note blocked">${escapeHtml(q.error || "usage unavailable")}</div>`;
     }
 
     /* Buckets that are empty and have no window carry no information - they
@@ -1338,9 +1374,16 @@
       ? `<div class="quota-note blocked">No usage left — next window in ${escapeHtml(relTime(q.resume_at))}</div>`
       : `<div class="quota-note">Clear to run · pauses at ${q.threshold.toFixed(0)}%</div>`;
 
-    elQuotaStrip.innerHTML = rows + note + (q.stale
+    return rows + note + (q.stale
       ? '<div class="quota-note">cached — could not reach the usage endpoint</div>'
       : "");
+  }
+
+  // Both strips carry the same reading; whichever view is up draws it.
+  function renderQuota() {
+    const html = quotaHtml();
+    elQuotaStrip.innerHTML = html;
+    elPickerQuota.innerHTML = html;
   }
 
   // Which chat a prompt is queued for, named the way the picker names it.
@@ -1535,7 +1578,7 @@
     // Cheap: a local SQLite read. Keeps the header badge honest even when the
     // queue is closed.
     await fetchQueue();
-    if (state.queueOpen) await fetchQuota();
+    if (state.queueOpen || state.pickerOpen) await fetchQuota();
   }
 
   function startPolling() {
@@ -1693,14 +1736,13 @@
     savePref(ACTIVITY_KEY, JSON.stringify(state.activity));
   }
 
-  /* Stamp anything whose sequence moved, forget panes that are gone, and sort
-     newest first. On a first run nothing is known and every pane stamps the
-     same instant, so the sequence itself breaks the tie - the order is right
-     immediately instead of after a day of watching. */
+  /* Stamp anything whose sequence moved and forget panes that are gone. This
+     is what dates the "3m" on a row; the order of the list is somebody else's
+     job entirely. */
   // How many polls a pane may be missing from the list before it is forgotten.
   const FORGET_AFTER_MISSES = 5;
 
-  function sortAgentsByRecency() {
+  function trackActivity() {
     const now = Date.now();
     const next = {};
     let changed = false;
@@ -1738,22 +1780,89 @@
 
     state.activity = next;
     if (changed) saveActivity();
+  }
 
+  /* ----------------------------------------------------------- The flock ---
+   *
+   * The overview is the herd sorted the way you look for things in it: by the
+   * project the sheep is grazing, then by the one fact that cannot wait.
+   *
+   * Ordering used to follow whatever moved last, which meant the list
+   * rearranged itself under your thumb every few seconds - five sheep on one
+   * project, each finishing a tool call, and the row you were reaching for was
+   * somewhere else by the time you got there. Creation order never moves: a
+   * project's sheep stay where you last saw them, and a new one joins the end
+   * of its own project rather than jumping to the front of everything.
+   *
+   * The single exception is an agent stopped on a question. It is the only
+   * state that goes nowhere at all without you, so it rises to the top of its
+   * project and carries its project to the top of the list.
+   * ------------------------------------------------------------------------ */
+
+  /* When a row was created, as a number that only ever grows. Herdr numbers
+     workspaces in the order they were opened and never renumbers them, and a
+     pane's own index orders the several agents one workspace can hold. */
+  function bornAt(agent) {
+    const ws = Number(agent.workspace_number);
+    const pane = Number((agent.pane_id || "").split(":p")[1]) || 0;
+    return (Number.isFinite(ws) ? ws : Number.MAX_SAFE_INTEGER) * 1000 + pane;
+  }
+
+  // The one thing nothing moves off without you: an agent asking a question.
+  function wantsInput(agent) {
+    return agent.has_agent && agent.status === "blocked";
+  }
+
+  /* Which project a row belongs under. The gateway reads it off Herdr's
+     worktree record - so the scheduler's `sheep/` branches land under the
+     repository they were cut from - and falls back to the directory. */
+  function projectKey(agent) {
+    return agent.project || agent.cwd || agent.workspace_id || "";
+  }
+
+  // Split the flock into projects, keeping each project's rows in the order
+  // they arrived. Whoever calls decides what that order is.
+  function groupByProject(agents) {
+    const groups = new Map();
+    for (const agent of agents) {
+      const key = projectKey(agent);
+      let group = groups.get(key);
+      if (!group) {
+        group = { key, name: agent.project_name || agent.name || key, agents: [] };
+        groups.set(key, group);
+      }
+      group.agents.push(agent);
+    }
+    return [...groups.values()];
+  }
+
+  function orderAgents() {
     /* Never reshuffle a list somebody is looking at: an agent changing state
        would slide a row out from under the thumb about to tap it. Hold the
        last order until the picker closes. */
-    if (!elAgentPicker.classList.contains("hidden") && state.order.length) {
+    const held = !elAgentPicker.classList.contains("hidden") && state.order.length;
+    if (held) {
       const rank = new Map(state.order.map((id, i) => [id, i]));
       const at = (id) => (rank.has(id) ? rank.get(id) : Number.MAX_SAFE_INTEGER);
       state.agents.sort((a, b) => at(a.pane_id) - at(b.pane_id));
+      // A pane that appeared while you were reading joins its own project at
+      // the end, rather than being stranded below every group.
+      state.groups = groupByProject(state.agents);
       return;
     }
 
-    state.agents.sort((a, b) => {
-      const x = state.activity[a.pane_id] || { ts: 0, seq: 0 };
-      const y = state.activity[b.pane_id] || { ts: 0, seq: 0 };
-      return y.ts - x.ts || y.seq - x.seq;
-    });
+    const groups = groupByProject(state.agents);
+    for (const group of groups) {
+      group.agents.sort(
+        (a, b) => Number(wantsInput(b)) - Number(wantsInput(a)) || bornAt(a) - bornAt(b)
+      );
+      group.wants = group.agents.some(wantsInput);
+      group.born = Math.min(...group.agents.map(bornAt));
+    }
+    groups.sort((a, b) => Number(b.wants) - Number(a.wants) || a.born - b.born);
+
+    state.groups = groups;
+    state.agents = groups.flatMap((g) => g.agents);
     state.order = state.agents.map((a) => a.pane_id);
   }
 

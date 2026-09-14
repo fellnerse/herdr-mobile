@@ -111,6 +111,28 @@ def agent_rows() -> list:
     return build_agent_rows(ws_list, panes, agents_raw)
 
 
+def project_of(ws: dict, pane: dict) -> tuple:
+    """Which project a row belongs to: its key and the name to show.
+
+    Herdr knows this for a workspace it opened on a repository - `worktree`
+    carries the repo root even when the checkout is a linked worktree, which is
+    what puts the scheduler's `sheep/` branches under the project they were cut
+    from rather than in five projects of their own.
+
+    A workspace opened by hand has no `worktree` at all, so the directory is
+    the best key there is. It agrees with the repo root whenever the pane sits
+    at the top of a checkout, which is the common case.
+    """
+    tree = ws.get("worktree") or {}
+    root = tree.get("repo_root") or ""
+    if root:
+        return root, tree.get("repo_name") or root.rstrip("/").rsplit("/", 1)[-1]
+    cwd = (pane.get("cwd") or "").rstrip("/")
+    if cwd:
+        return cwd, cwd.rsplit("/", 1)[-1] or cwd
+    return "", ws.get("label") or "elsewhere"
+
+
 def build_agent_rows(ws_list: list, panes: list, agents_raw: list) -> list:
     """One row per pane running an agent, grouped under its workspace.
 
@@ -142,11 +164,15 @@ def build_agent_rows(ws_list: list, panes: list, agents_raw: list) -> list:
             # Disambiguate only when this workspace contributes several rows.
             if label and len(chosen_panes) > 1:
                 label = f"{label} \u00b7{pane_id.rsplit(':p', 1)[-1]}"
+            project, project_name = project_of(ws, chosen)
             rows.append({
                 "pane_id": pane_id,
                 "name": label or a.get("name") or pane_id,
                 "workspace_label": ws.get("label") or "",
                 "workspace_number": ws.get("number"),
+                # What the phone groups the flock by, and the heading it draws.
+                "project": project,
+                "project_name": project_name,
                 "agent": a.get("agent"),
                 "status": a.get("agent_status", "unknown"),
                 "title": a.get("terminal_title_stripped") or a.get("terminal_title") or "",
@@ -155,8 +181,8 @@ def build_agent_rows(ws_list: list, panes: list, agents_raw: list) -> list:
                 "tab_id": chosen.get("tab_id"),
                 "focused": ws.get("focused", False),
                 "has_agent": pane_id in by_pane,
-                # Monotonic; the client watches it to order projects by
-                # whichever one last did something.
+                # Monotonic; the client watches it to date the last thing a
+                # project actually did.
                 "state_change_seq": a.get("state_change_seq", 0),
             })
     return rows
@@ -824,47 +850,82 @@ class HerdrHandler(BaseHTTPRequestHandler):
 
 
 class StatusWatcher(threading.Thread):
-    """Notify when an agent stops working - the transition that chimes on the
-    desktop. Herdr's event stream is per-pane, so it would need constant
-    re-subscription as panes come and go; polling one cheap RPC over a local
-    UNIX socket is simpler and does not miss newly created panes."""
+    """Notify when an agent stops and wants something - the transition that
+    chimes on the desktop. Herdr's event stream is per-pane, so it would need
+    constant re-subscription as panes come and go; polling one cheap RPC over a
+    local UNIX socket is simpler and does not miss newly created panes."""
 
     INTERVAL = 3.0
     BUSY = {"working"}
+    # Where an agent stops and cannot go on by itself: `done` is a turn that
+    # ended and nobody has looked at it yet, `blocked` is a question on screen.
+    # `idle` is neither - it is the prompt box, which Herdr also reports for a
+    # pane you have already seen, one that was interrupted, and one nothing was
+    # ever asked of. Notifying on that is what made the phone buzz for
+    # everything.
+    WANTS_A_PERSON = {"done", "blocked"}
 
     def __init__(self):
         super().__init__(daemon=True)
-        self.previous = {}
+        # Panes that have been working since the last thing we said about them.
+        self.busy_since_told = set()
 
     def run(self):
-        # Skip the first sweep so a restart does not fire for agents that
+        # The first sweep only seeds: a restart must not fire for agents that
         # were already finished before we started watching.
-        self.previous = self.snapshot()
+        self.observe(self.snapshot(), tell=False)
         while True:
             time.sleep(self.INTERVAL)
             try:
                 current = self.snapshot()
             except Exception:
                 continue
-            stopped = [
-                pane
-                for pane, status in current.items()
-                if self.previous.get(pane) in self.BUSY and status not in self.BUSY
-            ]
-            if stopped:
-                # Name them before pushing: the notification wants to say which
-                # agent finished, and only this side of the wire knows.
+            stopped = self.observe(current)
+            if not stopped:
+                continue
+            # Name them before pushing: the notification wants to say which
+            # agent stopped and what it wants, and only this side of the wire
+            # knows.
+            try:
+                rows = {r.get("pane_id"): r for r in agent_rows()}
+                record_finished([rows[p] for p in stopped if p in rows])
+            except Exception as e:
+                print(f"naming finished agents failed: {e}", file=sys.stderr)
+            if push.load_subs():
                 try:
-                    rows = {r.get("pane_id"): r for r in agent_rows()}
-                    record_finished([rows[p] for p in stopped if p in rows])
+                    push.broadcast()
                 except Exception as e:
-                    print(f"naming finished agents failed: {e}", file=sys.stderr)
-                if push.load_subs():
-                    try:
-                        push.broadcast()
-                    except Exception as e:
-                        print(f"push failed: {e}", file=sys.stderr)
-            self.previous = current
+                    print(f"push failed: {e}", file=sys.stderr)
+
+    def observe(self, current: dict, tell: bool = True) -> list:
+        """Which panes have just stopped in a state that wants a person.
+
+        Two rules, and between them they are the whole thing:
+
+        * The pane must have been working since the last time we said
+          something about it. That is what makes one notification per piece of
+          work rather than one per sweep - and it is what a phone buzzing
+          every three seconds was missing.
+        * It must have stopped somewhere a person is needed. `idle` is not
+          that: a pane sitting at its prompt has either been seen already or
+          never started, and Claude Code passes through it constantly - every
+          `/clear`, every interrupt, every pane you opened and did not use.
+        """
+        stopped = []
+        for pane, status in current.items():
+            if status in self.BUSY:
+                self.busy_since_told.add(pane)
+                continue
+            if status not in self.WANTS_A_PERSON:
+                continue
+            if pane not in self.busy_since_told:
+                continue
+            self.busy_since_told.discard(pane)
+            if tell:
+                stopped.append(pane)
+        # A pane that is gone cannot be waiting on anybody.
+        self.busy_since_told &= set(current)
+        return stopped
 
     @staticmethod
     def snapshot() -> dict:

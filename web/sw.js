@@ -1,10 +1,14 @@
 /* Service worker for Sheep It.
  *
  * Pushes carry no payload (encrypting one needs crypto the stdlib-only
- * gateway cannot do), so on wake we fetch the agent list ourselves and
- * describe whatever is no longer working. */
+ * gateway cannot do), so on wake we fetch the agent list ourselves, together
+ * with the transition the gateway parked, and describe that. */
 
-const IDLE = ["idle", "done", "blocked"];
+/* What counts as waiting on you: a turn that ended and nobody has looked at
+   it yet, and an agent stopped on a question. A pane merely sitting at its
+   prompt is not waiting for anything - counting those is what made one agent
+   finishing read as the whole herd calling for you. */
+const WAITING = ["done", "blocked"];
 
 /* The home screen icon itself is frozen at install time - iOS snapshots it and
    never asks again - so the badge is the only part of it that can still say
@@ -44,19 +48,31 @@ async function readJson(res) {
   }
 }
 
-function whoFinished(last) {
-  if (!last || !last.agents || !last.agents.length) return "";
-  if (last.age !== null && last.age > FRESH_SECONDS) return ""; // a stale record
-  const names = last.agents.map((a) => a.name).filter(Boolean);
-  if (!names.length) return "";
-  if (names.length === 1) return `${names[0]} finished`;
-  if (names.length === 2) return `${names[0]} and ${names[1]} finished`;
-  return `${names[0]} and ${names.length - 1} others finished`;
+function names(agents) {
+  const list = agents.map((a) => a.name).filter(Boolean);
+  if (!list.length) return "";
+  if (list.length === 1) return list[0];
+  if (list.length === 2) return `${list[0]} and ${list[1]}`;
+  return `${list[0]} and ${list.length - 1} others`;
 }
 
-function waitingLine(count) {
-  if (count <= 0) return "Tap to open.";
-  return count === 1 ? "1 agent waiting for you" : `${count} agents waiting for you`;
+/* Describe the event the gateway parked, and only that event. Saying "3 agents
+   waiting" in the title made every agent that had ever stopped look like it
+   had just stopped again - so the herd's total, if it is said at all, is said
+   last and as background. */
+function describe(last) {
+  if (!last || !last.agents || !last.agents.length) return null;
+  if (last.age !== null && last.age > FRESH_SECONDS) return null; // a stale record
+  const who = names(last.agents);
+  if (!who) return null;
+  const asking = last.agents.filter((a) => a.status === "blocked");
+  if (asking.length === last.agents.length) {
+    return { title: `${who} needs you`, body: last.agents[0].title || "A question is waiting." };
+  }
+  if (asking.length) {
+    return { title: `${who} stopped`, body: `${names(asking)} is asking something.` };
+  }
+  return { title: `${who} finished`, body: last.agents[0].title || "Tap to open." };
 }
 
 self.addEventListener("push", (event) => {
@@ -73,25 +89,26 @@ self.addEventListener("push", (event) => {
         const data = await readJson(agentsRes);
         const last = await readJson(lastRes);
 
-        const done = ((data && data.agents) || []).filter(
-          (a) => a.has_agent && IDLE.includes(a.status)
+        const waiting = ((data && data.agents) || []).filter(
+          (a) => a.has_agent && WAITING.includes(a.status)
         );
         /* Only when the list was actually read. Off the tailnet the fetch
            fails, and clearing the badge on that would wipe the one part of a
            frozen home screen icon that still says anything. */
-        if (data) await setBadge(done.length);
+        if (data) await setBadge(waiting.length);
 
-        const finished = whoFinished(last);
-        if (finished) {
-          title = finished;
-          body = waitingLine(done.length);
-        } else if (done.length === 1) {
-          // No usable record: fall back to describing the list.
-          title = done[0].name || "Agent finished";
-          body = done[0].title || `${done[0].status} — tap to open`;
-        } else if (done.length > 1) {
-          title = `${done.length} agents waiting`;
-          body = done.map((a) => a.name).join(", ");
+        const said = describe(last);
+        if (said) {
+          title = said.title;
+          body = said.body;
+          // The rest of the herd is context, never the headline.
+          if (waiting.length > last.agents.length) {
+            body += ` · ${waiting.length - last.agents.length} more waiting`;
+          }
+        } else if (waiting.length === 1) {
+          // No usable record: say the least that is still true.
+          title = waiting[0].name || "Agent finished";
+          body = waiting[0].title || "Tap to open.";
         }
       } catch (err) {
         /* offline or gateway down: the generic text above still fires */
