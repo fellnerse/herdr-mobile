@@ -460,6 +460,45 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
         [/sheep-wrap working/.test(busy), /sheep-wrap blocked/.test(other)], [true, true]);
 }
 
+// -- a row with something waiting behind it ----------------------------------
+
+/* A prompt typed and not yet handed over is the row's state as much as the
+   agent's: an agent working with two prompts stacked behind it is a different
+   thing to look at than one that is merely working. The counting is checked
+   further down; this is the row actually carrying it. */
+{
+  const rows = loadRows();
+  const busy = () => ({ ...row("wA:p1", 1, "/p/api", "working"), name: "api",
+                        title: "Rewrite the importer" });
+  const drawn = (queue) => {
+    rows.state.queue = queue;
+    return rows.agentRowHtml(busy(), "api", rows.queuedByPane().get("wA:p1"));
+  };
+
+  check("a chat with nothing waiting says nothing",
+        /agent-row-queued/.test(drawn([])), false);
+
+  const waiting = drawn([
+    { id: 1, pane_id: "wA:p1", state: "waiting" },
+    { id: 2, pane_id: "wA:p1", state: "waiting" },
+  ]);
+  check("two waiting prompts are counted", />2 queued</.test(waiting), true);
+  check("beside what the agent itself is doing", />working</.test(waiting), true);
+
+  // Another chat's queue is not this row's business.
+  check("a prompt for another chat is not drawn here",
+        /agent-row-queued/.test(drawn([{ id: 3, pane_id: "wB:p1", state: "waiting" }])), false);
+
+  // One that could not be delivered is not waiting for a window; it is waiting
+  // for you, and the row marks it apart.
+  const failed = drawn([
+    { id: 4, pane_id: "wA:p1", state: "waiting" },
+    { id: 5, pane_id: "wA:p1", state: "failed" },
+  ]);
+  check("a failed prompt is said as well", />1 queued · 1 failed</.test(failed), true);
+  check("and marks the row", /agent-row-queued failed/.test(failed), true);
+}
+
 // -- telling two sheep apart -------------------------------------------------
 
 {
