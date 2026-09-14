@@ -127,8 +127,13 @@ its `label`, not its `number` — see `tabNumber`.
 
 **The queue waits for the window.** Prompts from the phone go to `/api/queue`
 rather than straight to an agent: `gateway/scheduler/` holds them in SQLite and
-`dispatch.py` sends them when `quota.py` says the Claude usage window has room.
-`docs/scheduler.md` is the detail.
+`dispatch.py` sends them when `quota.py` says that agent's window has room —
+per agent, since Claude and Codex spend different subscriptions. `quota.py` has
+two sources for each: what the API says (Claude only, token from the Keychain on
+macOS) and what the agent wrote down itself (`.claude.json`'s cached reading,
+Codex's rollout `rate_limits`), which needs no credentials. An agent that cannot
+be priced is delivered to rather than held — a hold is forever, and nothing
+retries it. `docs/scheduler.md` is the detail.
 
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's
@@ -158,6 +163,12 @@ refuses paths that escape the pane's directory.
   (the order), `function agentRowHtml(` → `async function createWorkspace() {`
   (a row's markup), and `const POSE = {` → `/* Everything a row draws.` (the
   sheep and their markings).
+- **The gateway runs on Python 3.9.** The menubar app launches it with the
+  python Xcode ships, so `str | None` outside `from __future__ import
+  annotations` is a `TypeError` at import - and the only symptom is the menubar
+  switch flicking straight back off, because the child died before it could
+  bind. Check with the interpreter that actually runs it:
+  `/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3 tools/test-gateway.py`.
 - **Pane ids contain a colon** (`w1:p2`) which Mobile Safari percent-encodes;
   route handlers `unquote` path components before passing targets to Herdr.
 - **iOS keyboard and layout**: height is driven from `visualViewport` rather

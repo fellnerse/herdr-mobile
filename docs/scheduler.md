@@ -35,20 +35,41 @@ not to the queue.
 
 ## Where the numbers come from
 
-Claude Code resolves its own limits through `GET /api/oauth/usage`. The queue
-calls the same endpoint with the OAuth token already on disk. It costs **no
-tokens**, and returns both a live utilization percentage and an exact reset
-timestamp — so delivery is scheduled against real windows instead of being
-discovered by crashing into them.
+Each agent spends its own subscription, so each is asked separately and holds
+only its own panes. A Claude window says nothing about what a Codex pane may
+spend.
+
+**Claude Code** resolves its own limits through `GET /api/oauth/usage`. The
+queue calls the same endpoint with the OAuth token already on disk — or, on a
+Mac, in the login Keychain, where Claude Code keeps it instead of in
+`~/.claude/.credentials.json`. It costs **no tokens**, and returns both a live
+utilization percentage and an exact reset timestamp, so delivery is scheduled
+against real windows instead of being discovered by crashing into them.
 
 Every non-null bucket is checked, not just `five_hour`. Bucket sets differ by
 plan, and `seven_day_opus` going unwatched is how a prompt silently strands.
 
 The access token lives about six hours. If the queue idles overnight the poll
 can fail, so the last good response is cached and reused. It deliberately does
-**not** refresh the token itself: rewriting `~/.claude/.credentials.json` races
-with Claude Code. A cached `resets_at` stays valid across exactly the pause
-where it is needed.
+**not** refresh the token itself: rewriting the credentials races with Claude
+Code. A cached `resets_at` stays valid across exactly the pause where it is
+needed.
+
+**Both agents also write their usage down**, and that costs nothing at all to
+read: Claude Code caches its last reading in `.claude.json`, stamped with the
+account it belongs to, and Codex records the rate limits of every turn in its
+session rollout — a five-hour window and a seven-day one, the same shape under
+different names. Claude falls back to its own note when the endpoint cannot be
+reached; Codex publishes no endpoint, so the note is all there is. A reading
+says which it is, and the phone says "as of its last turn" rather than pretending
+it is live.
+
+**Not knowing is not the same as knowing there is nothing left.** A hold is
+forever — nothing retries a prompt the sweep declined to send — so it takes a
+reading that actually says the window is full. An agent nobody can price is
+delivered to, and the wall detection below is what catches it if that was
+optimistic. The opposite rule, which held everything whenever a credential
+moved, parked every prompt on a machine for a day.
 
 ## Delivery
 
@@ -152,7 +173,7 @@ it.
 | | |
 |---|---|
 | `GET /api/queue` | queued prompts; `?pane_id=` or `?state=` to filter |
-| `GET /api/queue/quota` | usage windows, thresholds, next reset |
+| `GET /api/queue/quota` | usage windows per agent, with the threshold and each one's next reset |
 | `POST /api/queue` | `{prompt, pane_id}` — the only send path; answers `delivered: "terminal"` when the pane had no agent and the text was typed instead |
 | `POST /api/queue/{id}/update` | `{prompt}`, while it is still waiting |
 | `POST /api/queue/{id}/delete` | drop it |
