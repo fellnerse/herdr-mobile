@@ -52,10 +52,10 @@ project telling you at a glance who is working and who is waiting.
   the home screen icon.
 - **A bleat.** A sheep answers when an agent stops and needs you, if the app is
   open.
-- **Send a screenshot.** The paperclip beside the composer opens the photo
-  library or the camera; the image is scaled down on the phone, written beside
-  the work, and its path goes into the prompt for the agent to read. Git never
-  sees it.
+- **Send a screenshot.** Paste one straight into the composer, or use the
+  paperclip for the photo library and the camera. The image is scaled down on
+  the phone, written beside the work, and its path goes into the prompt for the
+  agent to read. Git never sees it.
 - **Native dictation.** Talk to your agent using the iOS keyboard's mic.
 - **Drafts that stay put.** A half-written prompt belongs to the project it
   was typed for: switch away to check on another agent, come back, and it is
@@ -180,8 +180,12 @@ once, so the first tap anywhere in the app is what unlocks it.
 
 ### Sending a screenshot
 
-Nothing to turn on. Tap the **paperclip** left of the composer and pick a photo,
-take one, or choose a file; iOS offers all three. The image is scaled to 1600px
+Nothing to turn on, and two ways in. **Paste** one straight into the composer —
+iOS puts a screenshot on the clipboard the moment you take it, which makes this
+the shortest path there is between seeing something wrong and an agent looking
+at it. Or tap the **paperclip** left of the composer and pick a photo, take one,
+or choose a file; iOS offers all three. On a laptop you can also drag an image
+onto the composer. The image is scaled to 1600px
 on the phone before it goes anywhere — a screenshot stays a PNG so its text
 stays sharp — and lands in `.sheepit/` inside the directory the agent is
 working in, with `@.sheepit/<name>.png` typed into the composer for you. Add
@@ -257,7 +261,7 @@ plain view already shows it, and greys the switch out while it is on.
 | `web/` | The phone app — plain HTML, CSS and JavaScript, no build step. `web/vendor/` holds xterm.js, the one third-party file it loads. |
 | `menubar/` | `SheepIt.app`, the macOS menu bar switch. One `clang` invocation, no Xcode project. |
 | `deploy/` | systemd and launchd units for running the gateway unattended. |
-| `tools/` | The synthesised bleat, and the tests: `node tools/test-transcript.js` (the pane parser, both agents), `node tools/test-diff.js` (the diff rendering), `node tools/test-drafts.js` (the per-project drafts), `node tools/test-flock.js` (the overview's grouping and order), `python3 tools/test-gateway.py` (the Herdr codec, the WebSocket framing, git against a real repository, who earns a notification). |
+| `tools/` | The synthesised bleat, and the tests: `node tools/test-transcript.js` (the pane parser, both agents), `node tools/test-diff.js` (the diff rendering), `node tools/test-drafts.js` (the per-project drafts), `node tools/test-flock.js` (the overview's grouping and order), `node tools/test-attach.js` (pasting and attaching images), `python3 tools/test-gateway.py` (the Herdr codec, the WebSocket framing, git against a real repository, who earns a notification). |
 | `LICENSES/` | The licences of the code this one borrowed from. |
 | `docs/` | Everything below. |
 

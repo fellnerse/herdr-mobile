@@ -1599,9 +1599,15 @@
     const value = elPromptInput.value;
     const at = elPromptInput.selectionStart ?? value.length;
     const before = value.slice(0, at);
+    const after = value.slice(at);
+    /* A path must not fuse with the word in front of it, and must not push a
+       second space in front of the one behind it - pasting into the middle of
+       a sentence is rarer than pasting at the end, but it should not leave a
+       gap you have to go back and close. */
     const lead = before && !/\s$/.test(before) ? " " : "";
-    const text = `${lead}@${path} `;
-    elPromptInput.value = before + text + value.slice(at);
+    const trail = /^\s/.test(after) ? "" : " ";
+    const text = `${lead}@${path}${trail}`;
+    elPromptInput.value = before + text + after;
     const caret = at + text.length;
     try {
       elPromptInput.setSelectionRange(caret, caret);
@@ -1689,9 +1695,64 @@
     triggerHaptic();
   }
 
+  /* Images out of a clipboard or a drag, which arrive in the same shape from
+     both: a list of items that may be files, and a list of files that may be
+     images. Safari fills one, some browsers fill the other, and a screenshot
+     copied on a phone can arrive as either - so read both and take whatever is
+     actually a picture. */
+  function imagesIn(transfer) {
+    if (!transfer) return [];
+    const found = [];
+    for (const item of transfer.items || []) {
+      if (item.kind !== "file" || !(item.type || "").startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file) found.push(file);
+    }
+    if (found.length) return found;
+    for (const file of transfer.files || []) {
+      if ((file.type || "").startsWith("image/")) found.push(file);
+    }
+    return found;
+  }
+
   elBtnAttach.addEventListener("click", () => {
     if (!state.activePaneId) return;
     elAttachInput.click();
+  });
+
+  /* Paste a screenshot straight in. iOS copies one to the clipboard the moment
+     you take it, which makes this the shortest path there is between seeing
+     something wrong and an agent looking at it - shorter than the photo
+     library, which is what the paperclip opens.
+
+     Listened for on the document rather than the composer: a paste is aimed at
+     whatever has focus, and on a phone that is as often the page as the
+     textarea. Text pastes are left entirely alone. */
+  document.addEventListener("paste", (e) => {
+    // The console has its own terminal to paste into, and it wants the text.
+    if (!elConsoleView.classList.contains("hidden")) return;
+    if (!state.activePaneId) return;
+    const images = imagesIn(e.clipboardData);
+    if (!images.length) return;
+    e.preventDefault();
+    if (document.activeElement !== elPromptInput) elPromptInput.focus();
+    attachFiles(images);
+  });
+
+  /* Dragging a file onto the composer, which is how the same thing happens on
+     a laptop. `dragover` has to be refused for a drop to be offered at all -
+     and it can only ask *whether* files are coming, because reading one mid-drag
+     is not allowed: `getAsFile()` is null until the thing is actually dropped. */
+  elPromptInput.addEventListener("dragover", (e) => {
+    const types = e.dataTransfer ? [...(e.dataTransfer.types || [])] : [];
+    if (state.activePaneId && types.includes("Files")) e.preventDefault();
+  });
+
+  elPromptInput.addEventListener("drop", (e) => {
+    const images = imagesIn(e.dataTransfer);
+    if (!images.length || !state.activePaneId) return;
+    e.preventDefault();
+    attachFiles(images);
   });
 
   elAttachInput.addEventListener("change", async () => {
