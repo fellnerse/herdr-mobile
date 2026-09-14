@@ -1447,12 +1447,17 @@
       })
       .join("");
 
-    const note = q.blocked
+    // An expired reading is too old to hold work on, so the queue has stopped
+    // believing it and the strip says so rather than showing a wall that is not
+    // there. The bars above are the last thing we were told, not the truth.
+    const note = q.expired
+      ? '<div class="quota-note">last known reading — running anyway until usage can be read</div>'
+      : q.blocked
       ? `<div class="quota-note blocked">No usage left — next window in ${escapeHtml(relTime(q.resume_at))}</div>`
       : `<div class="quota-note">Clear to run · pauses at ${q.threshold.toFixed(0)}%</div>`;
 
     return rows + note + (q.stale
-      ? '<div class="quota-note">cached — could not reach the usage endpoint</div>'
+      ? `<div class="quota-note">cached — ${escapeHtml(q.reason || "could not reach the usage endpoint")}</div>`
       : "");
   }
 

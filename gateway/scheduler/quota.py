@@ -42,7 +42,17 @@ class Bucket:
     locked_reason: str | None
 
     def is_blocking(self, threshold: float) -> bool:
-        return self.locked_reason is not None or self.utilization >= threshold
+        if self.locked_reason is not None:
+            return True
+        # A utilization figure describes one window. Once that window's reset
+        # has passed, the number is about a window that no longer exists, and a
+        # full one says nothing about the empty one that replaced it. This is
+        # only ever true of a cached reading -- and it is the reading a queue
+        # gets stuck on, because "100%, reset an hour ago" blocks forever while
+        # being the exact shape of a window that has already reopened.
+        if self.resets_at is not None and self.resets_at <= _now():
+            return False
+        return self.utilization >= threshold
 
 
 @dataclass(frozen=True)
@@ -52,10 +62,39 @@ class Quota:
     stale: bool
     """True when served from cache because the API was unreachable."""
 
+    reason: str | None = None
+    """Why the live read failed, when `stale`. Worth showing: the usual cause is
+    a signed-out token, which nothing here can fix and a person can."""
+
     def get(self, name: str) -> Bucket | None:
         return next((b for b in self.buckets if b.name == name), None)
 
+    @property
+    def expired(self) -> bool:
+        """True when this is a cached reading too old to decide anything with.
+
+        Only ever true while the endpoint is unreachable, which is the one case
+        where the cache has no way of catching up. A bucket that never reported
+        a reset time cannot age out on its own, so the cache as a whole has to.
+        """
+        return self.stale and _now() - self.fetched_at > _seconds(BLIND_BACKOFF_SECONDS)
+
     def blockers(self, threshold: float = DEFAULT_THRESHOLD) -> list[Bucket]:
+        """The windows that are full, as best we can tell.
+
+        An expired cache blocks nothing. Holding on a reading we know is too old
+        to be true is the failure that has no way out: usage cannot be re-read
+        to clear it, so the queue stays frozen until a person notices -- which
+        is the entire thing it exists not to need. Admitting work on a stale
+        all-clear costs one prompt that hits the wall and parks itself again,
+        and that is the cheaper of the two mistakes by a very long way.
+        """
+        if self.expired:
+            # A lock outlives the reading that found it. Unlike a full window it
+            # does not come back on its own -- a plan limit or a billing problem
+            # is still there in the morning -- so it is the one thing an old
+            # reading is still allowed to say.
+            return [b for b in self.buckets if b.locked_reason is not None]
         return [b for b in self.buckets if b.is_blocking(threshold)]
 
     def resume_at(self, threshold: float = DEFAULT_THRESHOLD) -> datetime | None:
@@ -139,13 +178,13 @@ def _write_cache(payload: dict) -> None:
     tmp.replace(CACHE)
 
 
-def _read_cache() -> Quota | None:
+def _read_cache(reason: str | None = None) -> Quota | None:
     try:
         body = json.loads(CACHE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return None
     fetched = _parse_ts(body.get("fetched_at")) or _now()
-    return Quota(_parse(body.get("payload", {})), fetched, stale=True)
+    return Quota(_parse(body.get("payload", {})), fetched, stale=True, reason=reason)
 
 
 def fetch(timeout: float = 10.0) -> Quota:
@@ -156,6 +195,12 @@ def fetch(timeout: float = 10.0) -> Quota:
     rewriting .credentials.json races with Claude Code. The cached reset
     timestamps stay valid across a pause, which is exactly when we need them,
     and the next launched session refreshes the token for us.
+
+    That pause is also the trap: a token that expires overnight means every read
+    from here on is the same cached reading, and if it happened to be taken at a
+    full window then that full window is the answer forever. `Quota.expired` is
+    what stops the queue believing it -- the fallback is only ever a stopgap,
+    never a verdict that can outlive its own window.
     """
     req = urllib.request.Request(
         USAGE_URL,
@@ -168,8 +213,17 @@ def fetch(timeout: float = 10.0) -> Quota:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # 401 is the overnight case and the only one a person can act on, so it
+        # is named rather than folded in with "unreachable".
+        reason = ("signed out -- run `claude` to sign in again"
+                  if e.code in (401, 403) else f"usage endpoint said {e.code}")
+        cached = _read_cache(reason)
+        if cached is None:
+            raise QuotaError(f"{reason} and no cached usage") from e
+        return cached
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
-        cached = _read_cache()
+        cached = _read_cache(f"could not reach the usage endpoint: {e}")
         if cached is None:
             raise QuotaError(f"usage endpoint unreachable and no cache: {e}") from e
         return cached
