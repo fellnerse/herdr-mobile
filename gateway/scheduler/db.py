@@ -1,8 +1,8 @@
-"""SQLite-backed task queue.
+"""SQLite-backed queue of prompts waiting for a chat session.
 
-The queue lives on disk rather than in the dispatcher, so restarting the
-gateway costs at most the turn in flight: `reset_orphans` brings anything left
-running back as paused and it resumes from its recorded session.
+One queue per pane. The queue lives on disk rather than in the dispatcher
+because a prompt queued overnight has to survive a gateway restart -- and the
+pane it belongs to usually outlives several.
 """
 
 from __future__ import annotations
@@ -10,49 +10,44 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import STATE_DIR
 
 DB_PATH = STATE_DIR / "scheduler.sqlite3"
 
-# queued  -> waiting for a free slot and enough quota
-# running -> agent is live and working
-# paused  -> quota exhausted mid-task; resumable via session_uuid
-# blocked -> agent is asking a question; needs a human
-# done / failed -> terminal
-STATES = ("queued", "running", "paused", "blocked", "done", "failed")
+# waiting -> not yet delivered: holding for quota, or for the agent to finish
+# sent    -> handed to the agent; the conversation owns it now
+# failed  -> could not be delivered, with last_error saying why
+STATES = ("waiting", "sent", "failed")
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS task (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    prompt        TEXT NOT NULL,
-    repo_path     TEXT NOT NULL,
-    base_ref      TEXT,
-    branch        TEXT,
-    explicit_branch TEXT,
-    priority      INTEGER NOT NULL DEFAULT 0,
-    state         TEXT NOT NULL DEFAULT 'queued',
-    session_uuid  TEXT,
-    workspace_id  TEXT,
-    worktree_path TEXT,
-    pane_id       TEXT,
-    agent_name    TEXT,
-    attempts      INTEGER NOT NULL DEFAULT 0,
-    -- Whether this task's own prompt ever reached the agent. One stopped on a
-    -- startup dialog never got it, so resuming has to send the real prompt
-    -- instead of telling it to carry on from nothing.
-    prompted      INTEGER NOT NULL DEFAULT 0,
-    last_error    TEXT,
-    created_at    TEXT NOT NULL,
-    started_at    TEXT,
-    finished_at   TEXT
+CREATE TABLE IF NOT EXISTS queued_prompt (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    pane_id      TEXT NOT NULL,
+    -- Captured when queued, for the cold path: if the pane does not survive a
+    -- reboot, this is everything needed to put the conversation back.
+    workspace_id TEXT,
+    session_uuid TEXT,
+    cwd          TEXT,
+    prompt       TEXT NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'waiting',
+    -- Set on a resume, which has to overtake whatever is already queued: it
+    -- continues the turn the rest of the queue is waiting behind.
+    head         INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    created_at   TEXT NOT NULL,
+    sent_at      TEXT
 );
-CREATE INDEX IF NOT EXISTS task_state_idx ON task(state, priority DESC, id);
-"""
+CREATE INDEX IF NOT EXISTS queued_prompt_pane_idx
+    ON queued_prompt(pane_id, head DESC, id);
 
-# Columns added after the first release, applied to an existing table.
-MIGRATIONS = (("prompted", "INTEGER NOT NULL DEFAULT 0"),)
+-- The old per-task queue described work that had to be provisioned: a repo, a
+-- base ref, a branch, a worktree. None of that survives into a queue that
+-- delivers into a session you already have open, and its rows cannot be
+-- expressed here, so it goes rather than being migrated.
+DROP TABLE IF EXISTS task;
+"""
 
 
 def now() -> str:
@@ -60,29 +55,21 @@ def now() -> str:
 
 
 @dataclass
-class Task:
+class Prompt:
     id: int
-    prompt: str
-    repo_path: str
-    base_ref: str | None
-    branch: str | None
-    explicit_branch: str | None
-    priority: int
-    state: str
-    session_uuid: str | None
+    pane_id: str
     workspace_id: str | None
-    worktree_path: str | None
-    pane_id: str | None
-    agent_name: str | None
-    attempts: int
-    prompted: int
+    session_uuid: str | None
+    cwd: str | None
+    prompt: str
+    state: str
+    head: int
     last_error: str | None
     created_at: str
-    started_at: str | None
-    finished_at: str | None
+    sent_at: str | None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> Task:
+    def from_row(cls, row: sqlite3.Row) -> Prompt:
         return cls(**{k: row[k] for k in row.keys()})
 
 
@@ -93,75 +80,113 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
-    # CREATE TABLE IF NOT EXISTS leaves an older table as it was, so new
-    # columns have to be added to it explicitly.
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(task)")}
-    for column, spec in MIGRATIONS:
-        if column not in existing:
-            conn.execute(f"ALTER TABLE task ADD COLUMN {column} {spec}")
     conn.commit()
     return conn
 
 
-def add(conn: sqlite3.Connection, prompt: str, repo_path: str, base_ref: str | None = None,
-        branch: str | None = None, priority: int = 0) -> int:
+def add(conn: sqlite3.Connection, pane_id: str, prompt: str, workspace_id: str | None = None,
+        session_uuid: str | None = None, cwd: str | None = None, head: bool = False) -> int:
     cur = conn.execute(
-        "INSERT INTO task (prompt, repo_path, base_ref, explicit_branch, priority, created_at)"
-        " VALUES (?,?,?,?,?,?)",
-        (prompt, repo_path, base_ref, branch, priority, now()),
+        "INSERT INTO queued_prompt (pane_id, workspace_id, session_uuid, cwd, prompt,"
+        " head, created_at) VALUES (?,?,?,?,?,?,?)",
+        (pane_id, workspace_id, session_uuid, cwd, prompt, int(head), now()),
     )
     conn.commit()
     return cur.lastrowid
 
 
-def get(conn: sqlite3.Connection, task_id: int) -> Task | None:
-    row = conn.execute("SELECT * FROM task WHERE id=?", (task_id,)).fetchone()
-    return Task.from_row(row) if row else None
+def get(conn: sqlite3.Connection, prompt_id: int) -> Prompt | None:
+    row = conn.execute("SELECT * FROM queued_prompt WHERE id=?", (prompt_id,)).fetchone()
+    return Prompt.from_row(row) if row else None
 
 
-def list_tasks(conn: sqlite3.Connection, state: str | None = None) -> list[Task]:
+def list_prompts(conn: sqlite3.Connection, pane_id: str | None = None,
+                 state: str | None = None) -> list[Prompt]:
+    where, params = [], []
+    if pane_id:
+        where.append("pane_id=?")
+        params.append(pane_id)
     if state:
-        rows = conn.execute(
-            "SELECT * FROM task WHERE state=? ORDER BY priority DESC, id", (state,)
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM task ORDER BY priority DESC, id").fetchall()
-    return [Task.from_row(r) for r in rows]
+        where.append("state=?")
+        params.append(state)
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    rows = conn.execute(
+        f"SELECT * FROM queued_prompt{clause} ORDER BY head DESC, id", params
+    ).fetchall()
+    return [Prompt.from_row(r) for r in rows]
 
 
-def next_runnable(conn: sqlite3.Connection) -> Task | None:
-    """Highest-priority task ready to start or resume.
-
-    Paused tasks come first: they already hold a worktree and a session, so
-    finishing them frees resources before new work is admitted.
-    """
+def next_for_pane(conn: sqlite3.Connection, pane_id: str) -> Prompt | None:
     row = conn.execute(
-        "SELECT * FROM task WHERE state IN ('paused','queued')"
-        " ORDER BY CASE state WHEN 'paused' THEN 0 ELSE 1 END, priority DESC, id LIMIT 1"
+        "SELECT * FROM queued_prompt WHERE pane_id=? AND state='waiting'"
+        " ORDER BY head DESC, id LIMIT 1",
+        (pane_id,),
     ).fetchone()
-    return Task.from_row(row) if row else None
+    return Prompt.from_row(row) if row else None
 
 
-def update(conn: sqlite3.Connection, task_id: int, **fields) -> None:
+def waiting_panes(conn: sqlite3.Connection) -> list[str]:
+    """Panes with something still to deliver, oldest queue first."""
+    rows = conn.execute(
+        "SELECT pane_id FROM queued_prompt WHERE state='waiting'"
+        " GROUP BY pane_id ORDER BY MIN(id)"
+    ).fetchall()
+    return [r["pane_id"] for r in rows]
+
+
+def count_waiting(conn: sqlite3.Connection, pane_id: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM queued_prompt WHERE pane_id=? AND state='waiting'", (pane_id,)
+    ).fetchone()[0]
+
+
+def update(conn: sqlite3.Connection, prompt_id: int, **fields) -> None:
     if not fields:
         return
     assignments = ", ".join(f"{k}=?" for k in fields)
-    conn.execute(f"UPDATE task SET {assignments} WHERE id=?", (*fields.values(), task_id))
+    conn.execute(
+        f"UPDATE queued_prompt SET {assignments} WHERE id=?", (*fields.values(), prompt_id)
+    )
     conn.commit()
 
 
-def count_running(conn: sqlite3.Connection) -> int:
-    return conn.execute("SELECT COUNT(*) FROM task WHERE state='running'").fetchone()[0]
+def delete(conn: sqlite3.Connection, prompt_id: int) -> None:
+    conn.execute("DELETE FROM queued_prompt WHERE id=?", (prompt_id,))
+    conn.commit()
 
 
-def reset_orphans(conn: sqlite3.Connection) -> int:
-    """Recover tasks left 'running' by a scheduler crash.
+# How long a delivered prompt stays readable before the queue forgets it. Long
+# enough to look back at the night it ran, short enough that the list is still
+# what is owed rather than a log of everything ever sent.
+KEEP_SENT = timedelta(hours=24)
 
-    Their agent is gone but the session UUID survives, so they requeue as
-    paused and resume rather than starting over.
+
+def prune_sent(conn: sqlite3.Connection, keep: timedelta = KEEP_SENT) -> int:
+    """Drop prompts the conversation has owned for longer than `keep`.
+
+    A delivered prompt stops being the queue's business the moment it lands, so
+    nothing is lost here that the transcript does not already have. `failed` is
+    deliberately never pruned: those are the ones still waiting on you.
+    """
+    cutoff = (datetime.now(timezone.utc) - keep).isoformat()
+    cur = conn.execute(
+        "DELETE FROM queued_prompt WHERE state='sent' AND COALESCE(sent_at, created_at) < ?",
+        (cutoff,),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def fail_pane(conn: sqlite3.Connection, pane_id: str, error: str) -> int:
+    """Give up on everything still waiting for a chat that is not coming back.
+
+    Marked rather than deleted: what you typed should still be there to read and
+    re-queue somewhere else. Silently dropping it is the one outcome that cannot
+    be undone from the phone.
     """
     cur = conn.execute(
-        "UPDATE task SET state='paused', last_error='scheduler restarted' WHERE state='running'"
+        "UPDATE queued_prompt SET state='failed', last_error=? WHERE pane_id=? AND state='waiting'",
+        (error, pane_id),
     )
     conn.commit()
     return cur.rowcount

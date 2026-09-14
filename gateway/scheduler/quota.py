@@ -8,6 +8,8 @@ reset timestamps instead of inferring windows from failures.
 from __future__ import annotations
 
 import json
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -174,3 +176,25 @@ def fetch(timeout: float = 10.0) -> Quota:
 
     _write_cache(payload)
     return Quota(_parse(payload), _now(), stale=False)
+
+
+_memo: tuple[float, Quota] | None = None
+_memo_lock = threading.Lock()
+MEMO_TTL = 30.0
+
+
+def current(ttl: float = MEMO_TTL) -> Quota:
+    """`fetch` with a short in-process memo.
+
+    Every fetch is an HTTPS round trip. The phone polls this while the queue is
+    open and the dispatcher asks before every delivery, so without a memo an
+    active queue would hammer the endpoint. Utilization does not move fast
+    enough for 30s to matter.
+    """
+    global _memo
+    with _memo_lock:
+        if _memo is not None and time.monotonic() - _memo[0] < ttl:
+            return _memo[1]
+        quota = fetch()
+        _memo = (time.monotonic(), quota)
+        return quota

@@ -17,18 +17,20 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import push
-from herdr_rpc import HERDR_SOCKET_PATH, Herdr, call_herdr_rpc
+from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
 from scheduler import config as sched_config
 from scheduler import db as sched_db
 from scheduler import quota as sched_quota
-from scheduler import dispatch as sched_dispatch
-from scheduler import repos as sched_repos
 from scheduler.dispatch import Scheduler
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("SHEEPIT_PORT") or os.environ.get("PORT", "3009"))
 # The PWA lives beside the gateway, not inside it.
 WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
+
+# The dispatch thread, once `run` starts it. Held so a freshly queued prompt can
+# nudge it awake instead of waiting out a poll.
+SCHEDULER = None
 
 
 
@@ -307,32 +309,18 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, **quota_payload()})
             return
 
-        # API: repositories worth queueing work in
-        if path == "/api/queue/repos":
-            cwds = [
-                a.get("cwd")
-                for a in call_herdr_rpc("agent.list").get("result", {}).get("agents", [])
-            ]
-            self.send_json({"ok": True, "repos": sched_repos.discover(sched_config.load(), cwds)})
-            return
-
-        # API: branches in one repository, to pick a base
-        if path == "/api/queue/branches":
-            repo = (qs.get("repo", [""])[0] or "").strip()
-            if not repo:
-                self.send_json({"ok": False, "error": "No repo given"}, 400)
-                return
-            self.send_json({"ok": True, **sched_repos.branches(Path(repo).expanduser())})
-            return
-
-        # API: the task queue
+        # API: queued prompts, for every chat or just one
         if path == "/api/queue":
             conn = sched_db.connect()
             try:
-                tasks = [vars(t) for t in sched_db.list_tasks(conn, qs.get("state", [None])[0])]
+                prompts = [
+                    vars(p) for p in sched_db.list_prompts(
+                        conn, qs.get("pane_id", [None])[0], qs.get("state", [None])[0]
+                    )
+                ]
             finally:
                 conn.close()
-            self.send_json({"ok": True, "tasks": tasks})
+            self.send_json({"ok": True, "prompts": prompts})
             return
 
         # API: Path completion for a pane, rooted at its working directory
@@ -464,87 +452,94 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "sent": push.broadcast()})
             return
 
-        # API: queue a task. The scheduler thread picks it up on its next pass.
+        # API: queue a prompt for a chat. The dispatcher delivers it as soon as
+        # that pane is free and the subscription has room - which, for an idle
+        # pane in an open window, is within the second.
         if path == "/api/queue":
             prompt = (body.get("prompt") or "").strip()
-            repo = (body.get("repo") or "").strip()
+            pane_id = (body.get("pane_id") or "").strip()
             if not prompt:
                 self.send_json({"ok": False, "error": "Empty prompt"}, 400)
                 return
-            repo_path = Path(repo).expanduser()
-            if not repo or not (repo_path / ".git").exists():
-                self.send_json({"ok": False, "error": f"Not a git repository: {repo}"}, 400)
+            if not pane_id:
+                self.send_json({"ok": False, "error": "No chat given"}, 400)
                 return
+
+            pane = call_herdr_rpc("pane.get", {"pane_id": pane_id}).get("result", {}).get("pane")
+            if not pane:
+                self.send_json({"ok": False, "error": f"No such chat: {pane_id}"}, 404)
+                return
+
+            # A pane with no agent in it is a shell, and the queue has nothing
+            # to deliver into: holding here waits on an agent that nothing will
+            # ever start. So it goes to the terminal as typed input, which is
+            # also what lets `claude` sent from the phone open the session.
+            status = pane.get("agent_status")
+            if not status or status == "unknown":
+                res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
+                if "error" not in res:
+                    res = call_herdr_rpc(
+                        "pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]}
+                    )
+                if "error" in res:
+                    self.send_json(res, 400)
+                    return
+                self.send_json({"ok": True, "delivered": "terminal"})
+                return
+
             conn = sched_db.connect()
             try:
-                task_id = sched_db.add(
+                prompt_id = sched_db.add(
                     conn,
+                    pane_id=pane_id,
                     prompt=prompt,
-                    repo_path=str(repo_path.resolve()),
-                    base_ref=(body.get("base") or None),
-                    branch=(body.get("branch") or None),
-                    priority=int(body.get("priority") or 0),
+                    # Recorded now so a prompt can outlive the pane it was
+                    # queued for: this is what a reboot resumes from.
+                    workspace_id=pane.get("workspace_id"),
+                    session_uuid=(pane.get("agent_session") or {}).get("value"),
+                    cwd=pane.get("cwd"),
                 )
             finally:
                 conn.close()
-            self.send_json({"ok": True, "id": task_id})
+            if SCHEDULER is not None:
+                SCHEDULER.wake()
+            self.send_json({"ok": True, "id": prompt_id})
             return
 
-        # API: act on a task. /api/queue/{id}/{retry|delete|update}
+        # API: act on a queued prompt. /api/queue/{id}/{delete|update}
         if path.startswith("/api/queue/"):
             parts = path.strip("/").split("/")
             # ["api", "queue", "<id>", "<action>"]
             if len(parts) == 4 and parts[2].isdigit():
-                task_id, action = int(parts[2]), parts[3]
+                prompt_id, action = int(parts[2]), parts[3]
                 conn = sched_db.connect()
                 try:
-                    task = sched_db.get(conn, task_id)
-                    if task is None:
-                        self.send_json({"ok": False, "error": "No such task"}, 404)
+                    queued = sched_db.get(conn, prompt_id)
+                    if queued is None:
+                        self.send_json({"ok": False, "error": "No such prompt"}, 404)
                         return
-                    if action == "retry":
-                        # Resumes into the existing agent when one is still
-                        # alive; only reprovisions when there is nothing left.
-                        sched_dispatch.requeue(conn, Herdr(), task)
-                    elif action == "delete":
-                        conn.execute("DELETE FROM task WHERE id=?", (task_id,))
-                        conn.commit()
+                    if action == "delete":
+                        sched_db.delete(conn, prompt_id)
                     elif action == "update":
-                        # Only before it starts. A running or paused task already
-                        # has a worktree cut from its base and an agent holding
-                        # the conversation, so changing either would describe
-                        # something that no longer matches what is on disk.
-                        if task.state not in ("queued", "blocked", "failed"):
+                        # Only while it is still ours. Once delivered it is part
+                        # of a conversation, and editing the row would change
+                        # what the queue claims was said.
+                        if queued.state != "waiting":
                             self.send_json(
-                                {"ok": False, "error": f"Cannot edit a {task.state} task"}, 409
+                                {"ok": False, "error": f"Already {queued.state}"}, 409
                             )
                             return
-                        fields = {}
-                        if "prompt" in body:
-                            prompt = (body.get("prompt") or "").strip()
-                            if not prompt:
-                                self.send_json({"ok": False, "error": "Empty prompt"}, 400)
-                                return
-                            fields["prompt"] = prompt
-                        if "repo" in body:
-                            repo_path = Path((body.get("repo") or "").strip()).expanduser()
-                            if not (repo_path / ".git").exists():
-                                self.send_json(
-                                    {"ok": False, "error": f"Not a git repository: {repo_path}"}, 400
-                                )
-                                return
-                            fields["repo_path"] = str(repo_path.resolve())
-                        if "base" in body:
-                            fields["base_ref"] = (body.get("base") or None)
-                        if "priority" in body:
-                            fields["priority"] = int(body.get("priority") or 0)
-                        sched_db.update(conn, task_id, **fields)
+                        text = (body.get("prompt") or "").strip()
+                        if not text:
+                            self.send_json({"ok": False, "error": "Empty prompt"}, 400)
+                            return
+                        sched_db.update(conn, prompt_id, prompt=text)
                     else:
                         self.send_json({"ok": False, "error": "Unknown action"}, 400)
                         return
                 finally:
                     conn.close()
-                self.send_json({"ok": True, "id": task_id, "action": action})
+                self.send_json({"ok": True, "id": prompt_id, "action": action})
                 return
 
         # API: Create a workspace
@@ -568,37 +563,9 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
                 return
 
-        # API: Send prompt to agent
-        # /api/agents/{pane_id}/prompt
-        if path.startswith("/api/agents/") and path.endswith("/prompt"):
-            parts = path.split("/")
-            if len(parts) == 5:
-                pane_id = unquote(parts[3])
-                text = body.get("text", "").strip()
-                if not text:
-                    self.send_json({"ok": False, "error": "Empty prompt text"}, 400)
-                    return
-
-                # Send prompt to agent
-                res = call_herdr_rpc("agent.prompt", {
-                    "target": pane_id,
-                    "text": text,
-                })
-
-                if "error" in res:
-                    # If agent.prompt fails (e.g. agent not recognized or blocked), try pane.send_text
-                    fallback_res = call_herdr_rpc("pane.send_text", {
-                        "pane_id": pane_id,
-                        "text": text + "\n",
-                    })
-                    if "error" in fallback_res:
-                        self.send_json(res, 400)
-                        return
-                    self.send_json({"ok": True, "method": "pane.send_text"})
-                    return
-
-                self.send_json({"ok": True, "method": "agent.prompt", "result": res.get("result")})
-                return
+        # Prompts do not have a direct route any more: everything the phone
+        # sends goes through /api/queue, which is what lets a message typed at
+        # 4am wait for the window instead of failing against an empty one.
 
         # API: Send keys (e.g. ctrl+c, esc, enter)
         # /api/agents/{pane_id}/keys
@@ -751,32 +718,14 @@ class StatusWatcher(threading.Thread):
         }
 
 
-_quota_cache = {"at": 0.0, "payload": None}
-_quota_lock = threading.Lock()
-QUOTA_TTL = 30.0
-
-
 def quota_payload() -> dict:
     """Usage windows, shaped for the phone.
 
-    Cached briefly: every call is an HTTPS round trip to Anthropic, and the
-    phone polls this while the queue is open. Utilization does not move fast
-    enough for 30s to matter.
+    `current` memoises the round trip to Anthropic, which matters here: the
+    phone polls this while the queue is open.
     """
-    with _quota_lock:
-        fresh = time.time() - _quota_cache["at"] < QUOTA_TTL
-        if fresh and _quota_cache["payload"] is not None:
-            return _quota_cache["payload"]
-        payload = _build_quota_payload()
-        # Don't cache a failure; the next poll should retry.
-        if payload.get("ok", True):
-            _quota_cache.update(at=time.time(), payload=payload)
-        return payload
-
-
-def _build_quota_payload() -> dict:
     try:
-        current = sched_quota.fetch()
+        current = sched_quota.current()
     except sched_quota.QuotaError as e:
         return {"ok": False, "error": str(e), "buckets": []}
     threshold = sched_config.load().threshold
@@ -800,13 +749,15 @@ def _build_quota_payload() -> dict:
 
 
 def run():
+    global SCHEDULER
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     server_address = (HOST, PORT)
     httpd = ThreadingHTTPServer(server_address, HerdrHandler)
     StatusWatcher().start()
     # Config is re-read every pass, so editing scheduler.json takes effect
     # without a restart.
-    Scheduler(sched_config.load).start()
+    SCHEDULER = Scheduler(sched_config.load)
+    SCHEDULER.start()
     print(f"SheepIt gateway listening on http://{HOST}:{PORT}")
     print(f"Herdr socket target: {HERDR_SOCKET_PATH}")
     try:

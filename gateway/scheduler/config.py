@@ -17,42 +17,22 @@ class Config:
     """Stop admitting new work once any usage window passes this percentage."""
 
     poll_seconds: int = 60
-    """How often to re-check quota and the queue while idle."""
+    """How long to wait on the event stream before sweeping the queue anyway.
 
-    max_concurrent: int = 1
-    """Parallel tasks. Each gets its own worktree, so raising this is safe for
-    collisions -- but they share one subscription, so quota drains faster."""
-
-    task_timeout_ms: int = 2 * 60 * 60 * 1000
-    """Give up waiting on a single prompt after this long."""
-
-    max_attempts: int = 2
-    """Retries before a task is parked as failed for a human to look at."""
+    Delivery does not depend on events arriving, only its latency does: this is
+    the worst case if the stream drops, not the normal case."""
 
     agent_kind: str = "claude"
 
     agent_args: list[str] = field(default_factory=list)
-    """Passed through to the agent after `--`.
+    """Passed to the agent when a lost session has to be relaunched.
 
-    Empty by default: tasks run with normal permission prompts and park as
-    `blocked` whenever the agent wants approval, which is safe but not very
-    unattended. Truly autonomous overnight runs need an explicit opt-in here --
-    e.g. ["--permission-mode", "acceptEdits"] to auto-approve file edits only,
-    or ["--dangerously-skip-permissions"] for full autonomy. Tasks always run in
-    a throwaway worktree, never your working tree, but bypassing approvals still
-    lets an agent run arbitrary commands unsupervised. Your call, not the
-    default's.
+    Only used on the cold path. A prompt normally lands in a session you started
+    yourself, so its permission mode is whatever you chose when you opened that
+    chat -- this queue never widens it. Set it to match, e.g.
+    ["--permission-mode", "acceptEdits"], so a session that comes back after a
+    reboot comes back the way you left it.
     """
-
-    branch_prefix: str = "sheep/"
-
-    repo_roots: list[str] = field(default_factory=lambda: ["~/projects"])
-    """Where to look for repositories to offer in the queue's project picker.
-    Each root is scanned one level deep, and counts itself if it is a repo.
-    Whatever Herdr already has open is offered regardless of the roots."""
-
-    keep_worktree_on_success: bool = True
-    """Leave the branch in place for review rather than auto-committing away."""
 
     def save(self, path: Path | None = None) -> None:
         path = path or CONFIG_PATH

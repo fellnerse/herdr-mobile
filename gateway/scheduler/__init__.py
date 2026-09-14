@@ -1,7 +1,8 @@
-"""Quota-aware task scheduling for Claude Code, driven over the Herdr socket.
+"""Quota-aware prompt delivery for Claude Code, driven over the Herdr socket.
 
-Queue coding tasks; they run while the Claude subscription has usage left,
-checkpoint when a window runs dry, and resume when the next one opens.
+Queue prompts for a chat you already have open; they are delivered while the
+Claude subscription has usage left, halt when a window runs dry, and pick up
+where they left off when the next one opens.
 
 State lives alongside the gateway's other state so there is one thing to back
 up and one service to run.

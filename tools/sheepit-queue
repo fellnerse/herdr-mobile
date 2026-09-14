@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Terminal access to the SheepIt task queue.
+"""Terminal access to the SheepIt prompt queue.
 
-Reads and writes the same SQLite queue the gateway's scheduler drives. There is
+Reads and writes the same SQLite queue the gateway's dispatcher drives. There is
 deliberately no `run` command: the dispatcher lives in the gateway, and a second
-one racing it on the same queue would run tasks twice.
+one racing it on the same queue would deliver every prompt twice.
 """
 
 import argparse
@@ -13,15 +13,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
 
+from herdr_rpc import call_herdr_rpc  # noqa: E402
 from scheduler import config as sched_config  # noqa: E402
 from scheduler import db, quota  # noqa: E402
 
 MARK = {
-    "queued": "·",
-    "running": "▸",
-    "paused": "⏸",
-    "blocked": "?",
-    "done": "✓",
+    "waiting": "·",
+    "sent": "✓",
     "failed": "✗",
 }
 
@@ -64,59 +62,87 @@ def cmd_quota(args) -> int:
     return 0
 
 
+def _chats() -> dict:
+    """pane_id -> a name worth printing, for whatever Herdr has open."""
+    out = {}
+    for pane in call_herdr_rpc("pane.list").get("result", {}).get("panes", []):
+        out[pane.get("pane_id")] = pane.get("cwd", "").rsplit("/", 1)[-1]
+    return out
+
+
+def cmd_chats(args) -> int:
+    """The pane ids to queue against, which is the only id this tool needs."""
+    agents = call_herdr_rpc("agent.list").get("result", {}).get("agents", [])
+    if not agents:
+        print("no chats open")
+        return 0
+    for a in agents:
+        print(f"{a.get('pane_id'):<8} {a.get('agent_status', '?'):<8} {a.get('cwd', '')}")
+    return 0
+
+
 def cmd_add(args) -> int:
-    repo = Path(args.repo).expanduser().resolve()
-    if not (repo / ".git").exists():
-        print(f"error: {repo} is not a git repository", file=sys.stderr)
-        return 1
     conn = db.connect()
-    task_id = db.add(conn, prompt=args.prompt, repo_path=str(repo), base_ref=args.base,
-                     branch=args.branch, priority=args.priority)
-    print(f"queued #{task_id}")
+    pane = call_herdr_rpc("pane.get", {"pane_id": args.pane}).get("result", {}).get("pane")
+    if not pane:
+        print(f"error: no chat {args.pane} (try `sheepit-queue chats`)", file=sys.stderr)
+        return 1
+
+    # No agent in the pane means no queue: it is a shell, and a shell takes the
+    # text typed at it. Same rule the gateway's own send path follows.
+    status = pane.get("agent_status")
+    if not status or status == "unknown":
+        call_herdr_rpc("pane.send_text", {"pane_id": args.pane, "text": args.prompt})
+        res = call_herdr_rpc("pane.send_keys", {"pane_id": args.pane, "keys": ["enter"]})
+        if "error" in res:
+            print(f"error: {res['error'].get('message')}", file=sys.stderr)
+            return 1
+        print(f"typed into {args.pane} (no agent there to queue for)")
+        return 0
+
+    prompt_id = db.add(
+        conn,
+        pane_id=args.pane,
+        prompt=args.prompt,
+        workspace_id=pane.get("workspace_id"),
+        session_uuid=(pane.get("agent_session") or {}).get("value"),
+        cwd=pane.get("cwd"),
+    )
+    print(f"queued #{prompt_id} for {args.pane}")
     return 0
 
 
 def cmd_list(args) -> int:
     conn = db.connect()
-    tasks = db.list_tasks(conn, args.state)
-    if not tasks:
-        print("no tasks")
+    prompts = db.list_prompts(conn, args.pane, args.state)
+    if not prompts:
+        print("nothing queued")
         return 0
-    for t in tasks:
-        head = t.prompt.splitlines()[0][:58]
-        extra = f"  [{t.branch}]" if t.branch else ""
-        print(f"{MARK.get(t.state, ' ')} #{t.id:<4} {t.state:<8} {head}{extra}")
-        if t.last_error and t.state in ("failed", "blocked", "paused"):
-            print(f"          └─ {t.last_error}")
+    names = _chats()
+    for p in prompts:
+        head = p.prompt.splitlines()[0][:52]
+        where = names.get(p.pane_id) or p.pane_id
+        print(f"{MARK.get(p.state, ' ')} #{p.id:<4} {p.state:<8} {head}  [{where}]")
+        if p.last_error:
+            print(f"          └─ {p.last_error}")
     return 0
 
 
 def cmd_show(args) -> int:
     conn = db.connect()
-    task = db.get(conn, args.id)
-    if task is None:
-        print(f"error: no task #{args.id}", file=sys.stderr)
+    queued = db.get(conn, args.id)
+    if queued is None:
+        print(f"error: no prompt #{args.id}", file=sys.stderr)
         return 1
-    for key, value in vars(task).items():
+    for key, value in vars(queued).items():
         if value not in (None, ""):
             print(f"{key:<16} {value}")
     return 0
 
 
-def cmd_retry(args) -> int:
-    conn = db.connect()
-    if db.get(conn, args.id) is None:
-        print(f"error: no task #{args.id}", file=sys.stderr)
-        return 1
-    db.update(conn, args.id, state="queued", attempts=0, last_error=None, finished_at=None)
-    print(f"requeued #{args.id}")
-    return 0
-
-
 def cmd_rm(args) -> int:
     conn = db.connect()
-    conn.execute("DELETE FROM task WHERE id=?", (args.id,))
-    conn.commit()
+    db.delete(conn, args.id)
     print(f"removed #{args.id}")
     return 0
 
@@ -126,28 +152,23 @@ def main() -> int:
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("quota", help="show usage windows").set_defaults(func=cmd_quota)
+    sub.add_parser("chats", help="list chats you can queue against").set_defaults(func=cmd_chats)
 
-    add = sub.add_parser("add", help="queue a task")
+    add = sub.add_parser("add", help="queue a prompt for a chat")
     add.add_argument("prompt")
-    add.add_argument("--repo", default=".", help="git repository to work in")
-    add.add_argument("--base", help="base ref for the worktree branch")
-    add.add_argument("--branch", help="explicit branch name")
-    add.add_argument("--priority", type=int, default=0)
+    add.add_argument("--pane", required=True, help="pane id of the chat, e.g. wM:p1")
     add.set_defaults(func=cmd_add)
 
-    ls = sub.add_parser("list", help="list tasks")
+    ls = sub.add_parser("list", help="list queued prompts")
+    ls.add_argument("--pane", help="only this chat")
     ls.add_argument("--state", choices=db.STATES)
     ls.set_defaults(func=cmd_list)
 
-    show = sub.add_parser("show", help="show one task")
+    show = sub.add_parser("show", help="show one queued prompt")
     show.add_argument("id", type=int)
     show.set_defaults(func=cmd_show)
 
-    retry = sub.add_parser("retry", help="requeue a task")
-    retry.add_argument("id", type=int)
-    retry.set_defaults(func=cmd_retry)
-
-    rm = sub.add_parser("rm", help="delete a task")
+    rm = sub.add_parser("rm", help="delete a queued prompt")
     rm.add_argument("id", type=int)
     rm.set_defaults(func=cmd_rm)
 

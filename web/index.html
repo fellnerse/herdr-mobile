@@ -188,8 +188,8 @@
 
     <div class="sheet-row sheet-agent">
       <div class="sheet-agent-text">
-        <span id="task-sheet-title" class="sheet-title">Queue a task</span>
-        <span class="sheet-cwd">runs in its own worktree when there is usage left</span>
+        <span id="task-sheet-title" class="sheet-title">Queue a prompt</span>
+        <span id="task-sheet-cwd" class="sheet-cwd">delivered when this chat is free</span>
       </div>
     </div>
 
@@ -204,17 +204,6 @@
         autocapitalize="sentences"
         spellcheck="true"
       ></textarea>
-    </div>
-
-    <div class="task-field">
-      <label for="task-repo">Project</label>
-      <select id="task-repo" class="task-select"></select>
-    </div>
-
-    <div class="task-field">
-      <label for="task-base">Branch off</label>
-      <select id="task-base" class="task-select"></select>
-      <span id="task-base-hint" class="sheet-hint"></span>
     </div>
 
     <div id="task-error" class="task-error hidden"></div>

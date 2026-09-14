@@ -1,22 +1,58 @@
-"""The scheduling loop: admit work only when the subscription has room."""
+"""Delivering queued prompts into live chat sessions, as quota allows.
+
+The queue holds prompts for panes you already have open. Nothing is
+provisioned: no worktree, no branch, no agent launch, and so no folder-trust
+dialog to get stuck on. A prompt is delivered when its pane is free and the
+subscription has room, and held when it does not.
+"""
 
 from __future__ import annotations
 
 import logging
 import re
 import sqlite3
-import sys
 import threading
 import time
 from datetime import datetime, timezone
 
 import push
-from herdr_rpc import Herdr, HerdrError
+from herdr_rpc import Events, Herdr, HerdrError
 
 from . import db, quota
 from .config import Config
 
 log = logging.getLogger("scheduler")
+
+# Claude Code prints its own wall message before going idle. Catching it in the
+# pane is more reliable than inferring exhaustion from a utilization number that
+# may lag by up to a poll interval.
+LIMIT_RE = re.compile(
+    r"(usage limit reached|limit reached|out of (?:usage|credits)|"
+    r"limit will reset|upgrade to increase your usage limit)",
+    re.IGNORECASE,
+)
+
+# The same pattern for Herdr, which matches it server-side and knows nothing
+# about Python's flags: the case-insensitivity has to travel inside the string.
+LIMIT_PATTERN = f"(?i){LIMIT_RE.pattern}"
+
+RESUME_PROMPT = (
+    "Your previous turn was interrupted because the usage window ran out. "
+    "The window has reset. Continue exactly where you left off."
+)
+
+# An agent in one of these is listening and free. `blocked` is deliberately not
+# here: it is sitting on a question, and text sent now would answer it.
+READY = ("idle", "done")
+
+# Output matching is evaluated against a window of recent output, so subscribing
+# to a pane that already has an old wall message on screen fires immediately.
+# Matches this soon after subscribing describe the past, not a fresh wall.
+SUBSCRIBE_GRACE = 3.0
+
+# How long to sit out after hitting the wall when quota cannot say when the
+# window reopens -- long enough not to spin, short enough to notice a reset.
+BLIND_STALL = 300.0
 
 
 def _push(reason: str) -> None:
@@ -28,382 +64,312 @@ def _push(reason: str) -> None:
     except Exception as e:
         log.warning("push failed (%s): %s", reason, e)
 
-# Claude Code prints its own wall message before going idle. Catching it in the
-# pane is more reliable than inferring exhaustion from a utilization number that
-# may lag by up to a poll interval.
-LIMIT_RE = re.compile(
-    r"(usage limit reached|limit reached|out of (?:usage|credits)|"
-    r"limit will reset|upgrade to increase your usage limit)",
-    re.IGNORECASE,
-)
 
-RESUME_PROMPT = (
-    "Your previous turn was interrupted because the usage window ran out. "
-    "The window has reset. Continue exactly where you left off."
-)
+def subscriptions(pane_ids: list[str]) -> list:
+    """What to watch, given the panes with something waiting.
 
-
-class BlockedOnHuman(Exception):
-    """A task cannot proceed without a person answering something.
-
-    Distinct from a failure: nothing is wrong, and retrying unattended will hit
-    exactly the same prompt, so it must not burn an attempt.
+    Two questions per pane: has the agent freed up, and has it hit the wall.
+    `pane.closed` is global and needs no pane, and is what starts cold recovery.
     """
+    subs = [{"type": "pane.closed"}]
+    for pane_id in pane_ids:
+        subs.append({"type": "pane.agent_status_changed", "pane_id": pane_id})
+        subs.append({
+            "type": "pane.output_matched",
+            "pane_id": pane_id,
+            "source": "recent_unwrapped",
+            "match": {"type": "regex", "value": LIMIT_PATTERN},
+            "lines": 60,
+        })
+    return subs
 
 
-# Claude Code asks this once per directory it has never seen. Worktree-per-task
-# means every task runs somewhere brand new, so without handling it every single
-# task blocks here forever.
-TRUST_RE = re.compile(
-    r"Is this a project you created or one you trust|"
-    r"Yes, I trust this folder",
-    re.IGNORECASE,
-)
+class Dispatcher:
+    """Delivers queued prompts. One instance owns the stalls and the stream."""
 
+    def __init__(self, herdr: Herdr = None, events: Events = None):
+        self.herdr = herdr or Herdr()
+        self.events = events or Events()
+        # pane_id -> monotonic deadline. In memory on purpose: a restart that
+        # forgets a stall costs one redelivery, which hits the wall again and
+        # re-stalls, and that is cheaper than persisting a guess.
+        self.stalls: dict[str, float] = {}
+        # Panes we have already said something about, so a pane that is stuck
+        # is reported once rather than on every pass. Cleared the moment it is
+        # free again, which is what makes the next episode audible.
+        self.reported: set[str] = set()
 
-def agent_name(task: db.Task) -> str:
-    """Unique live-agent name.
+    # --- delivery ------------------------------------------------------
 
-    Includes the attempt because a failed attempt's agent can still hold the
-    name while its pane is being torn down, and herdr rejects a duplicate with
-    `agent_name_taken`.
-    """
-    return f"sheep{task.id}" if task.attempts <= 1 else f"sheep{task.id}a{task.attempts}"
+    def sweep(self, conn: sqlite3.Connection, cfg: Config) -> None:
+        """Deliver one prompt to every pane that can take one.
 
+        One at a time per pane: Claude Code would happily queue all of them
+        itself, but then everything behind the first prompt runs against
+        whatever the subscription looks like by the time it gets there, which is
+        the entire thing this queue exists to decide.
+        """
+        ready = []
+        for pane_id in db.waiting_panes(conn):
+            self.herdr.report_queued(pane_id, db.count_waiting(conn, pane_id))
+            # A stalled pane is not asked about at all: it is waiting out a
+            # window, and nothing we could learn about it changes that.
+            if self.stalls.get(pane_id, 0.0) > time.monotonic():
+                continue
 
-def _stopped_on_folder_trust(herdr: Herdr, pane_id: str) -> bool:
-    """Is the agent sitting on the folder-trust dialog?
+            status = self.herdr.status(pane_id)
+            if status in ("gone", "no-agent"):
+                self.recover(conn, pane_id, status, cfg)
+                continue
+            if status == "blocked":
+                self.report_blocked(conn, pane_id)
+                continue
+            self.reported.discard(pane_id)
+            if status in READY:
+                ready.append(pane_id)
 
-    Detection only. Answering it is a human decision: it is the gate that asks
-    whether Claude may read, edit and execute in a directory, and the scheduler
-    is not entitled to click through it on your behalf.
-    """
-    try:
-        return bool(TRUST_RE.search(herdr.pane_read(pane_id, lines=40)))
-    except HerdrError:
-        return False
-
-
-def branch_name(task: db.Task, cfg: Config) -> str:
-    """Branch for this attempt.
-
-    Later attempts get a suffix. A retry after a failed provision would
-    otherwise collide with the branch the failed attempt already created, and
-    `worktree.create` rejects an existing branch -- so every retry was
-    guaranteed to fail for the same reason the first one did.
-    """
-    base = task.explicit_branch or f"{cfg.branch_prefix}task-{task.id}"
-    return base if task.attempts <= 1 else f"{base}-a{task.attempts}"
-
-
-def _sleep(seconds: float, cfg: Config) -> None:
-    """Sleep in poll-sized chunks so Ctrl+C stays responsive."""
-    deadline = time.monotonic() + seconds
-    while (remaining := deadline - time.monotonic()) > 0:
-        time.sleep(min(remaining, cfg.poll_seconds))
-
-
-def _hit_the_wall(herdr: Herdr, task: db.Task, cfg: Config) -> bool:
-    """Did this task stop because the subscription ran out?"""
-    if task.pane_id:
-        try:
-            if LIMIT_RE.search(herdr.pane_read(task.pane_id, lines=60)):
-                return True
-        except HerdrError:
-            pass
-    try:
-        return bool(quota.fetch().blockers(cfg.threshold))
-    except quota.QuotaError:
-        return False
-
-
-def _pause(conn: sqlite3.Connection, herdr: Herdr, task: db.Task, reason: str) -> None:
-    """Checkpoint a task so the next window can pick it up.
-
-    The agent keeps its pane and its conversation; `esc` only halts the current
-    turn. Resuming is then just another prompt. The session UUID is recorded as
-    a fallback for when the pane does not survive (reboot, crash).
-    """
-    try:
-        herdr.agent_send_keys(task.pane_id, ["esc"])
-    except HerdrError:
-        pass
-    db.update(
-        conn,
-        task.id,
-        state="paused",
-        session_uuid=herdr.session_uuid(task.pane_id) or task.session_uuid,
-        last_error=reason,
-    )
-    log.info("task %s paused: %s", task.id, reason)
-
-
-def _provision(conn: sqlite3.Connection, herdr: Herdr, task: db.Task, cfg: Config) -> db.Task:
-    """Give a fresh task a worktree, a pane, and a live agent."""
-    branch = branch_name(task, cfg)
-    result = herdr.worktree_create(
-        cwd=task.repo_path,
-        branch=branch,
-        base=task.base_ref,
-        label=f"sheep #{task.id}",
-    )
-    pane_id = (result.get("root_pane") or {}).get("pane_id")
-    workspace_id = (result.get("workspace") or {}).get("workspace_id")
-    worktree_path = (result.get("worktree") or {}).get("path")
-    if not pane_id:
-        raise HerdrError("no_pane", "worktree.create returned no root pane")
-
-    # Record the workspace before starting the agent. If agent.start fails we
-    # still own the worktree and can clean it up or retry into it; otherwise it
-    # leaks with nothing pointing at it.
-    db.update(
-        conn,
-        task.id,
-        branch=branch,
-        pane_id=pane_id,
-        workspace_id=workspace_id,
-        worktree_path=worktree_path,
-        agent_name=agent_name(task),
-    )
-
-    status = herdr.agent_start(
-        agent_name(task), pane_id, kind=cfg.agent_kind, args=cfg.agent_args
-    )
-    if status == "blocked" and _stopped_on_folder_trust(herdr, pane_id):
-        db.update(conn, task.id, session_uuid=herdr.session_uuid(pane_id))
-        raise BlockedOnHuman(
-            "waiting for you to trust the worktree folder in Claude Code"
-        )
-
-    db.update(conn, task.id, session_uuid=herdr.session_uuid(pane_id))
-    return db.get(conn, task.id)
-
-
-def _revive(conn: sqlite3.Connection, herdr: Herdr, task: db.Task, cfg: Config) -> db.Task:
-    """Bring a paused task back.
-
-    Warm path: the agent is still sitting in its pane, so we just prompt it.
-    Cold path: the pane died, so start a new agent on the recorded session with
-    `--resume` and carry on in the same worktree.
-    """
-    if task.pane_id and herdr.status(task.pane_id) is not None:
-        return task
-
-    if not (task.session_uuid and task.worktree_path and task.workspace_id):
-        raise HerdrError("unrecoverable", "paused task lost its pane and session")
-
-    split = herdr.call(
-        "pane.split",
-        {
-            "workspace_id": task.workspace_id,
-            "direction": "right",
-            "cwd": task.worktree_path,
-            "focus": False,
-        },
-    )
-    pane_id = (split.get("pane") or {}).get("pane_id")
-    if not pane_id:
-        raise HerdrError("no_pane", "pane.split returned no pane")
-
-    herdr.agent_start(
-        agent_name(task),
-        pane_id,
-        kind=cfg.agent_kind,
-        args=[*cfg.agent_args, "--resume", task.session_uuid],
-    )
-    db.update(conn, task.id, pane_id=pane_id)
-    return db.get(conn, task.id)
-
-
-def run_task(conn: sqlite3.Connection, herdr: Herdr, task: db.Task, cfg: Config) -> None:
-    resuming = task.state == "paused"
-    db.update(
-        conn,
-        task.id,
-        state="running",
-        # Resuming after a quota pause is not an attempt. Counting it would let
-        # a task that simply spans three windows exhaust max_attempts and get
-        # marked failed for doing exactly what it is supposed to do.
-        attempts=task.attempts if resuming else task.attempts + 1,
-        started_at=task.started_at or db.now(),
-        last_error=None,
-    )
-    task = db.get(conn, task.id)
-
-    try:
-        task = _revive(conn, herdr, task, cfg) if resuming else _provision(conn, herdr, task, cfg)
-        # Only a task whose prompt already landed gets told to carry on. One
-        # that stopped on a startup dialog never saw its instructions, so it
-        # needs the real thing.
-        prompt = RESUME_PROMPT if task.prompted else task.prompt
-        db.update(conn, task.id, prompted=1)
-        herdr.agent_prompt(task.pane_id, prompt, timeout_ms=cfg.task_timeout_ms)
-    except BlockedOnHuman as e:
-        # Leave the pane alive so the question is still there to answer.
-        db.update(conn, task.id, state="blocked", attempts=task.attempts - 1, last_error=str(e))
-        herdr.notify(f"task #{task.id} needs you", str(e))
-        _push("blocked")
-        log.info("task %s blocked: %s", task.id, e)
-        return
-    except HerdrError as e:
-        task = db.get(conn, task.id)
-        if _hit_the_wall(herdr, task, cfg):
-            _pause(conn, herdr, task, f"usage window exhausted ({e.code})")
+        if not ready:
             return
-        _fail(conn, herdr, task, cfg, str(e))
-        return
 
-    task = db.get(conn, task.id)
-    status = herdr.status(task.pane_id)
+        # Only now, once something could actually go out: every check is an
+        # HTTPS round trip, memoised but not free.
+        try:
+            current = quota.current()
+        except quota.QuotaError as e:
+            log.warning("cannot read quota, holding: %s", e)
+            return
+        if blockers := current.blockers(cfg.threshold):
+            names = ", ".join(f"{b.name} {b.utilization:.0f}%" for b in blockers)
+            log.info("holding %d pane(s) on quota (%s); next window at %s",
+                     len(ready), names, current.resume_at(cfg.threshold))
+            return
 
-    if _hit_the_wall(herdr, task, cfg):
-        _pause(conn, herdr, task, "usage window exhausted")
-        return
+        for pane_id in ready:
+            if (prompt := db.next_for_pane(conn, pane_id)) is not None:
+                self.deliver(conn, prompt)
 
-    if status == "blocked":
-        db.update(conn, task.id, state="blocked", last_error="agent is waiting on input")
-        herdr.notify(f"task #{task.id} blocked", "The agent is asking a question.")
+    def report_blocked(self, conn: sqlite3.Connection, pane_id: str) -> None:
+        """Say that a pane has stopped on a question with work stacked behind it.
+
+        The point of the whole queue is that you do not have to watch it. That
+        only holds if the one case it cannot get itself out of comes and finds
+        you instead of waiting silently until morning.
+        """
+        if pane_id in self.reported:
+            return
+        self.reported.add(pane_id)
+        waiting = db.count_waiting(conn, pane_id)
+        self.herdr.notify(
+            f"{pane_id} needs you", f"{waiting} prompt(s) waiting behind a question"
+        )
         _push("blocked")
-        log.info("task %s blocked, needs a human", task.id)
-        return
+        log.info("pane %s is blocked with %d prompt(s) waiting", pane_id, waiting)
 
-    db.update(conn, task.id, state="done", finished_at=db.now(), last_error=None)
-    herdr.notify(f"task #{task.id} done", task.prompt[:120])
-    _push("done")
-    log.info("task %s done on branch %s", task.id, task.branch)
+    def deliver(self, conn: sqlite3.Connection, prompt: db.Prompt, typed: bool = False) -> None:
+        """Hand a prompt over: to the agent in the pane, or to the pane itself.
 
-
-def _fail(conn: sqlite3.Connection, herdr: Herdr, task: db.Task, cfg: Config, error: str) -> None:
-    if task.attempts < cfg.max_attempts:
-        # Tear the workspace down before requeueing. Leaving it up kept the old
-        # agent alive holding this task's agent name, so the retry died on
-        # `agent_name_taken` instead of the thing it was retrying.
-        if task.workspace_id:
-            try:
-                herdr.worktree_remove(task.workspace_id, force=True)
-            except HerdrError as e:
-                log.warning("could not remove %s: %s", task.workspace_id, e)
-        # Drop the provisioning state so the retry builds a clean worktree
-        # rather than reviving a half-made one.
+        `typed` is the shell case -- a pane with nothing running in it takes the
+        text as keystrokes, because there is no agent to hand it to and waiting
+        for one is how a prompt gets stuck for good.
+        """
+        try:
+            if typed:
+                self.herdr.send_line(prompt.pane_id, prompt.prompt)
+            else:
+                self.herdr.agent_prompt(prompt.pane_id, prompt.prompt)
+        except HerdrError as e:
+            db.update(conn, prompt.id, state="failed", last_error=str(e))
+            log.warning("prompt %s could not be delivered: %s", prompt.id, e)
+            _push("failed")
+            return
         db.update(
             conn,
-            task.id,
-            state="queued",
-            last_error=error,
-            pane_id=None,
-            workspace_id=None,
-            worktree_path=None,
-            session_uuid=None,
+            prompt.id,
+            state="sent",
+            sent_at=db.now(),
+            last_error=None,
+            # Refresh the cold-recovery details from the session that actually
+            # took it; what was captured at queue time may be a window old.
+            session_uuid=self.herdr.session_uuid(prompt.pane_id) or prompt.session_uuid,
         )
-        log.warning("task %s errored, will retry: %s", task.id, error)
-        return
-    db.update(conn, task.id, state="failed", finished_at=db.now(), last_error=error)
-    herdr.notify(f"task #{task.id} failed", error[:120])
-    _push("failed")
-    log.error("task %s failed: %s", task.id, error)
+        remaining = db.count_waiting(conn, prompt.pane_id)
+        self.herdr.report_queued(prompt.pane_id, remaining)
+        log.info("delivered prompt %s to %s (%d left)", prompt.id, prompt.pane_id, remaining)
+        if not remaining:
+            _push("queue empty")
 
+    # --- the wall ------------------------------------------------------
 
-def requeue(conn: sqlite3.Connection, herdr: Herdr, task: db.Task) -> str:
-    """Put a stalled task back in play, reusing its agent where one survives.
+    def hit_the_wall(self, conn: sqlite3.Connection, pane_id: str, cfg: Config) -> None:
+        """A pane ran out of window mid-turn.
 
-    A task blocked on a dialog you have since answered still owns a live pane,
-    a worktree and a branch. Sending it round the fresh-provision path would
-    ask Herdr for a branch that already exists and fail every time, so if the
-    agent is still there it resumes into it instead.
+        Halting the turn and queueing a resume in front of everything else is
+        the whole recovery: the agent keeps its pane and its conversation, so
+        picking up where it left off is just another prompt.
 
-    Returns the state the task was put into, for the caller to report.
-    """
-    alive = False
-    if task.pane_id:
+        The banner triggers this but does not decide it. Matching is done against
+        a window of recent output, so the same banner fires again every time the
+        pane redraws while it is still on screen -- and a chat that merely
+        discusses usage limits matches too. Both would `esc` a healthy turn and
+        park a chat that was fine. Usage itself is the authority; the banner is
+        what makes us go and ask.
+        """
+        if self.stalls.get(pane_id, 0.0) > time.monotonic():
+            return  # already parked; the banner simply stayed on screen
+
+        resume_at = None
         try:
-            alive = herdr.status(task.pane_id) is not None
-        except HerdrError:
-            alive = False
+            current = quota.current()
+            if not current.blockers(cfg.threshold):
+                log.debug("limit banner on %s but the window is open; ignoring", pane_id)
+                return
+            resume_at = current.resume_at(cfg.threshold)
+        except quota.QuotaError:
+            # Nothing to check against. Trust the banner, but only when the turn
+            # has actually stopped -- a pane still working is still being read.
+            if self.herdr.status(pane_id) == "working":
+                return
 
-    if alive:
-        db.update(conn, task.id, state="paused", last_error=None, finished_at=None)
-        return "paused"
-
-    # Nothing left to go back to: drop the stale worktree and start over.
-    if task.workspace_id:
         try:
-            herdr.worktree_remove(task.workspace_id, force=True)
+            self.herdr.agent_send_keys(pane_id, ["esc"])
         except HerdrError:
             pass
-    db.update(
-        conn,
-        task.id,
-        state="queued",
-        attempts=0,
-        prompted=0,
-        last_error=None,
-        finished_at=None,
-        pane_id=None,
-        workspace_id=None,
-        worktree_path=None,
-        session_uuid=None,
-    )
-    return "queued"
 
+        self.stalls[pane_id] = time.monotonic() + (
+            max(0.0, (resume_at - datetime.now(timezone.utc)).total_seconds())
+            if resume_at else BLIND_STALL
+        )
 
-def tick(conn: sqlite3.Connection, herdr: Herdr, cfg: Config) -> float:
-    """One scheduling decision. Returns how long to wait before the next."""
-    task = db.next_runnable(conn)
-    if task is None:
-        return cfg.poll_seconds
+        if not any(p.prompt == RESUME_PROMPT for p in db.list_prompts(conn, pane_id, "waiting")):
+            db.add(conn, pane_id, RESUME_PROMPT, head=True)
+        self.herdr.report_queued(pane_id, db.count_waiting(conn, pane_id))
+        self.herdr.notify("usage window exhausted", f"{pane_id} will resume when it resets")
+        _push("window exhausted")
+        log.info("pane %s hit the wall; resuming at %s", pane_id, resume_at or "next check")
 
-    if db.count_running(conn) >= cfg.max_concurrent:
-        return cfg.poll_seconds
+    # --- cold recovery -------------------------------------------------
 
-    try:
-        current = quota.fetch()
-    except quota.QuotaError as e:
-        log.warning("cannot read quota, holding: %s", e)
-        return cfg.poll_seconds
+    def recover(self, conn: sqlite3.Connection, pane_id: str, status: str, cfg: Config) -> None:
+        """Put back a conversation whose agent did not survive.
 
-    if blockers := current.blockers(cfg.threshold):
-        resume_at = current.resume_at(cfg.threshold)
-        names = ", ".join(f"{b.name} {b.utilization:.0f}%" for b in blockers)
-        log.info("holding on quota (%s); next window at %s", names, resume_at)
-        return max(0.0, (resume_at - datetime.now(timezone.utc)).total_seconds())
+        Herdr sessions are detached, so closing the app or losing the phone
+        costs nothing and this never runs. A reboot is what it is for: the pane
+        is gone, but the session UUID still names the conversation, and
+        `--resume` walks back into it with its history intact.
+        """
+        prompt = db.next_for_pane(conn, pane_id)
+        if prompt is None:
+            return
 
-    run_task(conn, herdr, task, cfg)
-    return 0.0
+        if not prompt.session_uuid:
+            # Nothing to resume into, but the pane is still there. It is a
+            # shell, so the prompt is typed into it: holding for an agent that
+            # was never in this pane is a wait that nothing ends.
+            if status == "no-agent":
+                log.info("pane %s has no agent; typing prompt %s into it", pane_id, prompt.id)
+                self.deliver(conn, prompt, typed=True)
+                return
+            failed = db.fail_pane(conn, pane_id, "the chat closed before this could be delivered")
+            log.warning("pane %s is gone with no session to resume; failed %d prompt(s)",
+                        pane_id, failed)
+            _push("failed")
+            return
+
+        try:
+            # A pane that still exists gets its agent back where it stands;
+            # only a vanished one needs somewhere new to live.
+            if status == "no-agent":
+                target = pane_id
+            elif prompt.cwd:
+                target = self.herdr.open_pane(
+                    prompt.cwd, prompt.workspace_id, label="resumed"
+                )
+            else:
+                failed = db.fail_pane(conn, pane_id, "the chat is gone and there is no cwd to reopen it in")
+                log.warning("pane %s is gone with no cwd recorded; failed %d prompt(s)",
+                            pane_id, failed)
+                _push("failed")
+                return
+            self.herdr.agent_start(
+                f"sheepit-{prompt.id}", target, kind=cfg.agent_kind,
+                args=[*cfg.agent_args, "--resume", prompt.session_uuid],
+            )
+        except HerdrError as e:
+            # Back off rather than retrying on every event: a revive that fails
+            # after opening somewhere to live has already left a pane behind,
+            # and a tight loop would leave one per pass.
+            self.stalls[pane_id] = time.monotonic() + BLIND_STALL
+            log.warning("could not revive %s, waiting before trying again: %s", pane_id, e)
+            return
+
+        if target != pane_id:
+            conn.execute(
+                "UPDATE queued_prompt SET pane_id=? WHERE pane_id=? AND state='waiting'",
+                (target, pane_id),
+            )
+            conn.commit()
+        self.stalls.pop(pane_id, None)
+        log.info("revived %s as %s from session %s", pane_id, target, prompt.session_uuid)
+
+    # --- the loop ------------------------------------------------------
+
+    def tick(self, conn: sqlite3.Connection, cfg: Config) -> None:
+        """One pass: forget what is done with, deliver what can go, then wait."""
+        db.prune_sent(conn)
+        self.sweep(conn, cfg)
+
+        panes = db.waiting_panes(conn)
+        try:
+            self.events.ensure(subscriptions(panes))
+        except HerdrError as e:
+            log.warning("cannot subscribe, falling back to polling: %s", e)
+
+        for event in self.events.poll(cfg.poll_seconds):
+            kind = event.get("event")
+            data = event.get("data") or {}
+            pane_id = data.get("pane_id")
+            if kind == "pane.output_matched" and pane_id:
+                if time.monotonic() - self.events.started_at < SUBSCRIBE_GRACE:
+                    continue
+                self.hit_the_wall(conn, pane_id, cfg)
 
 
 class Scheduler(threading.Thread):
     """Runs the dispatch loop alongside the gateway.
 
-    Its own thread because `agent.prompt --wait` blocks for as long as a task
-    takes -- up to task_timeout_ms, two hours by default. In a request handler
-    or in StatusWatcher that would stall the phone UI.
-
-    Its own SQLite connection too: sqlite3 objects are not safe to share across
-    threads, and the HTTP handlers open their own per request.
+    Its own thread because it spends its life blocked on Herdr's event stream,
+    and its own SQLite connection because sqlite3 objects are not safe to share
+    across threads -- the HTTP handlers open their own per request.
     """
 
     def __init__(self, config_loader):
         super().__init__(daemon=True, name="scheduler")
         self._load_config = config_loader
+        self.dispatcher = Dispatcher()
+
+    def wake(self) -> None:
+        """Sweep now rather than at the next poll.
+
+        Queueing a prompt is invisible to Herdr, so nothing in the event stream
+        announces it. Without this, a message typed into an idle chat would sit
+        in the queue for up to a poll interval before being delivered, which is
+        the difference between a queue and a chat.
+        """
+        self.dispatcher.events.wake()
 
     def run(self) -> None:
         conn = db.connect()
-        herdr = Herdr()
-        recovered = db.reset_orphans(conn)
-        if recovered:
-            log.info("recovered %d task(s) interrupted by a restart", recovered)
 
         while True:
             cfg = self._load_config()  # re-read each pass so edits apply live
             try:
-                delay = tick(conn, herdr, cfg)
+                self.dispatcher.tick(conn, cfg)
             except HerdrError as e:
                 log.warning("herdr unavailable: %s", e)
-                delay = cfg.poll_seconds
+                time.sleep(cfg.poll_seconds)
             except Exception as e:
-                # Never let one bad task kill the loop and silently stop the
-                # queue -- that is the failure mode where nothing resumes.
-                log.exception("scheduler tick failed: %s", e)
-                delay = cfg.poll_seconds
-            if delay:
-                _sleep(delay, cfg)
+                # Never let one bad pane kill the loop and silently stop the
+                # queue -- that is the failure mode where nothing is delivered
+                # and nothing says so.
+                log.exception("dispatch failed: %s", e)
+                time.sleep(cfg.poll_seconds)
