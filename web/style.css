@@ -1393,6 +1393,13 @@ html, body {
 /* A window that has already come back carries no percentage worth reading. */
 .usage-window.past { color: var(--text-muted); }
 
+/* Nothing left in this one. The time it comes back is the only part worth
+   reading, so that is the part that goes red - no sentence underneath. */
+.usage-window.out .usage-when {
+  color: var(--status-blocked);
+  font-weight: 600;
+}
+
 .usage-when { color: var(--text-muted); }
 
 .usage-sep { color: var(--text-muted); }

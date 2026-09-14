@@ -2094,7 +2094,11 @@
         const label = [windowLabel(b.name), when].filter(Boolean).join(", ");
         // A window that has rolled over is not at the percentage it was.
         const value = b.expired ? "—" : `${b.utilization.toFixed(0)}%`;
-        return `<span class="usage-window${b.expired ? " past" : ""}">${escapeHtml(value)}
+        /* A window with nothing left says so in red, on the time it comes
+           back - which is the only thing you can do about it. No sentence
+           underneath: the colour is the sentence. */
+        const cls = [b.expired ? "past" : "", b.spent ? "out" : ""].filter(Boolean).join(" ");
+        return `<span class="usage-window${cls ? " " + cls : ""}">${escapeHtml(value)}
           <span class="usage-when">(${escapeHtml(label)})</span></span>`;
       })
       .join('<span class="usage-sep">·</span>');
@@ -2114,7 +2118,7 @@
         <span class="usage-agent">${escapeHtml(name)}</span>
         <span class="usage-bar ${cls}"><span class="usage-fill" style="width:${pct}%"></span></span>
         <span class="usage-detail">${detail}</span>
-      </div>${note}`;
+      </div>`;
   }
 
   // Both strips carry the same reading; whichever view is up draws it.
