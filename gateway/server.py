@@ -9,6 +9,7 @@ import sys
 import time
 import json
 import hashlib
+import logging
 import threading
 import mimetypes
 from pathlib import Path
@@ -950,6 +951,10 @@ def quota_payload() -> dict:
     resume_at = current.resume_at(threshold)
     return {
         "stale": current.stale,
+        "reason": current.reason,
+        # The bars still show the last reading, because it is the only one
+        # there is. This is what says not to believe them.
+        "expired": current.expired,
         "threshold": threshold,
         "blocked": bool(current.blockers(threshold)),
         "resume_at": resume_at.isoformat() if resume_at else None,
@@ -968,6 +973,13 @@ def quota_payload() -> dict:
 
 def run():
     global SCHEDULER
+    # The scheduler says what it is doing -- which pane it is holding, on which
+    # window, until when -- entirely through `logging`, and without this none of
+    # it goes anywhere. A queue that silently delivers nothing all night, with
+    # not one line saying why, is most of what makes this hard to diagnose.
+    logging.basicConfig(
+        level=logging.INFO, stream=sys.stderr, format="%(name)s: %(message)s"
+    )
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     server_address = (HOST, PORT)
     httpd = ThreadingHTTPServer(server_address, HerdrHandler)

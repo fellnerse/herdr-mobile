@@ -66,7 +66,7 @@ def _push(reason: str) -> None:
 
 
 def subscriptions(pane_ids: list[str]) -> list:
-    """What to watch, given the panes with something waiting.
+    """What to watch, given the panes worth watching.
 
     Two questions per pane: has the agent freed up, and has it hit the wall.
     `pane.closed` is global and needs no pane, and is what starts cold recovery.
@@ -217,6 +217,15 @@ class Dispatcher:
         if self.stalls.get(pane_id, 0.0) > time.monotonic():
             return  # already parked; the banner simply stayed on screen
 
+        # A pane still working has not been stopped by anything: whatever
+        # matched is either older than the turn in progress or something the
+        # chat is merely talking about. Checked before usage rather than only
+        # when usage is unreadable, because `esc` on a healthy turn throws away
+        # real work -- and now that every agent is watched rather than only the
+        # ones with a queue behind them, every agent is exposed to that.
+        if self.herdr.status(pane_id) == "working":
+            return
+
         resume_at = None
         try:
             current = quota.current()
@@ -225,10 +234,7 @@ class Dispatcher:
                 return
             resume_at = current.resume_at(cfg.threshold)
         except quota.QuotaError:
-            # Nothing to check against. Trust the banner, but only when the turn
-            # has actually stopped -- a pane still working is still being read.
-            if self.herdr.status(pane_id) == "working":
-                return
+            pass  # nothing to check against; a stopped turn under the banner is the evidence
 
         try:
             self.herdr.agent_send_keys(pane_id, ["esc"])
@@ -241,7 +247,20 @@ class Dispatcher:
         )
 
         if not any(p.prompt == RESUME_PROMPT for p in db.list_prompts(conn, pane_id, "waiting")):
-            db.add(conn, pane_id, RESUME_PROMPT, head=True)
+            try:
+                agent = self.herdr.agents_by_pane().get(pane_id) or {}
+            except HerdrError:
+                agent = {}
+            db.add(
+                conn, pane_id, RESUME_PROMPT, head=True,
+                # The same details the phone records when you queue by hand. A
+                # resume that is going to sit until 4am has to survive whatever
+                # happens to the pane between now and then, and without these
+                # the cold path has nothing to put the conversation back from.
+                workspace_id=agent.get("workspace_id"),
+                session_uuid=(agent.get("agent_session") or {}).get("value"),
+                cwd=agent.get("cwd"),
+            )
         self.herdr.report_queued(pane_id, db.count_waiting(conn, pane_id))
         self.herdr.notify("usage window exhausted", f"{pane_id} will resume when it resets")
         _push("window exhausted")
@@ -259,6 +278,16 @@ class Dispatcher:
         """
         prompt = db.next_for_pane(conn, pane_id)
         if prompt is None:
+            return
+
+        if prompt.prompt == RESUME_PROMPT and not prompt.session_uuid:
+            # A resume is an instruction to a conversation, and with no session
+            # there is no conversation left for it to mean anything to. Typing
+            # "continue where you left off" at a bare shell is the one outcome
+            # worse than losing it, so it goes -- and whatever was queued behind
+            # it, which was written by a person and still makes sense, stays.
+            db.delete(conn, prompt.id)
+            log.info("dropping the resume for %s: no session left to continue", pane_id)
             return
 
         if not prompt.session_uuid:
@@ -343,12 +372,34 @@ class Dispatcher:
 
     # --- the loop ------------------------------------------------------
 
+    def watched(self, conn: sqlite3.Connection) -> list[str]:
+        """Every pane whose wall we have to notice.
+
+        Deliberately wider than the queue. Delivering is only ever the queue's
+        business, but running out of window is not: the case this whole thing
+        exists for is a chat left working overnight with nothing queued behind
+        it, and watching only panes with a prompt waiting means the one session
+        that actually needed picking back up is the one session nobody was
+        listening to. Any pane with an agent in it can run out mid-turn, so any
+        pane with an agent in it is watched.
+
+        Queued panes stay in the set even with no agent left in them: that is
+        the cold path, where the agent is gone and `pane.closed` is the thing
+        that starts putting it back.
+        """
+        try:
+            agents = list(self.herdr.agents_by_pane())
+        except HerdrError as e:
+            log.warning("cannot list agents, watching queued panes only: %s", e)
+            agents = []
+        return list(dict.fromkeys([*agents, *db.waiting_panes(conn)]))
+
     def tick(self, conn: sqlite3.Connection, cfg: Config) -> None:
         """One pass: forget what is done with, deliver what can go, then wait."""
         db.prune_sent(conn)
         self.sweep(conn, cfg)
 
-        panes = db.waiting_panes(conn)
+        panes = self.watched(conn)
         try:
             self.events.ensure(subscriptions(panes))
         except HerdrError as e:

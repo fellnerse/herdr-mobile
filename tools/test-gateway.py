@@ -478,6 +478,170 @@ watcher.observe({})
 check("a closed pane is forgotten", watcher.busy_since_told, set())
 
 # ---------------------------------------------------------------------------
+# Picking back up after a usage window, which has exactly two ways to silently
+# never happen: nothing is watching the pane, or usage says the wall is still
+# there long after it came down. Both looked identical from the phone -- a queue
+# with prompts in it and nothing being delivered -- so both are pinned here.
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from scheduler import db as sched_db  # noqa: E402
+from scheduler import quota as sched_quota  # noqa: E402
+from scheduler.config import Config  # noqa: E402
+from scheduler.dispatch import Dispatcher, RESUME_PROMPT  # noqa: E402
+
+_now = datetime.now(timezone.utc)
+
+
+def bucket(util, resets_in=None, locked=None, name="five_hour"):
+    return sched_quota.Bucket(
+        name, util, _now + resets_in if resets_in is not None else None, locked
+    )
+
+
+def quota_of(buckets, age=timedelta(0), stale=True):
+    return sched_quota.Quota(tuple(buckets), _now - age, stale=stale)
+
+
+# The frozen cache. A token that expires overnight makes every read from then on
+# the same cached one, so a reading taken at a full window stays full forever --
+# and a window whose own reset is in the past is the one reading we can prove is
+# no longer about anything. Believing it is a queue that never moves again.
+check("a cached window whose reset has passed stops blocking",
+      quota_of([bucket(100.0, -timedelta(minutes=30))]).blockers(85.0), [])
+check("and has nothing left to wait for",
+      quota_of([bucket(100.0, -timedelta(minutes=30))]).resume_at(85.0), None)
+check("a real wall still blocks",
+      [b.name for b in quota_of([bucket(100.0, timedelta(hours=2))],
+                                stale=False).blockers(85.0)], ["five_hour"])
+check("a window that never said when it resets ages out of being trusted",
+      quota_of([bucket(100.0)], age=timedelta(minutes=20)).blockers(85.0), [])
+check("but not before the backoff it is entitled to",
+      [b.name for b in quota_of([bucket(100.0)], age=timedelta(minutes=5)).blockers(85.0)],
+      ["five_hour"])
+check("a lock is a lock however old the reading",
+      [b.name for b in quota_of([bucket(0.0, -timedelta(hours=1), locked="plan")],
+                                age=timedelta(hours=1)).blockers(85.0)], ["five_hour"])
+check("a fresh reading is never expired",
+      quota_of([bucket(100.0, timedelta(hours=2))], stale=False).expired, False)
+
+
+class FakePane:
+    """One pane with an agent in it, and a record of what was done to it."""
+
+    def __init__(self, status="idle", session="sess-abc"):
+        self.status_value, self.session, self.keys, self.sent, self.typed = \
+            status, session, [], [], []
+
+    def agents_by_pane(self):
+        return {"wA:p1": {"pane_id": "wA:p1", "workspace_id": "wA", "cwd": "/root/x",
+                          "agent_session": {"kind": "id", "value": self.session}}}
+
+    def status(self, pane_id):
+        return self.status_value
+
+    def session_uuid(self, pane_id):
+        return self.session
+
+    def agent_send_keys(self, pane_id, keys):
+        self.keys.append(keys)
+
+    def agent_prompt(self, target, text):
+        self.sent.append(text)
+
+    def send_line(self, pane_id, text):
+        self.typed.append(text)
+
+    def report_queued(self, pane_id, count):
+        pass
+
+    def notify(self, *a, **k):
+        pass
+
+
+class Silent:
+    """An event stream that reports nothing, so only the sweep is under test."""
+
+    connected, started_at = True, 0.0
+
+    def ensure(self, subs):
+        pass
+
+    def poll(self, timeout):
+        return []
+
+    def wake(self):
+        pass
+
+
+def fresh_db():
+    return sched_db.connect(Path(tempfile.mkdtemp()) / "queue.sqlite3")
+
+
+# The reported bug. Watching only the panes with something queued means a chat
+# left running overnight -- which is the whole case for this existing -- is the
+# one chat nothing is subscribed to when it runs out.
+pane = FakePane()
+d = Dispatcher(herdr=pane, events=Silent())
+conn = fresh_db()
+check("a pane with an agent and an empty queue is still watched",
+      d.watched(conn), ["wA:p1"])
+
+# Hitting the wall parks the pane and puts a resume in front of the queue, with
+# enough recorded on it to survive the pane it belongs to.
+import unittest.mock as _mock  # noqa: E402
+
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    d.hit_the_wall(conn, "wA:p1", Config())
+queued = sched_db.next_for_pane(conn, "wA:p1")
+check("the wall queues a resume at the head", queued.prompt, RESUME_PROMPT)
+check("with the session it has to resume into", queued.session_uuid, "sess-abc")
+check("and somewhere to put it back", (queued.workspace_id, queued.cwd), ("wA", "/root/x"))
+check("the halted turn is let go of", pane.keys, [["esc"]])
+
+# A banner on a pane that is still working is not a wall -- it is scrollback, or
+# a chat talking about usage limits. `esc` there throws away a live turn.
+busy = FakePane(status="working")
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    Dispatcher(herdr=busy, events=Silent()).hit_the_wall(fresh_db(), "wA:p1", Config())
+check("a working pane is never interrupted by a banner", busy.keys, [])
+
+# End to end, from exactly the state the phone was stuck in: a resume and a
+# typed prompt queued behind a cached, expired, hundred-percent window.
+pane = FakePane()
+d = Dispatcher(herdr=pane, events=Silent())
+conn = fresh_db()
+sched_db.add(conn, "wA:p1", RESUME_PROMPT, head=True,
+             session_uuid="sess-abc", cwd="/root/x", workspace_id="wA")
+sched_db.add(conn, "wA:p1", "continue, I told you so!")
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, -timedelta(minutes=30))],
+                                              age=timedelta(minutes=30))), \
+     _mock.patch("scheduler.dispatch._push"):
+    d.sweep(conn, Config())
+    d.sweep(conn, Config())
+check("a stale wall no longer holds the queue shut",
+      [pane.sent[0] == RESUME_PROMPT, pane.sent[1]], [True, "continue, I told you so!"])
+check("and the queue empties", sched_db.count_waiting(conn, "wA:p1"), 0)
+
+# A resume names a conversation. With no session there is none, and typing
+# "continue where you left off" at a bare shell is worse than losing it.
+shell = FakePane(session=None)
+d = Dispatcher(herdr=shell, events=Silent())
+conn = fresh_db()
+sched_db.add(conn, "wB:p1", RESUME_PROMPT, head=True)
+sched_db.add(conn, "wB:p1", "a real thing I typed")
+with _mock.patch("scheduler.dispatch._push"):
+    d.recover(conn, "wB:p1", "no-agent", Config())
+    d.recover(conn, "wB:p1", "no-agent", Config())
+check("an unrecoverable resume is dropped, not typed at a shell",
+      shell.typed, ["a real thing I typed"])
+
+# ---------------------------------------------------------------------------
 
 if failures:
     print("\n".join(failures))

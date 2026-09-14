@@ -205,6 +205,16 @@ class Herdr:
 
     # --- helpers -------------------------------------------------------
 
+    def agents_by_pane(self) -> dict:
+        """Every pane with an agent in it, keyed by pane id.
+
+        One call answers both things the dispatcher wants to know about a pane
+        it has no queue for: that there is a conversation in it at all, and --
+        from `workspace_id`, `cwd` and `agent_session` -- everything needed to
+        put that conversation back if the pane does not survive the night.
+        """
+        return {a["pane_id"]: a for a in self.agent_list() if a.get("pane_id")}
+
     def session_uuid(self, pane_id: str):
         """The Claude Code session UUID of the agent in a pane.
 
@@ -215,12 +225,8 @@ class Herdr:
         auto-detected kind (`claude`) as the name unless an explicit one binds,
         so names are not reliably unique while pane IDs always are.
         """
-        for agent in self.agent_list():
-            if agent.get("pane_id") == pane_id:
-                session = agent.get("agent_session") or {}
-                if session.get("kind") == "id":
-                    return session.get("value")
-        return None
+        session = (self.agents_by_pane().get(pane_id) or {}).get("agent_session") or {}
+        return session.get("value") if session.get("kind") == "id" else None
 
     def status(self, pane_id: str) -> str:
         """What is in a pane: an agent's lifecycle state, or why there isn't one.
