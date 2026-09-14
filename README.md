@@ -37,9 +37,11 @@ project telling you at a glance who is working and who is waiting.
   Claude Code and Codex panes are both read, whichever glyphs they draw with.
 - **Your herd at a glance.** One sheep per project, coloured *and* posed by
   what its agent is doing: grazing while it works, head up when idle, ear
-  pricked when blocked, asleep when done. Grouped under the repository they
-  work in — worktrees included — in the order they were started, with whoever
-  is asking you a question on top.
+  pricked when blocked, asleep when done. Every sheep also wears its own ear
+  tag and markings, hashed from its pane, so two agents on one project are not
+  the same animal twice. Grouped under the repository they work in — worktrees
+  included — in the order they were started, with whoever is asking you a
+  question on top.
 - **What is left to spend**, above the flock: the same usage windows the queue
   runs on, so you can see the wall coming before you start three more agents.
 - **Notifications when an agent actually wants you** — a turn that finished, a

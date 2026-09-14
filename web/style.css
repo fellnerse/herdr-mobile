@@ -374,6 +374,14 @@ html, body {
 .sheep-ear { stroke-width: 1; }
 .sheep-eye { fill: var(--bg-card); }
 
+/* The ear tag: this sheep's own colour, hashed from its pane, so two agents
+   on the same project are not the same animal twice. Outlined like the ear it
+   hangs from, or it reads as a stray pixel rather than a tag. */
+.sheep-tag {
+  stroke: var(--bg-card);
+  stroke-width: 1.1;
+}
+
 /* A shut eye for a sleeping sheep: the lid takes the card's colour so it reads
    as a closed lid rather than a stray mark on the face. */
 .sheep-lid {
@@ -384,6 +392,7 @@ html, body {
 }
 
 .agent-row.active .sheep-face,
+.agent-row.active .sheep-tag,
 .agent-row.active .sheep-ear { stroke: var(--bg-hover); }
 
 .agent-row.active .sheep-eye { fill: var(--bg-hover); }

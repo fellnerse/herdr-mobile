@@ -36,6 +36,18 @@ function loadRows() {
   return new Function(`${PRELUDE}${src.slice(from, to)} return { agentRowHtml };`)();
 }
 
+/* The markings that tell two sheep on one project apart. Sliced on its own so
+   the hash can be asked directly what it makes of an id. */
+function loadMarks() {
+  const src = fs.readFileSync(SRC, "utf8");
+  const from = src.indexOf("  const POSE = {");
+  const to = src.indexOf("  /* Everything a row draws.");
+  if (from < 0 || to < 0) throw new Error(`marks anchors moved in ${SRC}`);
+  return new Function(
+    `${src.slice(from, to)} return { sheepMarks, sheepSvg, TAGS, FLEECES, FACES, knownStatus };`
+  )();
+}
+
 function loadFlock(pickerHidden = true) {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf(FROM);
@@ -262,6 +274,44 @@ function order(agents, pickerHidden = true, held = []) {
     "api");
   check("a titleless pane falls back to its name", text(fresh, "agent-row-name"), "api");
   check("and says where it is", text(fresh, "agent-row-title"), "/p/api");
+}
+
+// -- telling two sheep apart -------------------------------------------------
+
+{
+  const m = loadMarks();
+  const key = (id) => {
+    const marks = m.sheepMarks(id);
+    return `${marks.tag}|${marks.fleece.join("")}|${marks.face}`;
+  };
+
+  /* A sheep that changes its markings is not an identity, it is noise. The
+     same pane has to be the same animal across a reload and a restart. */
+  check("the same pane is the same sheep", key("wJ:p1"), key("wJ:p1"));
+
+  /* Pane ids differ in one character - "wE:p1" against "wJ:p1" - which is
+     exactly where a weak hash hands out the same tag to the whole herd. */
+  const ids = [];
+  for (const w of ["wE", "wJ", "wM", "wP", "w11", "w12", "w13", "w2", "w3", "w4", "wA", "wB"]) {
+    ids.push(`${w}:p1`, `${w}:p2`);
+  }
+  const distinct = new Set(ids.map(key));
+  check("a plausible herd is all distinct", distinct.size, ids.length);
+  check("and wears every tag in the drawer",
+        new Set(ids.map((id) => m.sheepMarks(id).tag)).size, m.TAGS.length);
+
+  // Markings are identity; the fleece colour and the pose are status. One must
+  // never be read off the other.
+  const working = m.sheepSvg("working", "wJ:p1");
+  const blocked = m.sheepSvg("blocked", "wJ:p1");
+  const tag = m.sheepMarks("wJ:p1").tag;
+  check("the tag survives a change of status",
+        [working.includes(tag), blocked.includes(tag)], [true, true]);
+  check("and so does the patch of dark fleece",
+        [working, blocked].map((svg) => svg.includes('cx="13.5" cy="17.5"')), [true, true]);
+
+  // Nobody home is nobody to tell apart.
+  check("an empty pasture wears no tag", m.sheepSvg("unknown", "wJ:p1").includes("sheep-tag"), false);
 }
 
 if (failures) {

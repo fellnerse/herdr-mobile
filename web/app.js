@@ -778,39 +778,104 @@
     unknown: "empty",
   };
 
-  function sheepBody(dy, legs) {
+  /* ------------------------------------------------------- Telling them apart
+   *
+   * Status is a colour and a posture, and two agents working on the same
+   * project are therefore the same animal twice. A shepherd has this problem
+   * too and solved it long before software did: every sheep wears a numbered
+   * ear tag, and you learn the markings on the ones you look at daily.
+   *
+   * So each pane gets its own: a tag colour, a patch of darker fleece, and the
+   * shade of its face, all hashed out of the pane id. It is deterministic -
+   * the same pane is the same sheep across a reload, a restart, and this
+   * phone's whole life - and it is drawn in the space status does not use.
+   * Status stays the fleece and the pose; identity is the small stuff.
+   * ------------------------------------------------------------------------ */
+
+  /* FNV-1a, because the ids being hashed are short and nearly identical -
+     "wE:p1" and "wJ:p1" differ in one character, and a weaker hash hands them
+     the same tag. */
+  function fnv1a(text) {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return hash >>> 0;
+  }
+
+  /* Tag colours, chosen to stay apart from each other at the size of a pip and
+     to sit on any fleece: a sheep's status colour is the whole animal, so the
+     tag never has to compete with it. */
+  const TAGS = [
+    "#ff7ab6", "#ff9f45", "#ffd43b", "#9ae64c", "#3ddc97", "#2ec4d6",
+    "#4d9dff", "#8b7bff", "#c77dff", "#ff6b6b", "#d9b38c", "#7de3ff",
+  ];
+
+  // Patches of darker fleece. Ink over whatever colour the status painted.
+  const PATCH = {
+    a: '<circle cx="13.5" cy="17.5" r="3.2"/>',
+    b: '<circle cx="21" cy="14.5" r="2.6"/>',
+    c: '<circle cx="26.5" cy="18.5" r="2.8"/>',
+    d: '<circle cx="17" cy="20.5" r="2.4"/>',
+  };
+  const FLEECES = [[], ["a"], ["c"], ["a", "c"], ["b", "d"], ["a", "b"], ["c", "d"], ["a", "b", "c"]];
+
+  // Face shades a breed might come in. All stay light enough for a dark eye.
+  const FACES = ["#dfe5f0", "#cbb392", "#a7b0c2"];
+
+  function sheepMarks(seed) {
+    const hash = fnv1a(String(seed || ""));
+    return {
+      tag: TAGS[hash % TAGS.length],
+      fleece: FLEECES[(hash >>> 5) % FLEECES.length],
+      face: FACES[(hash >>> 11) % FACES.length],
+    };
+  }
+
+  function sheepBody(dy, legs, marks) {
+    const patches = marks.fleece.map((key) => PATCH[key]).join("");
     return `
-      <g fill="currentColor" transform="translate(0 ${dy})">
-        ${legs ? '<rect x="11" y="21" width="5" height="12" rx="2.5"/>' : ""}
-        ${legs ? '<rect x="23" y="21" width="5" height="12" rx="2.5"/>' : ""}
-        <circle cx="11.5" cy="16" r="7.5"/>
-        <circle cx="18" cy="11" r="8"/>
-        <circle cx="25.5" cy="11.5" r="7.5"/>
-        <circle cx="31" cy="16" r="7"/>
-        <rect x="5" y="13" width="27" height="13" rx="6.5"/>
+      <g transform="translate(0 ${dy})">
+        <g fill="currentColor">
+          ${legs ? '<rect x="11" y="21" width="5" height="12" rx="2.5"/>' : ""}
+          ${legs ? '<rect x="23" y="21" width="5" height="12" rx="2.5"/>' : ""}
+          <circle cx="11.5" cy="16" r="7.5"/>
+          <circle cx="18" cy="11" r="8"/>
+          <circle cx="25.5" cy="11.5" r="7.5"/>
+          <circle cx="31" cy="16" r="7"/>
+          <rect x="5" y="13" width="27" height="13" rx="6.5"/>
+        </g>
+        <g fill="#05070c" opacity="0.22">${patches}</g>
       </g>`;
   }
 
+  /* Each pose puts the ear somewhere else, so the tag hanging from it is part
+     of the pose rather than something laid over the top. */
   const HEADS = {
     // Head down in the grass.
-    graze: `
+    graze: (m) => `
       <ellipse class="sheep-ear" cx="33.2" cy="15.2" rx="3" ry="1.8" transform="rotate(-42 33.2 15.2)"/>
-      <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6"/>
+      <circle class="sheep-tag" cx="34.6" cy="13.6" r="2.1" style="fill:${m.tag}"/>
+      <ellipse class="sheep-face" cx="36.6" cy="19.4" rx="5.4" ry="4.6" style="fill:${m.face}"/>
       <circle class="sheep-eye" cx="38.2" cy="18" r="1.2"/>`,
     // Head up, ear resting: done, waiting on you.
-    stand: `
+    stand: (m) => `
       <ellipse class="sheep-ear" cx="32.4" cy="9" rx="3" ry="1.8" transform="rotate(-38 32.4 9)"/>
-      <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6"/>
+      <circle class="sheep-tag" cx="33.6" cy="7.2" r="2.1" style="fill:${m.tag}"/>
+      <ellipse class="sheep-face" cx="36.4" cy="12.6" rx="5.4" ry="4.6" style="fill:${m.face}"/>
       <circle class="sheep-eye" cx="38.2" cy="11.4" r="1.2"/>`,
     // Ear pricked straight up: something is asking for an answer.
-    alert: `
+    alert: (m) => `
       <ellipse class="sheep-ear" cx="33.6" cy="6.2" rx="3.2" ry="1.7" transform="rotate(-72 33.6 6.2)"/>
-      <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6"/>
+      <circle class="sheep-tag" cx="34.4" cy="3.6" r="2.1" style="fill:${m.tag}"/>
+      <ellipse class="sheep-face" cx="36.8" cy="10.2" rx="5.4" ry="4.6" style="fill:${m.face}"/>
       <circle class="sheep-eye" cx="38.6" cy="8.8" r="1.3"/>`,
     // Lying down, eye shut, legs folded under.
-    sleep: `
+    sleep: (m) => `
       <ellipse class="sheep-ear" cx="32.6" cy="20.4" rx="3" ry="1.8" transform="rotate(-30 32.6 20.4)"/>
-      <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6"/>
+      <circle class="sheep-tag" cx="33.4" cy="18.4" r="2.1" style="fill:${m.tag}"/>
+      <ellipse class="sheep-face" cx="36.4" cy="24.6" rx="5.4" ry="4.6" style="fill:${m.face}"/>
       <path class="sheep-lid" d="M36.4 24.2 q1.6 1.4 3.2 0"/>`,
   };
 
@@ -834,16 +899,18 @@
     return Object.prototype.hasOwnProperty.call(POSE, status) ? status : "unknown";
   }
 
-  function sheepSvg(status) {
+  function sheepSvg(status, seed) {
     const pose = POSE[knownStatus(status)];
+    // An empty pasture has nobody to tell apart.
     if (pose === "empty") {
       return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${EMPTY_PASTURE}</svg>`;
     }
+    const marks = sheepMarks(seed);
     const asleep = pose === "sleep";
     return `
       <svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">
-        ${sheepBody(asleep ? 5 : 0, !asleep)}
-        ${HEADS[pose]}
+        ${sheepBody(asleep ? 5 : 0, !asleep, marks)}
+        ${HEADS[pose](marks)}
       </svg>`;
   }
 
@@ -890,7 +957,7 @@
       <div class="agent-row-wrap">
         <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
         <button class="agent-row ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${status}">${sheepSvg(status)}</span>
+          <span class="sheep-wrap ${status}">${sheepSvg(status, agent.pane_id)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}

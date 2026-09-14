@@ -25,6 +25,27 @@ The sheep is inline SVG so the fleece can inherit each row's colour, which is
 also why the face and ear are pale with a card-coloured outline: a dark muzzle
 disappears into the dark card and leaves a headless blob.
 
+### Telling two of them apart
+
+Status is a colour and a posture, so two agents working on the same project are
+the same animal twice — and the overview groups them into exactly that
+situation. Shepherds have the problem too, and solved it long before software
+did: every sheep wears a numbered ear tag, and you learn the markings on the
+ones you see daily.
+
+So each pane gets its own, hashed out of its pane id: a tag colour from twelve,
+a patch of darker fleece from eight layouts, and one of three face shades. That
+is 288 sheep, and a herd of a dozen panes comes out all-distinct — the test
+asserts it over the pane ids Herdr actually hands out, which differ in one
+character (`wE:p1`, `wJ:p1`) and are exactly where a weaker hash than FNV-1a
+gives the whole flock the same tag.
+
+The markings live in the space status does not use. The fleece colour and the
+pose stay status; identity is the small stuff — a pip on the ear, a dark patch,
+the shade of a muzzle — and neither can be read off the other. Because the seed
+is the pane id, a sheep is the same animal across a reload, a gateway restart,
+and the phone's whole life, and a new pane is a new sheep.
+
 ## The order of the flock
 
 The overview used to follow whatever moved last. With five agents on one
