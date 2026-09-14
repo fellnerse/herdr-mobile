@@ -13,8 +13,11 @@ CONFIG_PATH = STATE_DIR / "scheduler.json"
 
 @dataclass
 class Config:
-    threshold: float = 85.0
-    """Stop admitting new work once any usage window passes this percentage."""
+    threshold: float = 80.0
+    """Where a usage window starts reading as amber on the phone.
+
+    A warning and nothing else: nothing is held back for it. Red is the cap
+    itself, which is not a setting - a window is either out or it is not."""
 
     poll_seconds: int = 60
     """How long to wait on the event stream before sweeping the queue anyway.

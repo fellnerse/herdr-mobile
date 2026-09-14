@@ -104,10 +104,15 @@ class Dispatcher:
     def sweep(self, conn: sqlite3.Connection, cfg: Config) -> None:
         """Deliver one prompt to every pane that can take one.
 
-        One at a time per pane: Claude Code would happily queue all of them
-        itself, but then everything behind the first prompt runs against
-        whatever the subscription looks like by the time it gets there, which is
-        the entire thing this queue exists to decide.
+        One at a time per pane: what is waiting behind the first prompt should
+        be read by an agent that has finished the one in front of it, not
+        stacked into a session all at once.
+
+        Nothing here consults usage. A prompt somebody typed is theirs to spend
+        their own window on, down to the last percent, and a queue that decides
+        otherwise is a queue that stops working exactly when it is wanted. The
+        only thing that defers a pane is that pane having hit the wall
+        mid-turn, which parks it until the window it ran out of reopens.
         """
         ready = []
         for pane_id in db.waiting_panes(conn):
@@ -127,22 +132,6 @@ class Dispatcher:
             self.reported.discard(pane_id)
             if status in READY:
                 ready.append(pane_id)
-
-        if not ready:
-            return
-
-        # Only now, once something could actually go out: every check is an
-        # HTTPS round trip, memoised but not free.
-        try:
-            current = quota.current()
-        except quota.QuotaError as e:
-            log.warning("cannot read quota, holding: %s", e)
-            return
-        if blockers := current.blockers(cfg.threshold):
-            names = ", ".join(f"{b.name} {b.utilization:.0f}%" for b in blockers)
-            log.info("holding %d pane(s) on quota (%s); next window at %s",
-                     len(ready), names, current.resume_at(cfg.threshold))
-            return
 
         for pane_id in ready:
             if (prompt := db.next_for_pane(conn, pane_id)) is not None:
@@ -228,11 +217,11 @@ class Dispatcher:
 
         resume_at = None
         try:
-            current = quota.current()
-            if not current.blockers(cfg.threshold):
+            current = quota.current(self.herdr.agent_kind(pane_id) or "")
+            if not current.spent():
                 log.debug("limit banner on %s but the window is open; ignoring", pane_id)
                 return
-            resume_at = current.resume_at(cfg.threshold)
+            resume_at = current.resume_at()
         except quota.QuotaError:
             pass  # nothing to check against; a stopped turn under the banner is the evidence
 

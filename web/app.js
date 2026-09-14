@@ -14,6 +14,7 @@
     activity: {},
     drafts: {},
     order: [],
+    customOrder: [],
     groups: [],
     pickerOpen: false,
     bleat: true,
@@ -29,7 +30,6 @@
     queue: [],
     quota: null,
     quotaAt: 0,
-    queueOpen: false,
     queueSignature: null,
     editingId: null,
   };
@@ -78,21 +78,8 @@
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
-  const elBtnQueue = document.getElementById("btn-queue");
-  const elQueueBadge = document.getElementById("queue-badge");
-  const elQueueView = document.getElementById("queue-view");
-  const elBtnCloseQueue = document.getElementById("btn-close-queue");
-  const elQuotaStrip = document.getElementById("quota-strip");
   const elPickerQuota = document.getElementById("picker-quota");
-  const elTaskList = document.getElementById("task-list");
-  const elBtnNewTask = document.getElementById("btn-new-task");
-  const elTaskSheet = document.getElementById("task-sheet");
-  const elTaskPrompt = document.getElementById("task-prompt");
-  const elTaskError = document.getElementById("task-error");
-  const elBtnSubmitTask = document.getElementById("btn-submit-task");
-  const elBtnCancelTask = document.getElementById("btn-cancel-task");
-  const elTaskSheetTitle = document.getElementById("task-sheet-title");
-  const elTaskSheetCwd = document.getElementById("task-sheet-cwd");
+  const elChatQueue = document.getElementById("chat-queue");
   const elBtnConsole = document.getElementById("btn-console");
   const elConsoleView = document.getElementById("console-view");
   const elConsoleTerm = document.getElementById("console-term");
@@ -714,8 +701,11 @@
         !state.activePaneId ||
         !state.agents.some((a) => a.pane_id === state.activePaneId)
       ) {
-        if (state.agents.length > 0) {
-          selectAgent(state.agents[0].pane_id);
+        // The first agent on screen, or failing that the first row there is:
+        // a project whose tabs are all plain shells is still worth opening.
+        const first = state.agents.find((a) => a.has_agent) || state.agents[0];
+        if (first) {
+          selectAgent(first.pane_id);
         } else {
           state.activePaneId = null;
           renderActiveAgentMeta();
@@ -754,11 +744,25 @@
     });
   }
 
+  /* The project, and which of its tabs this is - but only when it has more
+     than one, because "sheepit \u00b7 1" on a project with a single tab is a
+     detail nobody needed and the header has no width to spare. */
+  function agentBarName(row) {
+    const name = row.workspace_label || row.name || row.pane_id;
+    const tabs = new Set(
+      state.agents
+        .filter((a) => a.workspace_id === row.workspace_id)
+        .map((a) => a.tab_id)
+    );
+    if (tabs.size < 2) return name;
+    return `${name} \u00b7 ${tabName(row) || "tab " + tabNumber(row)}`;
+  }
+
   // Header button showing the current project
   function renderAgentBar() {
     const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
     elAgentSelectName.textContent = agent
-      ? agent.name || agent.pane_id
+      ? agentBarName(agent)
       : state.agents.length
       ? "Select project"
       : "No agents";
@@ -767,7 +771,7 @@
     if (!elAgentPicker.classList.contains("hidden")) renderAgentList();
   }
 
-  /* One sheep per project, the same animal the home screen icon shows. Colour
+  /* A sheep per tab, the same animal the home screen icon shows. Colour
      carries the status, but so does the posture: an agent that is working
      grazes, one that is idle stands with its head up, a blocked one pricks its
      ear at you, and a finished one lies down to sleep. A pane with no agent is
@@ -1098,7 +1102,9 @@
 
   /* Everything a row draws. The picker is redrawn on every poll, and replacing
      its HTML restarts each sheep's graze mid-cycle and throws away the row a
-     swipe is holding open - so redraw only when one of these actually moved. */
+     swipe is holding open - so redraw only when one of these actually moved.
+     The projects' order is in here too, because it is the one thing that can
+     change without any single row changing at all. */
   function agentListSignature() {
     const queued = queuedByPane();
     return state.groups
@@ -1110,8 +1116,11 @@
             [
               a.pane_id,
               a.workspace_id,
+              a.tab_id,
               a.status,
+              a.has_agent ? "a" : "",
               a.name,
+              tabName(a),
               a.title || a.cwd,
               agoLabel(a.pane_id),
               queuedLabel(queued.get(a.pane_id)),
@@ -1125,10 +1134,15 @@
 
   /* A row under a heading that already names the project should not spend its
      biggest line saying the project again. What you are looking for is which
-     of this project's agents this one is - so the terminal title leads, since
-     it is whatever you asked it to do, and the workspace label drops to the
-     small line, and only when it says something the heading did not: "sheep
-     #5", or a name you set by hand. */
+     of this project's tabs this one is - so the terminal title leads, since it
+     is whatever you asked it to do, and the rest drops to the small line, and
+     only when it says something the heading did not: the tab's name, "sheep
+     #5", or a name you set by hand.
+
+     A tab with no agent in it has no title to lead with. It is called what the
+     laptop's tab bar calls it, which is a name if anybody typed one and a
+     number otherwise - and that is the whole point of listing it: the row you
+     want at 11pm is often the one running the dev server. */
   /* What is still owed to each pane: prompts holding for a window or a busy
      chat, and anything that failed on the way in. Both are things you queued
      and neither has happened yet, so the overview says so rather than making
@@ -1156,7 +1170,11 @@
     const isActive = agent.pane_id === state.activePaneId;
     const status = knownStatus(agent.status);
     const label = agent.name || agent.pane_id;
-    const headline = agent.title || label;
+    const named = tabName(agent);
+    // Herdr's own number for the tab, when it has one: a pane the gateway
+    // could not place has nothing but the project's name to fall back on.
+    const numbered = tabNumber(agent) ? `tab ${tabNumber(agent)}` : "";
+    const headline = agent.title || named || numbered || label;
     /* The fleece is whose sheep it is. An empty pasture has no sheep and so no
        breed - it keeps the muted colour the stylesheet gives it, which an
        inline one would quietly win against. */
@@ -1164,19 +1182,32 @@
       ? ""
       : ` style="color:${sheepMarks(agent.pane_id).breed.fleece}"`;
     let sub = "";
-    if (label !== headline && label !== groupName) sub = label;
+    if (named && named !== headline) sub = named;
+    else if (label !== headline && label !== groupName) sub = label;
     else if (!agent.title) sub = agent.cwd || "";
     return `
       <div class="agent-row-wrap">
-        <button class="agent-row-delete" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+        <div class="agent-row-actions">
+          <button class="agent-row-action rename" data-action="rename" data-pane-id="${escapeHtml(agent.pane_id)}">Rename</button>
+          <button class="agent-row-action close" data-action="close" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+        </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
           <span class="sheep-wrap ${status}"${fleece}>${sheepSvg(status, agent.pane_id)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
-            ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
+            <span class="agent-row-meta">
+              ${agent.has_agent && agent.agent
+                ? `<span class="row-agent">${escapeHtml(agent.agent)}</span>`
+                : ""}
+              ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
+            </span>
           </span>
           <span class="agent-row-side">
-            <span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>
+            ${
+              agent.has_agent
+                ? `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`
+                : `<span class="agent-row-ago">shell</span>`
+            }
             <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
             ${queued
                 ? `<span class="agent-row-queued${queued.failed ? " failed" : ""}">${escapeHtml(queuedLabel(queued))}</span>`
@@ -1191,13 +1222,14 @@
      under it. The heading counts the ones asking you something, because that
      is the number the list was opened to find. */
   function renderAgentList() {
-    if (state.agents.length === 0) {
+    if (state.groups.length === 0) {
       state.listSignature = null;
       elAgentList.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
       return;
     }
 
-    // Never under the thumb: a rebuild would snap a swiped row shut.
+    // Never under the thumb: a rebuild would snap a swiped row shut, or pull
+    // the floor out from under a project being carried somewhere else.
     if (state.swiping || elAgentList.querySelector(".agent-row.swiped")) return;
     const signature = agentListSignature();
     if (signature === state.listSignature) return;
@@ -1220,7 +1252,7 @@
           ? `<span class="agent-group-queued">${owed} queued</span>`
           : "";
         return `
-          <section class="agent-group">
+          <section class="agent-group" data-project="${escapeHtml(group.key)}">
             <h2 class="agent-group-head">
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
               ${owedChip}
@@ -1232,6 +1264,94 @@
           </section>`;
       })
       .join("");
+  }
+
+  /* Renaming happens on the laptop as well. These are Herdr's own labels - the
+     ones the desktop draws in its workspace strip and its tab bar - so a
+     project named here is named there a moment later, and the phone is not
+     keeping a private nickname the machine under the desk knows nothing of.
+
+     A row is a tab, so Rename is tab.rename - except on a workspace that has
+     only the one tab, where the name the row is showing is the workspace's own
+     and renaming the tab would leave the row saying what it said before. */
+  async function renameRow(paneId) {
+    const row = state.agents.find((a) => a.pane_id === paneId);
+    if (!row) return;
+    const tabs = new Set(
+      state.agents
+        .filter((a) => a.workspace_id === row.workspace_id)
+        .map((a) => a.tab_id)
+    );
+    if (tabs.size > 1) await renameTab(row);
+    else await renameWorkspace(row);
+  }
+
+  async function renameWorkspace(row) {
+    const current = row.workspace_label || "";
+    const label = prompt("Rename project", current);
+    resetSwipe();
+    if (label === null) return;
+    const trimmed = label.trim();
+    if (!trimmed || trimmed === current) return;
+    triggerHaptic();
+    try {
+      await sendRename(
+        `/api/workspaces/${encodeURIComponent(row.workspace_id)}/rename`,
+        trimmed
+      );
+      // Show it now rather than at the next poll.
+      for (const r of state.agents) {
+        if (r.workspace_id !== row.workspace_id) continue;
+        r.workspace_label = trimmed;
+        r.name = trimmed;
+      }
+      redrawNames();
+    } catch (err) {
+      alert("Could not rename project: " + err.message);
+    }
+  }
+
+  async function renameTab(row) {
+    /* Offer the name somebody gave this tab, not the one it is displaying: a
+       tab called "2" shows its pane's title, and prefilling the box with that
+       would turn the agent's own headline into the tab's name on the first
+       tap of OK. */
+    const current = tabName(row);
+    const label = prompt("Rename tab", current);
+    resetSwipe();
+    if (label === null) return;
+    const trimmed = label.trim();
+    if (!trimmed || trimmed === current) return;
+    triggerHaptic();
+    try {
+      await sendRename(`/api/tabs/${encodeURIComponent(row.tab_id)}/rename`, trimmed);
+      for (const r of state.agents) {
+        if (r.tab_id === row.tab_id) r.tab_label = trimmed;
+      }
+      redrawNames();
+    } catch (err) {
+      alert("Could not rename tab: " + err.message);
+    }
+  }
+
+  function redrawNames() {
+    state.listSignature = null;
+    renderAgentBar();
+    renderAgentList();
+  }
+
+  async function sendRename(url, label) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      const error = data.error;
+      throw new Error((error && error.message) || error || "refused");
+    }
+    return data;
   }
 
   async function createWorkspace() {
@@ -1311,6 +1431,7 @@
 
     renderAgentBar();
     renderActiveAgentMeta();
+    renderChatQueue();
     fetchHistory(true);
   }
 
@@ -1837,7 +1958,7 @@
   /* A queued prompt is either still ours or it never made it. Delivered ones
      are filtered out in fetchQueue and never reach this list. */
   const QUEUE_WORD = {
-    waiting: "waiting",
+    waiting: "queued",
     failed: "failed",
   };
 
@@ -1855,8 +1976,7 @@
          A delivered prompt belongs to the conversation now - it is in the
          transcript, and leaving it here only buries what still needs you. */
       state.queue = (data.prompts || []).filter((p) => p.state !== "sent");
-      renderQueueBadge();
-      if (state.queueOpen) renderTaskList();
+      renderChatQueue();
       // The herd is polled before the queue, so the counts on the rows arrive
       // a beat later than the rows do. The signature keeps this cheap: it only
       // redraws when a number actually moved.
@@ -1873,16 +1993,10 @@
       const res = await fetch("/api/queue/quota");
       state.quota = await res.json();
       state.quotaAt = Date.now();
-      if (state.queueOpen || state.pickerOpen) renderQuota();
+      if (state.pickerOpen) renderQuota();
     } catch (err) {
       /* keep the last reading */
     }
-  }
-
-  function renderQueueBadge() {
-    const n = state.queue.length;
-    elQueueBadge.textContent = String(n);
-    elQueueBadge.classList.toggle("hidden", n === 0);
   }
 
   function relTime(iso) {
@@ -1894,53 +2008,104 @@
     return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}m`;
   }
 
-  /* How much subscription is left. The queue shows it because it decides what
-     it may start, and the overview shows it because it is the same question
-     asked about the herd already running: what is there left to spend. */
+  /* How much subscription is left, per agent: a line each, small enough to
+     live above the flock without pushing it down the screen.
+
+     Two agents have two subscriptions and two answers - a Claude window says
+     nothing about what a Codex pane may spend - so each gets its own line, and
+     only the agents actually on this machine are drawn. */
   function quotaHtml() {
     const q = state.quota;
     if (!q) return '<div class="quota-note">Reading usage…</div>';
-    if (q.ok === false) {
-      return `<div class="quota-note blocked">${escapeHtml(q.error || "usage unavailable")}</div>`;
+    const agents = q.agents || [];
+    if (!agents.length) return '<div class="quota-note">No agents running.</div>';
+    return agents.map((a) => agentQuotaHtml(a)).join("");
+  }
+
+  // "five_hour" is what the endpoint calls it; "5h" is what fits on a phone.
+  function windowLabel(name) {
+    if (name === "five_hour") return "5h";
+    if (name === "seven_day") return "week";
+    const m = /^(\d+)_(hour|day)$/.exec(name || "");
+    if (m) return m[2] === "hour" ? `${m[1]}h` : `${m[1]}d`;
+    return String(name || "").replace(/_/g, " ");
+  }
+
+  /* When the window comes back, in as few characters as will still say it.
+
+     A reset you could sit and wait for is a time - including the small hours
+     of tomorrow, which is where a five hour window started in the evening
+     lands, and "15.9." for something happening at 03:36 tonight says less than
+     nothing. A reset days away is answered by its date; the minute it happens
+     on is not what anybody is asking at that distance. */
+  const SOON_HOURS = 18;
+
+  function resetLabel(iso) {
+    if (!iso) return "";
+    const at = new Date(iso);
+    if (isNaN(at)) return "";
+    const hours = (at.getTime() - Date.now()) / 3600000;
+    if (hours < SOON_HOURS) {
+      return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    return `${at.getDate()}.${at.getMonth() + 1}.`;
+  }
+
+  /* One line per agent, one bar per window. Both windows matter and they run
+     out independently - a five hour window that is fine says nothing about a
+     weekly one that is nearly gone - so each gets its own bar rather than the
+     row showing whichever was worse. */
+  function agentQuotaHtml(a) {
+    const name = (a.agent || "agent").replace(/^./, (c) => c.toUpperCase());
+    if (a.ok === false) {
+      // Not knowing is not the same as having nothing left: the queue keeps
+      // delivering, so this says what is missing rather than crying wolf.
+      return `
+        <div class="usage">
+          <span class="usage-agent">${escapeHtml(name)}</span>
+          <span class="usage-detail muted">${escapeHtml(a.error || "no usage reading")}</span>
+        </div>`;
     }
 
     /* Buckets that are empty and have no window carry no information - they
        are plan slots this account does not use. */
-    const shown = (q.buckets || []).filter((b) => b.utilization > 0 || b.resets_at);
-    const rows = shown
+    const windows = (a.buckets || [])
+      .filter((b) => b.utilization > 0 || b.resets_at)
       .map((b) => {
         const pct = Math.max(0, Math.min(100, b.utilization));
-        const near = pct >= q.threshold * 0.8;
-        const cls = b.blocking ? "over" : near ? "warn" : "";
-        const name = b.name.replace(/_/g, " ");
+        /* Amber from the threshold up, red at the cap. A window that has
+           rolled over is drawn as neither: what has been spent in the new one
+           is not known yet, so it shows no percentage at all. */
+        const cls = b.expired ? "past" : b.spent ? "out" : b.warning ? "near" : "";
         return `
-          <div class="quota-row ${cls}">
-            <span class="quota-name">${escapeHtml(name)}</span>
-            <span class="quota-track"><span class="quota-fill" style="width:${pct}%"></span></span>
-            <span class="quota-pct">${pct.toFixed(0)}%</span>
-          </div>`;
+          <span class="usage-window${cls ? " " + cls : ""}">
+            <span class="usage-label">${escapeHtml(windowLabel(b.name))}</span>
+            <span class="usage-bar"><span class="usage-fill" style="width:${b.expired ? 0 : pct}%"></span></span>
+            <span class="usage-pct">${b.expired ? "—" : `${pct.toFixed(0)}%`}</span>
+            <span class="usage-when">${escapeHtml(resetLabel(b.resets_at))}</span>
+          </span>`;
       })
       .join("");
 
-    // An expired reading is too old to hold work on, so the queue has stopped
-    // believing it and the strip says so rather than showing a wall that is not
-    // there. The bars above are the last thing we were told, not the truth.
-    const note = q.expired
+    /* An expired reading is too old to hold work on, so the queue has stopped
+       believing it and the strip says so rather than showing a wall that is not
+       there. The bars are the last thing we were told, not the truth - and it
+       is the one thing here worth a sentence, because no colour can say "these
+       numbers are stale". A window that is merely full needs no commentary:
+       its own colour is the sentence. */
+    const note = a.expired
       ? '<div class="quota-note">last known reading — running anyway until usage can be read</div>'
-      : q.blocked
-      ? `<div class="quota-note blocked">No usage left — next window in ${escapeHtml(relTime(q.resume_at))}</div>`
-      : `<div class="quota-note">Clear to run · pauses at ${q.threshold.toFixed(0)}%</div>`;
+      : "";
 
-    return rows + note + (q.stale
-      ? `<div class="quota-note">cached — ${escapeHtml(q.reason || "could not reach the usage endpoint")}</div>`
-      : "");
+    return `
+      <div class="usage">
+        <span class="usage-agent">${escapeHtml(name)}</span>
+        ${windows}
+      </div>`;
   }
 
-  // Both strips carry the same reading; whichever view is up draws it.
   function renderQuota() {
-    const html = quotaHtml();
-    elQuotaStrip.innerHTML = html;
-    elPickerQuota.innerHTML = html;
+    elPickerQuota.innerHTML = quotaHtml();
   }
 
   // Which chat a prompt is queued for, named the way the picker names it.
@@ -1949,183 +2114,91 @@
     return agent ? agent.name || paneId : paneId;
   }
 
-  // Same trick as the project list: only redraw when something actually moved.
+  /* What is waiting to go to this chat, drawn directly above the box it was
+     typed into. It used to live behind its own tab, which put the one thing
+     you might want to take back two taps away from the place you would notice
+     it was still sitting there. */
   function queueSignature() {
     return state.queue
-      .map((p) => [p.id, p.state, p.pane_id, p.last_error].join(""))
-      .join("");
+      .map((p) => [p.id, p.state, p.pane_id, p.prompt, p.last_error].join("\u001f"))
+      .join("\u001e");
   }
 
-  function renderTaskList() {
-    if (state.queue.length === 0) {
+  function queuedFor(paneId) {
+    return state.queue.filter((p) => p.pane_id === paneId && p.state !== "sent");
+  }
+
+  function renderChatQueue() {
+    const queued = queuedFor(state.activePaneId);
+    if (!queued.length) {
+      elChatQueue.classList.add("hidden");
+      elChatQueue.innerHTML = "";
       state.queueSignature = null;
-      elTaskList.innerHTML =
-        '<div class="history-empty">Nothing queued. Tap New to queue a prompt.</div>';
       return;
     }
-    const signature = queueSignature();
-    if (signature === state.queueSignature) return;
+    const signature = queueSignature() + state.activePaneId;
+    if (signature === state.queueSignature && !elChatQueue.classList.contains("hidden")) return;
     state.queueSignature = signature;
 
-    elTaskList.innerHTML = state.queue
+    elChatQueue.classList.remove("hidden");
+    elChatQueue.innerHTML = queued
       .map((p) => {
-        const word = QUEUE_WORD[p.state] || p.state;
         const failed = p.state === "failed";
-        /* Opening the chat is the only way to clear a prompt stuck behind a
-           question, so it is offered on every row: the transcript and the key
-           palette are both there. */
+        const word = QUEUE_WORD[p.state] || p.state;
         return `
-          <div class="task-row ${failed ? "attention" : ""}">
-            <span class="task-main">
-              <span class="task-prompt">${escapeHtml(p.prompt || "")}</span>
-              <span class="task-meta">${escapeHtml(chatName(p.pane_id))}</span>
-              ${failed && p.last_error
-                  ? `<span class="task-why">${escapeHtml(p.last_error)}</span>`
-                  : ""}
-            </span>
-            <span class="task-side">
-              <span class="status-badge status-${escapeHtml(p.state)}">${escapeHtml(word)}</span>
-              <span class="task-acts">
-                <button class="task-act accent" data-task-open="${escapeHtml(p.pane_id)}">Open</button>
-                ${p.state === "waiting"
-                    ? `<button class="task-act" data-task-edit="${p.id}">Edit</button>`
-                    : ""}
-                <button class="task-act danger" data-task-delete="${p.id}">Delete</button>
-              </span>
+          <div class="chat-queued ${failed ? "attention" : ""}">
+            <span class="chat-queued-state status-badge status-${escapeHtml(p.state)}">${escapeHtml(word)}</span>
+            <span class="chat-queued-text">${escapeHtml(p.prompt || "")}</span>
+            ${failed && p.last_error
+                ? `<span class="chat-queued-why">${escapeHtml(p.last_error)}</span>`
+                : ""}
+            <span class="chat-queued-acts">
+              <button type="button" class="chat-queued-act" data-queue-edit="${p.id}">Edit</button>
+              <button type="button" class="chat-queued-act accent" data-queue-send="${p.id}">Send now</button>
+              <button type="button" class="chat-queued-act danger" data-queue-delete="${p.id}">Delete</button>
             </span>
           </div>`;
       })
       .join("");
   }
 
-  async function taskAction(id, action) {
+  async function queueAction(id, action) {
     triggerHaptic();
     try {
       const res = await fetch(`/api/queue/${id}/${action}`, { method: "POST" });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "failed");
+      if (!data.ok) throw new Error((data.error && data.error.message) || data.error || "failed");
       state.queueSignature = null;
       await fetchQueue();
+      if (action === "send") setTimeout(() => fetchHistory(true), 300);
     } catch (err) {
-      alert(`Could not ${action} prompt: ${err.message}`);
+      alert(`Could not ${action === "send" ? "send" : action} the prompt: ${err.message}`);
     }
   }
 
-  function openQueue() {
+  /* Editing a queued prompt takes it back: the text lands in the composer,
+     where it can be changed with the keyboard that is already open, and the
+     row goes. Sending it again queues it again. Nothing is lost on the way -
+     a composer full of text is a draft, and drafts are kept per project. */
+  async function editQueued(id) {
+    const queued = state.queue.find((p) => String(p.id) === String(id));
+    if (!queued) return;
     triggerHaptic();
-    state.queueOpen = true;
-    state.queueSignature = null;
-    elQueueView.classList.remove("hidden");
-    renderQuota();
-    renderTaskList();
-    fetchQueue();
-    fetchQuota();
+    elPromptInput.value = queued.prompt || "";
+    autoResizeTextarea();
+    saveDraft();
+    elBtnSend.disabled = !elPromptInput.value.trim();
+    elPromptInput.focus();
+    await queueAction(id, "delete");
   }
 
-  function closeQueue() {
-    state.queueOpen = false;
-    elQueueView.classList.add("hidden");
-  }
-
-  /* The chat a new prompt is aimed at: whichever one you are looking at. That
-     is the whole targeting model - there is no project to pick, because the
-     session already sits in one. */
-  function queueTarget(prompt) {
-    return prompt ? prompt.pane_id : state.activePaneId;
-  }
-
-  async function openTaskSheet(prompt) {
-    triggerHaptic();
-    state.editingId = prompt ? prompt.id : null;
-    elTaskError.classList.add("hidden");
-    elTaskSheetTitle.textContent = prompt ? "Edit queued prompt" : "Queue a prompt";
-    elTaskSheetCwd.textContent = queueTarget(prompt)
-      ? `for ${chatName(queueTarget(prompt))}, when it is free`
-      : "pick a chat first";
-    elBtnSubmitTask.textContent = prompt ? "Save" : "Queue it";
-    elTaskPrompt.value = prompt ? prompt.prompt || "" : "";
-
-    elSheetBackdrop.classList.add("over-queue");
-    elSheetBackdrop.classList.remove("hidden");
-    elTaskSheet.classList.remove("hidden");
-    if (!prompt) elTaskPrompt.focus();
-  }
-
-  function closeTaskSheet() {
-    elTaskSheet.classList.add("hidden");
-    elSheetBackdrop.classList.add("hidden");
-    elSheetBackdrop.classList.remove("over-queue");
-  }
-
-  async function submitTask() {
-    const prompt = elTaskPrompt.value.trim();
-    if (!prompt) {
-      showTaskError("Say what it should do.");
-      return;
-    }
-    const editing = state.editingId;
-    const paneId = editing ? null : state.activePaneId;
-    if (!editing && !paneId) {
-      showTaskError("Pick a chat to queue this for.");
-      return;
-    }
-    const url = editing ? `/api/queue/${editing}/update` : "/api/queue";
-    elBtnSubmitTask.disabled = true;
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editing ? { prompt } : { prompt, pane_id: paneId }),
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "could not save");
-      elTaskPrompt.value = "";
-      closeTaskSheet();
-      state.queueSignature = null;
-      await fetchQueue();
-    } catch (err) {
-      showTaskError(err.message);
-    } finally {
-      elBtnSubmitTask.disabled = false;
-    }
-  }
-  function showTaskError(message) {
-    elTaskError.textContent = message;
-    elTaskError.classList.remove("hidden");
-  }
-
-  /* Hand a task's pane to the main view, so its question can be answered with
-     the key palette that is already there. */
-  function openTaskPane(paneId) {
-    closeQueue();
-    if (state.agents.some((a) => a.pane_id === paneId)) {
-      selectAgent(paneId);
-    } else {
-      /* The pane exists but Herdr has not listed it yet, or it is gone. Select
-         it anyway: the transcript fetch will say which. */
-      state.activePaneId = paneId;
-      state.historyText = "";
-      fetchHistory(true);
-    }
-  }
-
-  elBtnQueue.addEventListener("click", openQueue);
-  elBtnCloseQueue.addEventListener("click", closeQueue);
-  elBtnNewTask.addEventListener("click", () => openTaskSheet(null));
-  elBtnCancelTask.addEventListener("click", closeTaskSheet);
-  elBtnSubmitTask.addEventListener("click", submitTask);
-
-  elTaskList.addEventListener("click", (e) => {
-    const open = e.target.closest("[data-task-open]");
-    if (open) return openTaskPane(open.dataset.taskOpen);
-    const edit = e.target.closest("[data-task-edit]");
-    if (edit) {
-      const queued = state.queue.find((p) => String(p.id) === edit.dataset.taskEdit);
-      if (queued) openTaskSheet(queued);
-      return;
-    }
-    const del = e.target.closest("[data-task-delete]");
-    if (del) return taskAction(del.dataset.taskDelete, "delete");
+  elChatQueue.addEventListener("click", (e) => {
+    const edit = e.target.closest("[data-queue-edit]");
+    if (edit) return editQueued(edit.dataset.queueEdit);
+    const send = e.target.closest("[data-queue-send]");
+    if (send) return queueAction(send.dataset.queueSend, "send");
+    const del = e.target.closest("[data-queue-delete]");
+    if (del) return queueAction(del.dataset.queueDelete, "delete");
   });
 
   // Poll loop
@@ -2135,7 +2208,7 @@
     // Cheap: a local SQLite read. Keeps the header badge honest even when the
     // queue is closed.
     await fetchQueue();
-    if (state.queueOpen || state.pickerOpen) await fetchQuota();
+    if (state.pickerOpen) await fetchQuota();
   }
 
   function startPolling() {
@@ -2184,6 +2257,7 @@
       syncStatusBarRow();
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
+      state.customOrder = loadOrder();
       state.drafts = loadDrafts();
       state.bleat = readPref("bleat") !== "0";
       elToggleBleat.checked = state.bleat;
@@ -2314,7 +2388,7 @@
         if (prev.miss) changed = true;
       } else {
         // A first sighting is not a change: we have no idea when it happened,
-        // so the stamp orders the list but carries no time to show.
+        // so the stamp carries no time to show.
         next[id] = { seq, ts: now, seeded: !prev };
         changed = true;
       }
@@ -2353,7 +2427,9 @@
    *
    * The single exception is an agent stopped on a question. It is the only
    * state that goes nowhere at all without you, so it rises to the top of its
-   * project and carries its project to the top of the list.
+   * project and carries its project to the top of the list - until a finger
+   * says otherwise, because an order somebody made by hand is a promise that
+   * the project stays where it was put.
    * ------------------------------------------------------------------------ */
 
   /* When a row was created, as a number that only ever grows. Herdr numbers
@@ -2393,6 +2469,81 @@
     return [...groups.values()];
   }
 
+  /* Herdr numbers a tab before anybody names it, and "2" is not a name worth
+     spending a row on - the pane's own title says more. Only a label somebody
+     actually typed counts as a name here. */
+  const RE_TAB_NUMBERED = /^(?:tab )?\d+$/i;
+
+  function tabName(row) {
+    const label = (row.tab_label || "").trim();
+    return label && !RE_TAB_NUMBERED.test(label) ? label : "";
+  }
+
+  /* Which number the tab answers to. Herdr keeps two: `number`, its place in
+     the workspace's own bookkeeping, and the label it has not been renamed
+     from, which is the one the desktop's tab bar draws. The phone should agree
+     with the tab bar, so an unrenamed tab is called what the laptop calls it -
+     the third tab ever made in a workspace is "2" if one of the others is
+     gone. */
+  function tabNumber(row) {
+    const label = (row.tab_label || "").trim();
+    const digits = label.replace(/^tab /i, "");
+    if (digits && /^\d+$/.test(digits)) return digits;
+    return String(row.tab_number || "");
+  }
+
+  /* The order a finger gave the projects.
+
+     Held here so the list is right before the next poll rather than after it,
+     and pushed back to Herdr with workspace.move so the laptop follows the
+     phone instead of arguing with it. A project this order has never seen -
+     made since the last drag - falls back to when it was created, which is
+     the end of the list. */
+  const ORDER_KEY = "sheepit.order";
+
+  function loadOrder() {
+    try {
+      const raw = JSON.parse(readPref("order") || "[]");
+      return Array.isArray(raw) ? raw.filter((key) => typeof key === "string") : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function saveOrder() {
+    savePref(ORDER_KEY, JSON.stringify(state.customOrder));
+  }
+
+  // A project carried from one slot to another, as a list of keys.
+  function reorder(keys, from, to) {
+    const next = keys.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next;
+  }
+
+  /* Herdr inserts a workspace before whatever is at insert_index *counting the
+     one being moved*, so a project dropped below where it started lands one
+     slot further along than the index it ends up at. Off by one here is a
+     project that creeps a place every time it is moved. */
+  function insertIndexFor(from, to) {
+    return to > from ? to + 1 : to;
+  }
+
+  /* A hand-made order wins over both rules above it: a project put third stays
+     third even when one of its agents starts asking something. Inside a
+     project the question still rises - that costs nothing, since a project
+     stays where the finger left it either way. */
+  function sortGroups(groups) {
+    const rank = new Map(state.customOrder.map((key, i) => [key, i]));
+    if (rank.size) {
+      const at = (key) => (rank.has(key) ? rank.get(key) : Number.MAX_SAFE_INTEGER);
+      groups.sort((a, b) => at(a.key) - at(b.key) || a.born - b.born);
+      return;
+    }
+    groups.sort((a, b) => Number(b.wants) - Number(a.wants) || a.born - b.born);
+  }
+
   function orderAgents() {
     /* Never reshuffle a list somebody is looking at: an agent changing state
        would slide a row out from under the thumb about to tap it. Hold the
@@ -2416,7 +2567,7 @@
       group.wants = group.agents.some(wantsInput);
       group.born = Math.min(...group.agents.map(bornAt));
     }
-    groups.sort((a, b) => Number(b.wants) - Number(a.wants) || a.born - b.born);
+    sortGroups(groups);
 
     state.groups = groups;
     state.agents = groups.flatMap((g) => g.agents);
@@ -2436,7 +2587,11 @@
   function agoLabel(paneId) {
     const rec = state.activity[paneId];
     if (!rec || rec.seeded) return "";
-    const secs = Math.max(0, Math.round((Date.now() - rec.ts) / 1000));
+    return agoText(Date.now() - rec.ts);
+  }
+
+  function agoText(ms) {
+    const secs = Math.max(0, Math.round(ms / 1000));
     if (secs < 45) return "now";
     const mins = Math.round(secs / 60);
     if (mins < 60) return `${mins}m`;
@@ -2458,9 +2613,10 @@
   elBtnClosePicker.addEventListener("click", closePicker);
 
   elAgentList.addEventListener("click", (e) => {
-    const del = e.target.closest(".agent-row-delete");
-    if (del) {
-      closeWorkspace(del.dataset.workspaceId);
+    const action = e.target.closest("[data-action]");
+    if (action) {
+      if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
+      else if (action.dataset.action === "rename") renameRow(action.dataset.paneId);
       return;
     }
     const row = e.target.closest(".agent-row");
@@ -2470,13 +2626,43 @@
       resetSwipe();
       return;
     }
+    /* The finger that just carried this project somewhere is still on it: the
+       lift was the gesture, and opening the project was not part of it. The
+       flag is cleared by the click it swallows, or by the next touch if
+       preventing the drag's default swallowed the click as well. */
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
     if (row.dataset.paneId) selectAgent(row.dataset.paneId);
   });
 
-  /* Swipe a row left to reveal Close, iOS style. The reveal is the
-     confirmation step, so the second tap acts immediately. */
+  /* Two gestures share these rows, and which one it is only becomes clear
+     after the finger has been down a moment.
+
+     Sideways is a swipe, revealing what the row can do: Rename and Close.
+     Still is a lift: hold a row for a moment and its whole project comes up
+     off the list to be carried somewhere else. Either one rules the other
+     out, so the first few pixels of movement decide, and a project picked up
+     is a project no longer being swiped. */
   const SWIPE_WIDTH = 92;
+  const SWIPE_SLOP = 8;
+  const LIFT_MS = 420;
+  const LIFT_SLOP = 10;
+  // How close to an end of the list a carried project starts scrolling it, and
+  // how fast: a nine-project list is taller than a phone.
+  const DRAG_EDGE = 56;
+  const DRAG_SPEED = 9;
+
   let swipe = null;
+  let drag = null;
+  let liftTimer = null;
+  let suppressClick = false;
+
+  function cancelLift() {
+    if (liftTimer) clearTimeout(liftTimer);
+    liftTimer = null;
+  }
 
   function resetSwipe() {
     elAgentList.querySelectorAll(".agent-row.swiped").forEach((r) => {
@@ -2488,44 +2674,241 @@
   elAgentList.addEventListener("touchstart", (e) => {
     const row = e.target.closest(".agent-row");
     if (!row) return;
+    suppressClick = false;
     if (!row.classList.contains("swiped")) resetSwipe();
-    swipe = { row, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, axis: null };
+    const touch = e.touches[0];
+    const actions = row.parentElement.querySelector(".agent-row-actions");
+    swipe = {
+      row,
+      width: (actions && actions.offsetWidth) || SWIPE_WIDTH,
+      x: touch.clientX,
+      y: touch.clientY,
+      dx: 0,
+      axis: null,
+    };
     state.swiping = true; // hold the redraw until the finger is off the row
+    // The project is what gets carried, whichever of its rows the finger is
+    // on - and there is nothing to reorder in a list of one.
+    if (state.groups.length > 1) {
+      cancelLift();
+      liftTimer = setTimeout(() => startDrag(row, touch.clientY), LIFT_MS);
+    }
   }, { passive: true });
 
+  /* Not passive, because a project being carried has to hold the list still
+     underneath it - which is a preventDefault, which a passive listener is not
+     allowed to make. */
   elAgentList.addEventListener("touchmove", (e) => {
+    const touch = e.touches[0];
+    if (drag) {
+      e.preventDefault();
+      dragTo(touch.clientY);
+      return;
+    }
     if (!swipe) return;
-    const dx = e.touches[0].clientX - swipe.x;
-    const dy = e.touches[0].clientY - swipe.y;
+    const dx = touch.clientX - swipe.x;
+    const dy = touch.clientY - swipe.y;
+    if (Math.abs(dx) > LIFT_SLOP || Math.abs(dy) > LIFT_SLOP) cancelLift();
     if (swipe.axis === null) {
-      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dx) < SWIPE_SLOP && Math.abs(dy) < SWIPE_SLOP) return;
       swipe.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
     if (swipe.axis !== "x") return; // let the list scroll
-    const base = swipe.row.classList.contains("swiped") ? -SWIPE_WIDTH : 0;
-    swipe.dx = Math.max(-SWIPE_WIDTH, Math.min(0, base + dx));
+    const base = swipe.row.classList.contains("swiped") ? -swipe.width : 0;
+    swipe.dx = Math.max(-swipe.width, Math.min(0, base + dx));
     swipe.row.style.transition = "none";
     swipe.row.style.transform = `translateX(${swipe.dx}px)`;
-  }, { passive: true });
+  }, { passive: false });
 
   elAgentList.addEventListener("touchend", () => {
+    cancelLift();
+    if (drag) {
+      endDrag();
+      return;
+    }
     state.swiping = false;
     if (!swipe) return;
-    const { row, dx, axis } = swipe;
+    const { row, dx, axis, width } = swipe;
     swipe = null;
     if (axis !== "x") return;
     row.style.transition = "";
-    const open = dx < -SWIPE_WIDTH / 2;
+    const open = dx < -width / 2;
     row.classList.toggle("swiped", open);
-    row.style.transform = open ? `translateX(${-SWIPE_WIDTH}px)` : "";
+    row.style.transform = open ? `translateX(${-width}px)` : "";
     if (open) triggerHaptic();
   }, { passive: true });
 
-  // A call or a notification cancels the touch: do not hold the redraw for good.
+  // A call or a notification cancels the touch: do not hold the redraw for
+  // good, and put down whatever was being carried where it now is.
   elAgentList.addEventListener("touchcancel", () => {
+    cancelLift();
+    if (drag) {
+      endDrag();
+      return;
+    }
     state.swiping = false;
     swipe = null;
   }, { passive: true });
+
+  /* Carrying a project.
+
+     Every position is measured once, when the project comes up, and in the
+     list's own coordinates rather than the screen's - so the arithmetic still
+     holds when the list scrolls itself at the edges. Nothing is reordered
+     while the finger is down: the rows in between slide by the height of the
+     one being carried, which is a transform and costs nothing, and the list is
+     only rebuilt once it is put down. */
+  function startDrag(row, y) {
+    const group = row.closest(".agent-group");
+    if (!group) return;
+    swipe = null; // this finger is lifting, not swiping
+    resetSwipe();
+    suppressClick = true;
+
+    const groups = Array.from(elAgentList.querySelectorAll(".agent-group"));
+    const listTop = elAgentList.getBoundingClientRect().top;
+    const scroll = elAgentList.scrollTop;
+    const tops = groups.map((g) => g.getBoundingClientRect().top - listTop + scroll);
+    const heights = groups.map((g) => g.getBoundingClientRect().height);
+    const from = groups.indexOf(group);
+    if (from < 0) return;
+
+    drag = {
+      group,
+      groups,
+      tops,
+      heights,
+      from,
+      to: from,
+      listTop,
+      // The gap the CSS leaves between projects, read off the layout rather
+      // than written down twice.
+      gap: groups.length > 1 ? tops[1] - (tops[0] + heights[0]) : 0,
+      grab: y - listTop + scroll - tops[from],
+      y,
+    };
+    group.classList.add("dragging");
+    elAgentList.classList.add("dragging");
+    triggerHaptic("warning");
+    dragTo(y);
+    requestAnimationFrame(edgeScroll);
+  }
+
+  function dragTo(y) {
+    drag.y = y;
+    const top = y - drag.listTop + elAgentList.scrollTop - drag.grab;
+    drag.group.style.transform = `translateY(${top - drag.tops[drag.from]}px)`;
+
+    // Where it would land: the first slot whose middle the carried project has
+    // passed, in whichever direction it is going.
+    const center = top + drag.heights[drag.from] / 2;
+    let to = drag.from;
+    for (let i = 0; i < drag.groups.length; i++) {
+      if (i === drag.from) continue;
+      const middle = drag.tops[i] + drag.heights[i] / 2;
+      if (i < drag.from && center < middle) to = Math.min(to, i);
+      else if (i > drag.from && center > middle) to = Math.max(to, i);
+    }
+    if (to === drag.to) return;
+    drag.to = to;
+    shiftGroups();
+    triggerHaptic();
+  }
+
+  function shiftGroups() {
+    const step = drag.heights[drag.from] + drag.gap;
+    drag.groups.forEach((g, i) => {
+      if (i === drag.from) return;
+      let shift = 0;
+      if (drag.to > drag.from && i > drag.from && i <= drag.to) shift = -step;
+      else if (drag.to < drag.from && i >= drag.to && i < drag.from) shift = step;
+      g.style.transform = shift ? `translateY(${shift}px)` : "";
+    });
+  }
+
+  function edgeScroll() {
+    if (!drag) return;
+    const box = elAgentList.getBoundingClientRect();
+    let by = 0;
+    if (drag.y < box.top + DRAG_EDGE) by = -DRAG_SPEED;
+    else if (drag.y > box.bottom - DRAG_EDGE) by = DRAG_SPEED;
+    if (by) {
+      const before = elAgentList.scrollTop;
+      elAgentList.scrollTop += by;
+      if (elAgentList.scrollTop !== before) dragTo(drag.y);
+    }
+    requestAnimationFrame(edgeScroll);
+  }
+
+  function endDrag() {
+    const { groups, group, from, to } = drag;
+    for (const g of groups) g.style.transform = "";
+    group.classList.remove("dragging");
+    elAgentList.classList.remove("dragging");
+    drag = null;
+    state.swiping = false;
+    if (to === from) return;
+
+    const before = groups.map((g) => g.dataset.project);
+    const after = reorder(before, from, to);
+    state.customOrder = after;
+    saveOrder();
+    triggerHaptic();
+    /* The held order exists to stop the list shuffling itself while somebody
+       reads it; this is somebody rearranging it on purpose, so let go of it
+       and sort afresh. */
+    state.order = [];
+    orderAgents();
+    renderAgentList();
+    moveProject(before[from], before, after);
+  }
+
+  /* Tell the laptop, when there is something unambiguous to tell it. A project
+     is a repository and Herdr reorders workspaces, so the two only line up
+     while the project holds a single workspace - which is every project that
+     has not been cut into worktrees. The rest keep their order on this phone
+     alone, because moving one of several workspaces would leave Herdr's strip
+     saying something nobody asked for. */
+  function moveProject(key, before, after) {
+    const ids = [
+      ...new Set(
+        state.agents.filter((a) => projectKey(a) === key).map((a) => a.workspace_id)
+      ),
+    ];
+    if (ids.length !== 1) return;
+    const from = workspaceOrder(before).indexOf(ids[0]);
+    const to = workspaceOrder(after).indexOf(ids[0]);
+    if (from < 0 || to < 0 || from === to) return;
+    moveWorkspace(ids[0], insertIndexFor(from, to));
+  }
+
+  // The workspaces behind a list of projects, in that list's order: what
+  // Herdr's own strip would look like if it agreed with the phone.
+  function workspaceOrder(keys) {
+    const ids = [];
+    for (const key of keys) {
+      for (const agent of state.agents) {
+        if (projectKey(agent) !== key) continue;
+        if (!ids.includes(agent.workspace_id)) ids.push(agent.workspace_id);
+      }
+    }
+    return ids;
+  }
+
+  /* Failing here is survivable: the phone keeps the order the finger gave it,
+     and only the laptop is left disagreeing. */
+  async function moveWorkspace(workspaceId, insertIndex) {
+    try {
+      const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ insert_index: insertIndex }),
+      });
+      if (!res.ok) throw new Error("move refused");
+    } catch (err) {
+      console.warn("moveWorkspace:", err);
+    }
+  }
 
   elBtnNewWorkspace.addEventListener("click", createWorkspace);
 

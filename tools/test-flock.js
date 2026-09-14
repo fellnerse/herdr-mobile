@@ -36,7 +36,15 @@ function loadRows() {
     const agoLabel = () => "";
     const wantsInput = (a) => a.status === "blocked";
   `;
-  return new Function(`${PRELUDE}${src.slice(from, to)} return { state, agentRowHtml, queuedByPane, queuedLabel };`)();
+  // What a tab is called is tested on its own further down; a row is asked
+  // here with the real thing rather than a stub that could agree with nothing.
+  const { tabName, tabNumber } = loadFlock();
+  return new Function(
+    "tabName",
+    "tabNumber",
+    `${PRELUDE}${src.slice(from, to)}
+     return { state, agentRowHtml, queuedByPane, queuedLabel };`
+  )(tabName, tabNumber);
 }
 
 /* The markings that tell two sheep on one project apart. Sliced on its own so
@@ -51,19 +59,38 @@ function loadMarks() {
   )();
 }
 
+/* The usage strip above the flock. Sliced on its own so the wording can be
+   asked for directly: it is the one part of the overview that is words rather
+   than sheep, and wrong words there read as a wrong number. */
+function loadUsage(quota) {
+  const src = fs.readFileSync(SRC, "utf8");
+  const from = src.indexOf("  /* How much subscription is left, per agent");
+  const to = src.indexOf("  // Which chat a prompt is queued for");
+  if (from < 0 || to < 0) throw new Error(`usage anchors moved in ${SRC}`);
+  return new Function("quota", `
+    const escapeHtml = (s) => String(s);
+    const state = { quota };
+    ${src.slice(from, to)}
+    return { quotaHtml, windowLabel, resetLabel };`)(quota);
+}
+
 function loadFlock(pickerHidden = true) {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf(FROM);
   const to = src.indexOf(TO);
   if (from < 0 || to < 0) throw new Error(`anchors moved in ${SRC}`);
   const PRELUDE = `
-    const state = { agents: [], groups: [], order: [] };
+    const state = { agents: [], groups: [], order: [], customOrder: [] };
     const elAgentPicker = { hidden: ${pickerHidden},
                             classList: { contains(name) { return name === "hidden" && elAgentPicker.hidden; } } };
+    const store = {};
+    const readPref = (name) => (name in store ? store[name] : null);
+    const savePref = (key, value) => { store[key.replace("sheepit.", "")] = value; };
   `;
   return new Function(
     `${PRELUDE}${src.slice(from, to)}
-     return { state, elAgentPicker, orderAgents, groupByProject, bornAt, wantsInput, projectKey };`
+     return { state, store, elAgentPicker, orderAgents, groupByProject, bornAt, wantsInput,
+              projectKey, tabName, tabNumber, reorder, insertIndexFor, loadOrder, saveOrder };`
   )();
 }
 
@@ -91,10 +118,11 @@ function row(pane, ws, project, status, extra = {}) {
   };
 }
 
-function order(agents, pickerHidden = true, held = []) {
+function order(agents, pickerHidden = true, held = [], custom = []) {
   const f = loadFlock(pickerHidden);
   f.state.agents = agents;
   f.state.order = held;
+  f.state.customOrder = custom;
   f.orderAgents();
   return f;
 }
@@ -277,6 +305,198 @@ function order(agents, pickerHidden = true, held = []) {
     "api");
   check("a titleless pane falls back to its name", text(fresh, "agent-row-name"), "api");
   check("and says where it is", text(fresh, "agent-row-title"), "/p/api");
+}
+
+// -- an order a finger gave --------------------------------------------------
+
+/* Everything above is what the phone does when left to itself. A list somebody
+   arranged by hand is a different promise: the project stays where it was put,
+   and it is worth more than the rules that would otherwise move it. */
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wB:p1", 2, "/p/web", "working"),
+    row("wC:p1", 3, "/p/cli", "working"),
+  ], true, [], ["/p/cli", "/p/api", "/p/web"]);
+  check("a dragged order outranks creation order",
+        f.state.groups.map((g) => g.key), ["/p/cli", "/p/api", "/p/web"]);
+}
+
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wB:p1", 2, "/p/web", "blocked"),
+  ], true, [], ["/p/api", "/p/web"]);
+  check("and a question no longer drags a project to the front",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web"]);
+  check("though it still rises inside its own project",
+        f.state.groups[1].agents.map((a) => a.pane_id), ["wB:p1"]);
+}
+
+// A project made since the last drag is in no saved order at all; it goes
+// where Herdr has just put it, which is the end.
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wZ:p1", 9, "/p/new", "blocked"),
+    row("wB:p1", 2, "/p/web", "working"),
+  ], true, [], ["/p/web", "/p/api"]);
+  check("a project the order has never seen lands last",
+        f.state.groups.map((g) => g.key), ["/p/web", "/p/api", "/p/new"]);
+}
+
+// A project that has since been closed is skipped rather than leaving a hole.
+{
+  const f = order([
+    row("wB:p1", 2, "/p/web", "working"),
+    row("wA:p1", 1, "/p/api", "working"),
+  ], true, [], ["/p/web", "/p/gone", "/p/api"]);
+  check("a closed project leaves no gap",
+        f.state.groups.map((g) => g.key), ["/p/web", "/p/api"]);
+}
+
+// -- what a drag reports back -------------------------------------------------
+
+/* Herdr counts the workspace being moved when it resolves insert_index, so an
+   insertion below where it started is one slot further along. Checked against
+   what actually happens to the list: inserting before the entry at that index.
+   Off by one here is a project that creeps a place every time it is moved. */
+{
+  const f = loadFlock();
+  const ids = ["a", "b", "c", "d"];
+  const herdr = (from, index) => {
+    const moved = ids[from];
+    const before = ids.slice(0, index).filter((id) => id !== moved);
+    const after = ids.slice(index).filter((id) => id !== moved);
+    return [...before, moved, ...after];
+  };
+  for (let from = 0; from < ids.length; from++) {
+    for (let to = 0; to < ids.length; to++) {
+      check(
+        `moving ${ids[from]} to slot ${to} tells Herdr the same thing`,
+        herdr(from, f.insertIndexFor(from, to)),
+        f.reorder(ids, from, to)
+      );
+    }
+  }
+  check("the phone's own reorder", f.reorder(ids, 0, 2), ["b", "c", "a", "d"]);
+  check("and back the other way", f.reorder(ids, 3, 1), ["a", "d", "b", "c"]);
+}
+
+// -- the order as it is kept --------------------------------------------------
+
+{
+  const f = loadFlock();
+  f.state.customOrder = ["/p/web", "/p/api"];
+  f.saveOrder();
+  check("the order survives a reload", f.loadOrder(), ["/p/web", "/p/api"]);
+
+  f.store.order = "{not json";
+  check("and nonsense in storage is no order at all", f.loadOrder(), []);
+  f.store.order = JSON.stringify(["/p/api", 7, null]);
+  check("nor is anything in it that is not a project", f.loadOrder(), ["/p/api"]);
+}
+
+// -- what a tab is called -----------------------------------------------------
+
+/* Herdr numbers a tab before anybody names it, and the phone should agree with
+   the laptop's tab bar - which draws the label, not the internal number. */
+{
+  const f = loadFlock();
+  check("a name somebody typed is a name", f.tabName({ tab_label: "deploy" }), "deploy");
+  check("a number is not", f.tabName({ tab_label: "2" }), "");
+  check("and neither is Herdr's own wording", f.tabName({ tab_label: "Tab 3" }), "");
+  check("a tab nobody has touched has no name", f.tabName({}), "");
+
+  check("the number is the one the tab bar draws",
+        f.tabNumber({ tab_label: "2", tab_number: 3 }), "2");
+  check("falling back to Herdr's own when the label is a name",
+        f.tabNumber({ tab_label: "deploy", tab_number: 3 }), "3");
+  check("and to nothing at all when there is nothing",
+        f.tabNumber({}), "");
+}
+
+// -- what a tab's row says ----------------------------------------------------
+
+/* Every tab is a row now, shells included - which is the point: the row you
+   want at 11pm is often the one running the dev server, and it has no agent,
+   no title and nothing to say for itself but its name. */
+{
+  const { agentRowHtml } = loadRows();
+  const text = (html, cls) => {
+    const m = new RegExp(`<span class="${cls}">([^<]*)</span>`).exec(html);
+    return m ? m[1] : null;
+  };
+  const tab = (extra) => ({
+    ...row("wA:p2", 1, "/p/api", "unknown", { has_agent: false, name: "api", title: "" }),
+    ...extra,
+  });
+
+  const shell = agentRowHtml(tab({ tab_label: "2", tab_number: 2, cwd: "/p/api" }), "api");
+  check("a tab with no agent is called what the laptop calls it",
+        text(shell, "agent-row-name"), "tab 2");
+  check("and says so instead of a status it does not have",
+        /<span class="agent-row-ago">shell<\/span>/.test(shell), true);
+  check("with no status badge on it", /status-badge/.test(shell), false);
+
+  const named = agentRowHtml(tab({ tab_label: "dev server", tab_number: 2 }), "api");
+  check("a tab somebody named is called that", text(named, "agent-row-name"), "dev server");
+
+  const busy = agentRowHtml(
+    tab({ tab_label: "dev server", tab_number: 2, has_agent: true, status: "working",
+          title: "Rewrite the importer" }),
+    "api");
+  check("an agent's own headline still leads", text(busy, "agent-row-name"),
+        "Rewrite the importer");
+  check("and the tab's name is the small line", text(busy, "agent-row-title"), "dev server");
+  check("a tab with an agent says what it is doing", /status-working/.test(busy), true);
+
+  // Each row draws its own sheep, so two tabs of one project are two animals.
+  const other = agentRowHtml(
+    tab({ pane_id: "wA:p3", tab_label: "3", tab_number: 3, has_agent: true, status: "blocked",
+          title: "Which of these three?" }),
+    "api");
+  check("and each row wears the status of its own tab",
+        [/sheep-wrap working/.test(busy), /sheep-wrap blocked/.test(other)], [true, true]);
+}
+
+// -- a row with something waiting behind it ----------------------------------
+
+/* A prompt typed and not yet handed over is the row's state as much as the
+   agent's: an agent working with two prompts stacked behind it is a different
+   thing to look at than one that is merely working. The counting is checked
+   further down; this is the row actually carrying it. */
+{
+  const rows = loadRows();
+  const busy = () => ({ ...row("wA:p1", 1, "/p/api", "working"), name: "api",
+                        title: "Rewrite the importer" });
+  const drawn = (queue) => {
+    rows.state.queue = queue;
+    return rows.agentRowHtml(busy(), "api", rows.queuedByPane().get("wA:p1"));
+  };
+
+  check("a chat with nothing waiting says nothing",
+        /agent-row-queued/.test(drawn([])), false);
+
+  const waiting = drawn([
+    { id: 1, pane_id: "wA:p1", state: "waiting" },
+    { id: 2, pane_id: "wA:p1", state: "waiting" },
+  ]);
+  check("two waiting prompts are counted", />2 queued</.test(waiting), true);
+  check("beside what the agent itself is doing", />working</.test(waiting), true);
+
+  // Another chat's queue is not this row's business.
+  check("a prompt for another chat is not drawn here",
+        /agent-row-queued/.test(drawn([{ id: 3, pane_id: "wB:p1", state: "waiting" }])), false);
+
+  // One that could not be delivered is not waiting for a window; it is waiting
+  // for you, and the row marks it apart.
+  const failed = drawn([
+    { id: 4, pane_id: "wA:p1", state: "waiting" },
+    { id: 5, pane_id: "wA:p1", state: "failed" },
+  ]);
+  check("a failed prompt is said as well", />1 queued · 1 failed</.test(failed), true);
+  check("and marks the row", /agent-row-queued failed/.test(failed), true);
 }
 
 // -- telling two sheep apart -------------------------------------------------
@@ -532,6 +752,107 @@ function order(agents, pickerHidden = true, held = []) {
     "api", counts.get("wC:p1"));
   check("a sheep with an empty queue says nothing",
         quiet.includes("agent-row-queued"), false);
+}
+
+// -- what is left to spend ---------------------------------------------------
+
+/* A window is a percentage and a time, and the time is half the answer: "87%"
+   means something different on Tuesday than it does an hour before it resets.
+   The strip says both, in as few characters as will still carry them. */
+{
+  const soon = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
+  const gone = new Date(Date.now() - 3600 * 1000).toISOString();
+  const week = new Date(Date.now() + 5 * 86400 * 1000).toISOString();
+
+  const u = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "claude", ok: true, blocked: false, buckets: [
+        { name: "five_hour", utilization: 74, resets_at: soon, spent: false, warning: false, expired: false },
+        { name: "seven_day", utilization: 9, resets_at: week, spent: false, warning: false, expired: false },
+        { name: "seven_day_opus", utilization: 0, resets_at: null, spent: false, warning: false, expired: false },
+      ],
+    }],
+  });
+
+  const html = u.quotaHtml();
+  check("the agent is named", /class="usage-agent">Claude</.test(html), true);
+  /* Both windows run out independently, so both get a bar: a five hour window
+     that is fine says nothing about a weekly one that is nearly gone. */
+  check("every window it has gets its own bar",
+        (html.match(/class="usage-bar"/g) || []).length, 2);
+  check("each filled to its own mark",
+        [/width:74%/.test(html), /width:9%/.test(html)], [true, true]);
+  check("and labelled with which window it is",
+        [/class="usage-label">5h</.test(html), /class="usage-label">week</.test(html)],
+        [true, true]);
+  // A plan slot this account does not use is not a window at zero percent.
+  check("an empty slot is not drawn", /opus/.test(html), false);
+
+  check("five hours is 5h", u.windowLabel("five_hour"), "5h");
+  check("seven days is a week", u.windowLabel("seven_day"), "week");
+  check("and a window Codex invents later still reads", u.windowLabel("3_hour"), "3h");
+
+  /* A reset you could sit and wait for is a time - the small hours of tomorrow
+     included, which is where a five hour window started in the evening lands.
+     A reset days away is a date. */
+  const hours = (n) => new Date(Date.now() + n * 3600 * 1000).toISOString();
+  check("a reset in three hours is a time",
+        /^\d{1,2}[:.]\d{2}/.test(u.resetLabel(hours(3))), true);
+  check("so is one in the small hours of tomorrow",
+        /^\d{1,2}[:.]\d{2}/.test(u.resetLabel(hours(9))), true);
+  check("a reset next week carries its date", /^\d{1,2}\.\d{1,2}\./.test(u.resetLabel(week)), true);
+  check("and nothing is nothing", u.resetLabel(null), "");
+
+  /* A window with anything left in it is yours to spend, so there is nothing
+     to explain and nothing to warn about - the bar says it. */
+  check("a window that has room says nothing else", /quota-note/.test(html), false);
+  check("and no threshold is ever explained", /80%|85%/.test(html), false);
+  check("nor is the word resets spent on it", /resets/.test(html), false);
+
+  // A window that has already come back is not at the percentage it was: the
+  // strip must not draw a full bar for a wall that is gone.
+  const rolled = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "codex", ok: true, blocked: false, buckets: [
+        { name: "five_hour", utilization: 98, resets_at: gone, spent: false, warning: true, expired: true },
+        { name: "seven_day", utilization: 40, resets_at: week, spent: false, warning: false, expired: false },
+      ],
+    }],
+  }).quotaHtml();
+  check("an expired window shows no percentage",
+        /class="usage-window past">[\s\S]*?class="usage-pct">—/.test(rolled), true);
+  check("and draws an empty bar rather than the old one", /width:0%/.test(rolled), true);
+  check("the window still running keeps its own", /width:40%/.test(rolled), true);
+
+  const out = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "claude", ok: true, blocked: true, resume_at: soon, buckets: [
+        { name: "five_hour", utilization: 100, resets_at: soon, spent: true, warning: true, expired: false },
+        { name: "seven_day", utilization: 40, resets_at: week, spent: false, warning: false, expired: false },
+      ],
+    }],
+  }).quotaHtml();
+  /* A window with nothing left says so on the time it comes back, which is the
+     only part worth reading - and says nothing else. A sentence underneath was
+     both noise and, when it was wrong, alarming. */
+  check("a window with nothing left is marked out",
+        /class="usage-window out"/.test(out), true);
+  check("the window that still has room is not marked",
+        (out.match(/usage-window out/g) || []).length, 1);
+  check("and nothing is said underneath", /quota-note/.test(out), false);
+  check("its bar is full", /class="usage-window out">[\s\S]*?width:100%/.test(out), true);
+
+  // An agent nobody can price keeps delivering, so the strip does not shout.
+  const unknown = loadUsage({
+    threshold: 85,
+    agents: [{ agent: "gemini", ok: false, error: "no usage to read for gemini", buckets: [] }],
+  }).quotaHtml();
+  check("an unreadable agent explains itself quietly",
+        /usage-detail muted">no usage to read for gemini/.test(unknown), true);
+  check("and is not drawn as blocked", /blocked/.test(unknown), false);
 }
 
 if (failures) {

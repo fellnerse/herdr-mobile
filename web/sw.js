@@ -48,8 +48,15 @@ async function readJson(res) {
   }
 }
 
+/* A workspace running two agents at once would otherwise be named twice over -
+   "sheepit, sheepit" - so the gateway hands out a name that says which tab.
+   An older gateway has no such field and the project's name is all there is. */
+function agentName(row) {
+  return row.display_name || row.name || "";
+}
+
 function names(agents) {
-  const list = agents.map((a) => a.name).filter(Boolean);
+  const list = agents.map(agentName).filter(Boolean);
   if (!list.length) return "";
   if (list.length === 1) return list[0];
   if (list.length === 2) return `${list[0]} and ${list[1]}`;
@@ -107,7 +114,7 @@ self.addEventListener("push", (event) => {
           }
         } else if (waiting.length === 1) {
           // No usable record: say the least that is still true.
-          title = waiting[0].name || "Agent finished";
+          title = agentName(waiting[0]) || "Agent finished";
           body = waiting[0].title || "Tap to open.";
         }
       } catch (err) {

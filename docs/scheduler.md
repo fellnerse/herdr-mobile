@@ -35,20 +35,70 @@ not to the queue.
 
 ## Where the numbers come from
 
-Claude Code resolves its own limits through `GET /api/oauth/usage`. The queue
-calls the same endpoint with the OAuth token already on disk. It costs **no
-tokens**, and returns both a live utilization percentage and an exact reset
-timestamp — so delivery is scheduled against real windows instead of being
-discovered by crashing into them.
+Each agent spends its own subscription, so each is asked separately and holds
+only its own panes. A Claude window says nothing about what a Codex pane may
+spend.
+
+**Claude Code** resolves its own limits through `GET /api/oauth/usage`. The
+queue calls the same endpoint with the OAuth token already on disk — or, on a
+Mac, in the login Keychain, where Claude Code keeps it instead of in
+`~/.claude/.credentials.json`. It costs **no tokens**, and returns both a live
+utilization percentage and an exact reset timestamp, so delivery is scheduled
+against real windows instead of being discovered by crashing into them.
 
 Every non-null bucket is checked, not just `five_hour`. Bucket sets differ by
 plan, and `seven_day_opus` going unwatched is how a prompt silently strands.
 
 The access token lives about six hours. If the queue idles overnight the poll
 can fail, so the last good response is cached and reused. It deliberately does
-**not** refresh the token itself: rewriting `~/.claude/.credentials.json` races
-with Claude Code. A cached `resets_at` stays valid across exactly the pause
-where it is needed.
+**not** refresh the token itself: rewriting the credentials races with Claude
+Code. A cached `resets_at` stays valid across exactly the pause where it is
+needed.
+
+**Both agents also write their usage down**, and that costs nothing at all to
+read: Claude Code caches its last reading in `.claude.json`, stamped with the
+account it belongs to, and Codex records the rate limits of every turn in its
+session rollout — a five-hour window and a seven-day one, the same shape under
+different names. Claude falls back to its own note when the endpoint cannot be
+reached.
+
+**Codex is read off its own screen as well**, because the rollout is only
+written when the model answers. A window that resets while nobody is working
+still reads as full on disk — a pane finished a turn at 98%, the window
+reopened two hours later, and the file still said 98% that evening. What
+`/status` prints was fetched when somebody asked for it, so the gateway reads
+the panes, parses the box when it is on screen, and takes whichever reading is
+newer. Note that the box states what is **left**, not what is spent: "6% left"
+is 94% gone.
+
+If nothing has been read for fifteen minutes, one idle Codex pane is asked —
+`/status`, typed in as a prompt. Two conditions, both necessary: the pane is
+`idle`, and **its composer is empty**. A half-written prompt on screen would be
+submitted along with the command, which is somebody's unfinished sentence sent
+to their own agent; that pane is skipped and the older reading stands.
+
+**A reading expires with the window it describes.** A note saying 98% was true
+until that window reset; after the reset it is not stale but wrong, and a Codex
+pane that finished a turn shortly before its window reopened would otherwise
+read as full all afternoon. A bucket whose `resets_at` has passed blocks
+nothing, and the phone draws it with no percentage at all rather than an old
+one.
+
+**Usage does not gate delivery at all**, so not knowing what is left costs
+nothing: a prompt goes as soon as the pane can take it. A window therefore
+matters in exactly two places — the strip, where it is information, and the
+wall, where a banner is confirmed against it.
+
+"Spent" in that second place means the cap itself — 100%, or a window the
+provider locked after it was used. Not `threshold`, which is only where the bar
+turns amber (80%).
+And not a slot the plan never included, which is locked from the day it was
+born and says nothing about what anybody spent.
+
+When a spent window does not say when it reopens, that is `None`, and the
+caller applies its own backoff. It used to answer "fifteen minutes from now",
+a time that moved every time it was asked — the phone read 22:40, then 22:41 a
+minute later, for a window that was not out at all.
 
 ## Delivery
 
@@ -56,7 +106,10 @@ where it is needed.
   itself, but then everything behind the first prompt runs against whatever the
   subscription looks like by the time it gets there — which is the entire thing
   this queue exists to decide.
-- **Admission control.** A prompt only goes out below `threshold` (default 85%).
+- **No admission control.** A prompt somebody typed is theirs to spend their own
+  window on, down to the last percent, so nothing in delivery consults usage.
+  A queue that stops at 85% stops exactly when the phone is most wanted, and
+  the 15% it was protecting is days of perfectly good weekly window.
 - **The wall.** When a window runs out mid-turn, `esc` halts it and a resume
   prompt is queued *in front* of everything else for that chat. There is no
   separate pause state: a resume is just a prompt that jumps the queue.
@@ -94,6 +147,32 @@ it from, the dispatcher reads each waiting pane itself and looks for the banner.
 for the same reason: the banner says go and ask, usage says yes or no. Acting on
 matched text directly parks a healthy chat that merely mentioned running out of
 usage — which is a thing agents say to each other constantly.
+
+## The strip
+
+One line per agent, one bar per window: `Claude 5h ▁▁ 10% 04:10 week ▃▃ 25%
+21.9.` Both windows get a bar because they run out independently — a five-hour
+window that is fine says nothing about a weekly one that is nearly gone.
+
+It has to survive a 360px phone with two agents running, so everything that
+could be inferred is gone: no "resets", no brackets, and a date rather than a
+date and a time once the reset is more than eighteen hours out. Inside that,
+a reset is a clock time — including the small hours of tomorrow, which is where
+a five-hour window started in the evening lands.
+
+## Where it is seen
+
+In the chat it was typed into, above the box it was typed in. A queued prompt
+is one line of text and three things you can do to it: **Edit**, which takes it
+back into the composer where the keyboard already is, **Send now**, which hands
+it over whatever the agent is in the middle of, and **Delete**.
+
+It used to have a tab of its own, listing every chat's prompts. That put the
+one thing you might want to take back two taps away from the place you would
+notice it was still sitting there, and made a queue of one look like an
+administrative system. The project list carries the same fact in a word — a row
+with prompts behind it says `2 queued` beside what its agent is doing — and
+that is the only place the queue is visible from outside its own chat.
 
 ## Visibility
 
@@ -152,9 +231,10 @@ it.
 | | |
 |---|---|
 | `GET /api/queue` | queued prompts; `?pane_id=` or `?state=` to filter |
-| `GET /api/queue/quota` | usage windows, thresholds, next reset |
+| `GET /api/queue/quota` | usage windows per agent: what each has spent, when it resets, and whether it is out |
 | `POST /api/queue` | `{prompt, pane_id}` — the only send path; answers `delivered: "terminal"` when the pane had no agent and the text was typed instead |
 | `POST /api/queue/{id}/update` | `{prompt}`, while it is still waiting |
+| `POST /api/queue/{id}/send` | hand it over now, whatever the agent is doing |
 | `POST /api/queue/{id}/delete` | drop it |
 
 ## Terminal
@@ -179,7 +259,7 @@ restart.
 
 | Key | Default | |
 |---|---|---|
-| `threshold` | `85.0` | stop delivering above this percentage |
+| `threshold` | `80.0` | where a usage window turns amber — a warning, not a gate. Red is the cap itself, which is not a setting |
 | `poll_seconds` | `60` | worst-case sweep interval if the event stream drops |
 | `agent_kind` | `claude` | |
 | `agent_args` | `[]` | passed to a relaunched session on the cold path |

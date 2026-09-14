@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
@@ -36,6 +37,15 @@ failures = []
 def check(name, actual, expected):
     if actual != expected:
         failures.append(f"FAIL {name}\n  expected {expected!r}\n  actual   {actual!r}")
+
+
+def error_of(call) -> str:
+    """What a call refuses with, as the message somebody would have to read."""
+    try:
+        call()
+    except Exception as e:
+        return str(e)
+    return "no error raised"
 
 
 # -- bincode ----------------------------------------------------------------
@@ -387,6 +397,111 @@ with tempfile.TemporaryDirectory() as tmp:
     check("no repository", gitdiff.changed_files(tmp)["repo"], False)
     check("nowhere at all", gitdiff.changed_files("/nonexistent/path")["repo"], False)
 
+# -- the rows the phone lists -----------------------------------------------
+
+# Three calls to Herdr become one list, and the shape of it is what the phone
+# draws: a project per workspace, a row per tab, in the order the desktop is
+# showing at the same moment.
+
+
+def ws(wid, number, label, focused=False):
+    return {"workspace_id": wid, "number": number, "label": label,
+            "focused": focused, "active_tab_id": f"{wid}:t1"}
+
+
+def tab(wid, number, label=None):
+    return {"tab_id": f"{wid}:t{number}", "workspace_id": wid,
+            "number": number, "label": label if label is not None else str(number)}
+
+
+def pane(pid, wid, tid, cwd="/repos/x", focused=False):
+    return {"pane_id": pid, "workspace_id": wid, "tab_id": f"{wid}:t{tid}",
+            "cwd": cwd, "focused": focused}
+
+
+def agent(pid, wid, tid, status="working", seq=1):
+    return {"pane_id": pid, "workspace_id": wid, "tab_id": f"{wid}:t{tid}",
+            "agent": "claude", "agent_status": status, "state_change_seq": seq,
+            "terminal_title_stripped": "doing a thing", "cwd": "/repos/x"}
+
+
+WORKSPACES = [ws("wC", 2, "second"), ws("w3", 1, "first")]
+TABS = [tab("w3", 1), tab("w3", 3, "build"), tab("wC", 1)]
+PANES = [pane("w3:p1", "w3", 1), pane("w3:p3", "w3", 3), pane("wC:p1", "wC", 1)]
+AGENTS = [agent("w3:p1", "w3", 1)]
+
+rows = server.build_agent_rows(WORKSPACES, TABS, PANES, AGENTS)
+
+check("a row per tab, whether or not an agent is in it", len(rows), 3)
+check("workspaces come in the desktop's own order",
+      [r["name"] for r in rows], ["first", "first", "second"])
+check("and a workspace's tabs in theirs",
+      [r["tab_id"] for r in rows[:2]], ["w3:t1", "w3:t3"])
+check("the agent's tab carries the agent", rows[0]["has_agent"], True)
+check("with what it is doing", rows[0]["status"], "working")
+check("and what it is called", rows[0]["title"], "doing a thing")
+check("a tab with no agent is still a row", rows[1]["has_agent"], False)
+check("which says nothing about an agent", rows[1]["status"], "unknown")
+check("the tab's own label is passed on, numbered or not",
+      [r["tab_label"] for r in rows[:2]], ["1", "build"])
+check("as is its number", [r["tab_number"] for r in rows[:2]], [1, 3])
+
+# A split tab runs two agents at once. Listing one of them would hide the
+# other entirely, which is the failure this shape exists to prevent.
+split_panes = PANES + [pane("w3:p7", "w3", 1)]
+split_agents = AGENTS + [agent("w3:p7", "w3", 1, status="blocked")]
+split = server.build_agent_rows(WORKSPACES, TABS, split_panes, split_agents)
+first_tab = [r for r in split if r["tab_id"] == "w3:t1"]
+check("both agents of a split tab get a row", len(first_tab), 2)
+check("and say so", [r["split"] for r in first_tab], [True, True])
+check("one tab is still one tab elsewhere",
+      [r["split"] for r in split if r["tab_id"] != "w3:t1"], [False, False])
+
+# A tab with several panes but no agent is one row, not one per pane.
+quiet_panes = [pane("wC:p1", "wC", 1), pane("wC:p4", "wC", 1, focused=True)]
+quiet = server.build_agent_rows([ws("wC", 1, "second")], [tab("wC", 1)], quiet_panes, [])
+check("a split with no agent is a single row", len(quiet), 1)
+check("on the pane the tab is actually on", quiet[0]["pane_id"], "wC:p4")
+
+# A workspace with no pane at all is mid-creation, not a row.
+check("a workspace with nothing in it is skipped",
+      server.build_agent_rows([ws("wZ", 1, "new")], [], [], []), [])
+
+# An older Herdr that does not answer tab.list still has to be usable: the
+# panes know which tab they are in, and that is enough to group them.
+no_tabs = server.build_agent_rows(WORKSPACES, [], PANES, AGENTS)
+check("tabs are recovered from the panes when tab.list is silent",
+      [r["tab_id"] for r in no_tabs], ["w3:t1", "w3:t3", "wC:t1"])
+check("and the agent is still found", no_tabs[0]["has_agent"], True)
+
+# A row's name is the project's, because that is how the list draws it. Anything
+# reading the rows flat - the notification naming what just finished - has to be
+# able to tell two agents in one project apart.
+check("one agent per project is named after the project",
+      [r["display_name"] for r in rows], ["first", "first", "second"])
+check("two agents in one project say which tab",
+      [r["display_name"] for r in first_tab],
+      ["first \u00b7 tab 1 \u00b7 p1", "first \u00b7 tab 1 \u00b7 p7"])
+named = server.build_agent_rows(
+    WORKSPACES,
+    [tab("w3", 1, "build"), tab("w3", 3, "ship")],
+    [pane("w3:p1", "w3", 1), pane("w3:p3", "w3", 3)],
+    [agent("w3:p1", "w3", 1), agent("w3:p3", "w3", 3)],
+)
+check("and a named tab is named, not numbered",
+      [r["display_name"] for r in named], ["first \u00b7 build", "first \u00b7 ship"])
+
+# -- labels typed on a phone ------------------------------------------------
+
+# A label goes into the laptop's workspace strip, so what arrives is trimmed
+# rather than passed on whole.
+check("a label is trimmed", server.clean_label("  build  "), "build")
+check("newlines are not labels", server.clean_label("one\ntwo"), "one two")
+check("a label is capped", len(server.clean_label("x" * 500)), server.MAX_LABEL)
+check("nothing is not a label", server.clean_label("   "), "")
+check("and neither is a number", server.clean_label(7), "")
+check("or nothing at all", server.clean_label(None), "")
+
 # ---------------------------------------------------------------------------
 # What the phone groups the flock by: the repository a workspace belongs to,
 # so the scheduler's worktrees land under the project they were cut from
@@ -423,7 +538,7 @@ panes = [
     pane("wN:p1", "wN", ""),
 ]
 agents = [{"pane_id": p["pane_id"], "agent_status": "idle"} for p in panes]
-rows = {r["pane_id"]: r for r in server.build_agent_rows(ws_list, panes, agents)}
+rows = {r["pane_id"]: r for r in server.build_agent_rows(ws_list, [], panes, agents)}
 
 check("a checkout is its own repository", rows["wA:p1"]["project"], "/p/api")
 check("a worktree belongs to the repository it came from",
@@ -553,6 +668,225 @@ watcher.observe({"p1": "working"}, tell=False)
 watcher.observe({})
 check("a closed pane is forgotten", watcher.busy_since_told, set())
 
+# -- what is left to spend --------------------------------------------------
+
+# Both agents write their own usage down as they work, which is the only
+# source that needs no credentials and the only one Codex has at all. Reading
+# it wrong is invisible - a bar is drawn either way - so the shapes both tools
+# actually write are pinned here.
+
+import json as _json
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from scheduler import quota
+from scheduler import config as sched_config
+
+# Claude Code's own cache, as it sits in .claude.json: the endpoint's payload,
+# stamped with the account it belongs to and when it was taken.
+CLAUDE_STATE = {
+    "oauthAccount": {"accountUuid": "a89e-1"},
+    "cachedUsageUtilization": {
+        "fetchedAtMs": 1789384457174,
+        "accountUuid": "a89e-1",
+        "utilization": {
+            "five_hour": {"utilization": 66, "resets_at": "2026-09-14T16:10:00+00:00",
+                          "locked_reason": None},
+            "seven_day": {"utilization": 8, "resets_at": "2026-09-21T11:00:00+00:00",
+                          "locked_reason": None},
+            "seven_day_opus": None,
+            "extra_usage": {"something_else": True},
+        },
+    },
+}
+
+with tempfile.TemporaryDirectory() as tmp:
+    home = Path(tmp)
+    state = home / ".claude.json"
+    state.write_text(_json.dumps(CLAUDE_STATE))
+
+    q = quota._claude_observed(state)
+    check("Claude's own note is a usage reading", [b.name for b in q.buckets],
+          ["five_hour", "seven_day"])
+    check("with the numbers it wrote", [b.utilization for b in q.buckets], [66.0, 8.0])
+    check("and the account it wrote them for", q.account, "a89e-1")
+    check("it is never mistaken for a live answer", (q.source, q.stale), ("observed", True))
+    check("dated by the agent, not by us", q.fetched_at.year, 2026)
+    # A plan slot this account does not have is not a window at zero.
+    check("an empty slot is not a bucket", "seven_day_opus" in [b.name for b in q.buckets], False)
+
+    empty = home / "empty.json"
+    empty.write_text("{}")
+    check("a Claude that has written nothing down says so",
+          error_of(lambda: quota._claude_observed(empty)), "Claude has written down no usage yet")
+    check("and a missing file is not a crash",
+          "no Claude state" in error_of(lambda: quota._claude_observed(home / "nope.json")), True)
+
+# Codex records the limits of every turn in its session rollout. The newest
+# line wins, the file is read from the end, and a line that is not JSON is a
+# line, not a failure.
+def codex_line(primary, secondary, when=1789387974):
+    return _json.dumps({
+        "timestamp": "2026-09-14T12:47:59Z",
+        "payload": {"type": "token_count", "rate_limits": {
+            "limit_id": "codex",
+            "primary": {"used_percent": primary, "window_minutes": 300, "resets_at": when},
+            "secondary": {"used_percent": secondary, "window_minutes": 10080, "resets_at": when},
+        }},
+    })
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    home = Path(tmp)
+    day = home / "sessions" / "2026" / "09" / "14"
+    day.mkdir(parents=True)
+    rollout = day / "rollout-2026-09-14T12-47-59-01a0.jsonl"
+    rollout.write_text("\n".join([
+        _json.dumps({"payload": {"type": "message", "text": "hello"}}),
+        codex_line(12.0, 30.0),
+        "{ this line is not json",
+        codex_line(98.0, 87.0),
+    ]) + "\n")
+
+    q = quota._codex_observed(home)
+    check("Codex's windows come off its rollout",
+          [[b.name, b.utilization] for b in q.buckets],
+          [["five_hour", 98.0], ["seven_day", 87.0]])
+    check("the last word wins, not the first", q.buckets[0].utilization, 98.0)
+    check("a reset time is a time", q.buckets[0].resets_at.year, 2026)
+    check("and it says where it came from", (q.agent, q.source), ("codex", "observed"))
+
+    # A session opened yesterday and still running is not in today's directory,
+    # so the newest file is found by when it was written, not where it is filed.
+    old_day = home / "sessions" / "2026" / "09" / "13"
+    old_day.mkdir(parents=True)
+    yesterday = old_day / "rollout-2026-09-13T09-00-00-01a0.jsonl"
+    yesterday.write_text(codex_line(4.0, 5.0) + "\n")
+    os.utime(yesterday, (time.time() + 60, time.time() + 60))
+    check("a session still running from yesterday is the current one",
+          quota._codex_observed(home).buckets[0].utilization, 4.0)
+
+    quiet = Path(tmp) / "quiet"
+    (quiet / "sessions").mkdir(parents=True)
+    check("a Codex that has never reported is not an error to guess around",
+          "no Codex session" in error_of(lambda: quota._codex_observed(quiet)), True)
+
+# Whatever the window is measured in, it is named the way the other agent's
+# windows are named: one vocabulary on screen.
+check("five hours is five_hour", quota._codex_window_name(300), "five_hour")
+check("a week is seven_day", quota._codex_window_name(10080), "seven_day")
+check("an hour Codex invents later still reads", quota._codex_window_name(120), "2_hour")
+check("and so does a day", quota._codex_window_name(2880), "2_day")
+check("nothing at all is still a name", quota._codex_window_name(None), "window")
+
+# -- reading Codex off its own screen ---------------------------------------
+
+# Codex writes its usage down only when the model answers, so a window that
+# reset while nobody was working still reads as full on disk. `/status` is the
+# one reading that is current, and this is the box it draws.
+CODEX_STATUS = """
++----------------------------------------------------------------------------+
+|  >_ OpenAI Codex (v0.154.0)                                                 |
+|  Account:              someone@example.com (Plus)                           |
+|  Context window:       92% left (32.2K used / 258K)                         |
+|  5h limit:             [####################] 100% left (resets 03:36 on 15 Sep) |
+|  Weekly limit:         [#...................] 6% left (resets 10:14 on 19 Sep)   |
++----------------------------------------------------------------------------+
+"""
+
+windows = quota.parse_codex_status(CODEX_STATUS)
+check("both windows come off the box", [b.name for b in windows],
+      ["five_hour", "seven_day"])
+# "100% left" is an empty window, not a full one - the one number on that
+# screen that means the opposite of everywhere else in this codebase.
+check("what is left is turned into what is spent",
+      [b.utilization for b in windows], [0.0, 94.0])
+check("a window with everything left is not spent", windows[0].is_spent(), False)
+check("the context window is not a usage window", len(windows), 2)
+
+five, week = windows
+check("the reset keeps its wall clock time",
+      [five.resets_at.astimezone().hour, five.resets_at.astimezone().minute], [3, 36])
+check("and its day", week.resets_at.astimezone().day, 19)
+check("a box with no limits in it reads as nothing",
+      quota.parse_codex_status("just some output"), ())
+
+# A time with no date is today's if it is still to come, and tomorrow's if it
+# has already passed - a reset is hours away, never a year.
+noon = datetime.now().astimezone().replace(hour=12, minute=0, second=0, microsecond=0)
+check("a time later today stays today",
+      quota._status_reset("23:30", None, None, noon).astimezone().day, noon.day)
+check("a time already past is tomorrow's",
+      quota._status_reset("06:00", None, None, noon).astimezone().day,
+      (noon + timedelta(days=1)).day)
+
+# -- typing into somebody's session -----------------------------------------
+
+# Asking a pane for its usage means sending a command to it, and a composer
+# with a half-written prompt in it would send that too. This is the guard, and
+# it is the difference between a reading and somebody's unfinished sentence
+# going to their agent.
+check("a half-written prompt is not an empty composer",
+      server.composer_is_empty("> Next feat: Biome rework"), False)
+check("nor is one that spans two lines",
+      server.composer_is_empty("> Next feat:\n  and more about it"), False)
+check("an empty composer is", server.composer_is_empty("> "), True)
+check("and so is the placeholder the agent draws",
+      server.composer_is_empty("> Ask Codex to do anything"), True)
+check("a pane with no composer at all is left alone",
+      server.composer_is_empty("some output\nand more"), False)
+check("the composer is read from the bottom, not the top",
+      server.composer_is_empty("> an old prompt, answered\nsome reply\n> "), True)
+
+# -- what counts as out of usage --------------------------------------------
+
+# A window is not a wall until it has nothing left. 87% of a weekly window is
+# five days of perfectly good usage, and a queue that will not spend it is a
+# queue that stopped working for the person typing into it. Only a locked
+# window, or one within a percent of the top, is worth waiting out.
+past = datetime.now(timezone.utc) - timedelta(minutes=30)
+ahead = datetime.now(timezone.utc) + timedelta(hours=2)
+
+
+def bucket(util, resets_at=None, locked=None):
+    return quota.Bucket("five_hour", util, resets_at, locked)
+
+
+check("most of a window gone is not a window spent", bucket(87.0, ahead).is_spent(), False)
+check("nor is nearly all of it", bucket(98.0, ahead).is_spent(), False)
+check("nor is all but a rounding error", bucket(99.5, ahead).is_spent(), False)
+check("the cap itself is", bucket(100.0, ahead).is_spent(), True)
+check("and a window the provider locked is, whatever it reads",
+      bucket(3.0, ahead, "over_limit").is_spent(), True)
+
+# A window whose reset time has passed has rolled over: an agent that finished
+# a turn at 98% an hour before its window reopened is not at 98% now, and it is
+# certainly not out.
+check("a window that has come back is not spent", bucket(100.0, past).is_spent(), False)
+check("and it knows it has come back", bucket(98.0, past).is_expired(), True)
+check("a window with no reset time is taken at its word",
+      bucket(100.0, None).is_spent(), True)
+
+# The threshold is a colour on a bar and nothing else now: amber from there up,
+# red at the cap. Whatever it is set to, a window with room in it is spendable.
+check("the threshold does not decide what is spent",
+      [b.is_spent() for b in (bucket(81.0, ahead), bucket(99.0, ahead))], [False, False])
+check("amber starts at four fifths of a window",
+      quota.DEFAULT_THRESHOLD, 80.0)
+check("and the default the queue loads agrees with it",
+      sched_config.load(Path("/nonexistent/scheduler.json")).threshold,
+      quota.DEFAULT_THRESHOLD)
+
+# Nothing in the queue's delivery path asks about usage any more: a prompt
+# somebody typed goes when the pane can take it, and the only thing that defers
+# a pane is that pane having hit the wall mid-turn.
+sweep_source = (Path(__file__).resolve().parent.parent
+                / "gateway" / "scheduler" / "dispatch.py").read_text()
+sweep_body = sweep_source[sweep_source.index("    def sweep("):sweep_source.index("    def report_blocked(")]
+check("delivery does not consult usage", "quota" in sweep_body, False)
+check("but a pane that hit the wall is still parked", "self.stalls" in sweep_body, True)
+
 # ---------------------------------------------------------------------------
 # Picking back up after a usage window, which has exactly two ways to silently
 # never happen: nothing is watching the pane, or usage says the wall is still
@@ -605,9 +939,15 @@ check("a fresh reading is never expired",
 class FakePane:
     """One pane with an agent in it, and a record of what was done to it."""
 
-    def __init__(self, status="idle", session="sess-abc"):
+    def __init__(self, status="idle", session="sess-abc", agent="claude"):
         self.status_value, self.session, self.keys, self.sent, self.typed = \
             status, session, [], [], []
+        # Which agent is in the pane decides whose usage window it spends, so
+        # the wall has to ask before it can price what it saw.
+        self.agent = agent
+
+    def agent_kind(self, pane_id):
+        return self.agent
 
     def agents_by_pane(self):
         return {"wA:p1": {"pane_id": "wA:p1", "workspace_id": "wA", "cwd": "/root/x",

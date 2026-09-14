@@ -222,7 +222,35 @@ html, body {
 /* One project, its sheep beneath it. The heading sticks to the top of the
    list while you scroll past a project with a lot of them, so the flock you
    are looking at always says whose it is. */
-.agent-group { margin-bottom: 14px; }
+.agent-group {
+  position: relative;
+  margin-bottom: 14px;
+  /* A project carried to a new slot, and the ones sliding out of its way. */
+  transition: transform 0.18s ease;
+}
+
+/* Off the list and under the finger. The shadow is the whole trick - it is
+   what says this project is above the others rather than among them. */
+.agent-group.dragging {
+  z-index: 3;
+  transition: none;
+}
+
+.agent-group.dragging .agent-row {
+  transform: scale(1.02);
+  border-color: var(--accent-primary);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.45);
+}
+
+/* Nothing selects or scrolls under a project being carried. The list holds
+   still because the touchmove handler says so, and this says the same thing
+   where a compositor would otherwise start scrolling before it hears it. */
+.agent-list.dragging,
+.agent-list.dragging .agent-row {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 .agent-group-head {
   position: sticky;
@@ -265,7 +293,7 @@ html, body {
   color: var(--status-blocked);
 }
 
-/* Row sits in a clipping wrapper so the Close action can hide behind it. */
+/* Row sits in a clipping wrapper so its actions can hide behind it. */
 .agent-row-wrap {
   position: relative;
   overflow: hidden;
@@ -273,14 +301,20 @@ html, body {
   margin-bottom: 8px;
 }
 
-.agent-row-delete {
+/* What a swipe reveals: Rename and Close on a project, Rename on a tab. The
+   row is dragged aside by exactly this width, which is measured off the
+   element rather than assumed, so one button or two both work. */
+.agent-row-actions {
   position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
+  display: flex;
+}
+
+.agent-row-action {
   width: 92px;
   border: none;
-  background: var(--status-blocked);
   color: #fff;
   font-family: var(--font-sans);
   font-size: 15px;
@@ -288,7 +322,9 @@ html, body {
   cursor: pointer;
 }
 
-.agent-row-delete:active { filter: brightness(0.88); }
+.agent-row-action.rename { background: var(--accent-primary); }
+.agent-row-action.close { background: var(--status-blocked); }
+.agent-row-action:active { filter: brightness(0.88); }
 
 /* The row carries the status now, because the sheep carries who it is.
 
@@ -344,6 +380,27 @@ html, body {
   gap: 2px;
 }
 
+/* Under the headline: which agent is in this tab, then whatever else the row
+   has to say. Two agents on one project look identical otherwise, and which
+   one it is decides whose usage window the tab is spending. */
+.agent-row-meta {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.row-agent {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
 /* The row's headline is what the agent is doing, which is a sentence rather
    than a word - so it gets two lines before the ellipsis rather than one. */
 .agent-row-name {
@@ -365,8 +422,8 @@ html, body {
   text-overflow: ellipsis;
 }
 
-/* The flock: one sheep per project, and the colour on the wrapper is whose
-   sheep it is - the breed's own fleece - rather than what it is doing. The
+/* One sheep per row - which is one per tab - and the colour on the wrapper is
+   whose sheep it is, the breed's own fleece, rather than what it is doing. The
    fleece is currentColor, so that one colour drives the whole animal. */
 /* Bigger than it was: the markings that tell one sheep from another are the
    whole point of drawing an animal rather than a dot, and at 34px they were
@@ -1248,81 +1305,117 @@ html, body {
 
 /* ---------------------------------------------------------------- Queue --- */
 
-/* Count of tasks wanting a person, on the header's queue button. Same badge
-   geometry as the connection dot, widened for a numeral. */
-.queue-badge {
-  position: absolute;
-  top: 0;
-  right: 0;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--status-blocked);
-  border: 1.5px solid var(--bg-surface);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 12px;
-  text-align: center;
-}
-
-.queue-badge.hidden { display: none; }
-
 /* Usage windows, above the list */
 .quota-strip {
   flex-shrink: 0;
-  padding: 12px 16px;
+  padding: 12px;
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   gap: 9px;
 }
 
-.quota-row {
-  display: grid;
-  grid-template-columns: 4.5rem 1fr auto;
+/* One line per agent, one group per window: a label, a bar, what is spent and
+   when it comes back. It has to survive a 360px phone with two agents running,
+   so every part of it is as short as it can be and still be read - no "resets",
+   no brackets, and a date rather than a date and a time once the reset is not
+   in the next few hours.
+
+   Every column is a fixed width and every number is tabular. A percentage
+   going from 9% to 10% must not move the bar beside it, and a reset going from
+   a time to a date must not move the next agent's line: the strip is polled
+   every thirty seconds, and a layout that twitches on each poll is one nobody
+   can read at a glance. */
+.usage {
+  display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 12px;
+  gap: 4px 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
-.quota-name {
-  color: var(--text-secondary);
-  white-space: nowrap;
+.usage-agent {
+  flex-shrink: 0;
+  width: 2.9rem;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
-.quota-track {
-  display: block;
-  height: 6px;
-  border-radius: 3px;
+.usage-window {
+  flex-shrink: 0;
+  display: grid;
+  /* label, bar, percentage, reset - 127px in all. Two of those, the agent's
+     name and the gaps between them come to 316px, which is what a 360px phone
+     leaves once the strip's own padding is taken off. */
+  grid-template-columns: 1.7rem 24px 2rem 2.2rem;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+}
+
+.usage-bar {
+  height: 4px;
+  border-radius: 2px;
   background: var(--bg-hover);
   overflow: hidden;
 }
 
-/* Both of these are spans, and a span is inline until told otherwise: the
-   fill carried a width and a height that a browser had no reason to apply,
-   so every bar read as empty however much of the window was gone. */
-.quota-fill {
+/* A span is inline until told otherwise, and an inline fill draws nothing
+   however much of the window is gone. */
+.usage-fill {
   display: block;
   height: 100%;
-  border-radius: 3px;
+  border-radius: 2px;
   background: var(--status-idle);
   transition: width 0.3s ease;
 }
 
-/* Amber approaching the line, red once it blocks - the same reading as a
-   sheep's colour, so no legend is needed. */
-.quota-row.warn .quota-fill { background: var(--status-working); }
-.quota-row.over .quota-fill { background: var(--status-blocked); }
+/* Both numbers end where the column ends, so their digits stay in place as
+   they grow. */
+.usage-pct { text-align: right; }
 
-.quota-pct {
-  font-family: var(--font-mono);
-  font-size: 11px;
+.usage-when {
+  text-align: right;
   color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+}
+
+/* Getting close: the same amber the bar uses and the same amber a working
+   sheep is drawn in, so the three never have to be reconciled by eye. */
+.usage-window.near { color: var(--status-working); }
+.usage-window.near .usage-fill { background: var(--status-working); }
+
+/* Nothing left in this one. The time it comes back is the only part worth
+   reading, so that is the part that goes red - no sentence underneath. */
+.usage-window.out { color: var(--status-blocked); }
+.usage-window.out .usage-fill { background: var(--status-blocked); }
+
+.usage-window.out .usage-when {
+  color: var(--status-blocked);
+  font-weight: 600;
+}
+
+/* A window that has already come back carries no percentage worth reading. */
+.usage-window.past { color: var(--text-muted); }
+
+/* An agent nobody can price says so where its windows would have been. */
+.usage-detail.muted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
 }
 
 .quota-note {
@@ -1332,147 +1425,86 @@ html, body {
 
 .quota-note.blocked { color: var(--status-blocked); }
 
-/* Task rows reuse the project row's card, minus the swipe wrapper. */
-.task-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 11px;
-  width: 100%;
-  margin-bottom: 8px;
-  padding: 13px 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  text-align: left;
-}
-
-.task-row.attention { border-color: rgba(248, 81, 73, 0.45); }
-
-.task-main {
-  flex: 1;
-  min-width: 0;
+/* What is waiting to go to this chat, stacked above the box it was typed in.
+   The dock is already the busiest corner of the screen, so a queued prompt is
+   one line of text and three words of action - and it is only ever here, for
+   the chat in front of you, rather than in a list of everybody's. */
+.chat-queue {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
+  padding: 8px 12px 2px;
+  max-height: 38vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
-.task-prompt {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  /* Two lines is enough to recognise a task; the rest is in the branch. */
+.chat-queue.hidden { display: none; }
+
+.chat-queued {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 9px 11px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
+.chat-queued.attention { border-color: rgba(248, 81, 73, 0.45); }
+
+.chat-queued-state {
+  grid-row: 1;
+  align-self: center;
+}
+
+.chat-queued-text {
+  grid-row: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  /* Two lines of a prompt is enough to know which one it is. */
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.task-meta {
-  font-family: var(--font-mono);
+.chat-queued-why {
+  grid-column: 1 / -1;
   font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.task-why {
-  font-size: 12px;
   color: var(--status-blocked);
 }
 
-.task-side {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 7px;
-}
-
-.task-acts {
+.chat-queued-acts {
+  grid-column: 1 / -1;
   display: flex;
   gap: 6px;
 }
 
-.task-act {
-  padding: 4px 9px;
+.chat-queued-act {
+  padding: 5px 10px;
   background: var(--bg-hover);
   border: 1px solid var(--border-subtle);
-  border-radius: 9px;
+  border-radius: 7px;
   color: var(--text-secondary);
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 
-.task-act:active { filter: brightness(1.3); }
-.task-act.danger { color: var(--status-blocked); }
+.chat-queued-act:active { filter: brightness(1.3); }
+.chat-queued-act.accent { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }
+.chat-queued-act.danger { color: var(--status-blocked); }
 
 /* A queued prompt's states are not agent states, so they need their own chips. */
 .status-waiting { background: rgba(139, 148, 158, 0.15); color: var(--status-unknown); }
 .status-sent { background: rgba(88, 166, 255, 0.15); color: var(--status-done); }
 .status-failed { background: rgba(248, 81, 73, 0.15); color: var(--status-blocked); }
 
-/* Queue-a-prompt sheet */
-.task-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 11px 4px;
-}
 
-.task-field label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.task-textarea,
-.task-input {
-  width: 100%;
-  padding: 11px 12px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 15px;
-  resize: none;
-}
-
-.task-input { font-family: var(--font-mono); font-size: 13px; }
-
-.task-textarea:focus,
-.task-input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-}
-
-.task-error {
-  margin: 0 4px 4px;
-  padding: 9px 11px;
-  background: rgba(248, 81, 73, 0.12);
-  border-radius: 10px;
-  color: var(--status-blocked);
-  font-size: 13px;
-}
-
-.task-error.hidden { display: none; }
-
-.sheet-btn-primary {
-  background: var(--accent-primary);
-  border-color: transparent;
-  color: #fff;
-  font-weight: 600;
-}
-
-/* The queue is a full-screen layer (z 30) and the task sheet opens from
-   inside it, so both it and its backdrop have to clear that. */
-#task-sheet { z-index: 41; }
-.sheet-backdrop.over-queue { z-index: 40; }
-
-.task-act.accent { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }
 
 /* ---------------------------------------------------------------------------
    The console and the changed files

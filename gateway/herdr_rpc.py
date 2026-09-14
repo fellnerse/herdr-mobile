@@ -6,6 +6,11 @@ HTTP handlers want - they forward Herdr's own error straight to the client.
 caller only ever wants `result`.
 """
 
+# The gateway runs on whatever python3 the machine has - the menubar app
+# launches it with the one Xcode ships, which is 3.9 - so annotations are
+# strings here rather than types the interpreter has to understand.
+from __future__ import annotations
+
 import json
 import os
 import select
@@ -227,6 +232,18 @@ class Herdr:
         """
         session = (self.agents_by_pane().get(pane_id) or {}).get("agent_session") or {}
         return session.get("value") if session.get("kind") == "id" else None
+
+    def agent_kind(self, pane_id: str) -> str | None:
+        """Which agent is in a pane - "claude", "codex" - or None for a shell.
+
+        Which one it is decides whose usage window the pane spends, so the
+        queue has to ask before it can price a delivery.
+        """
+        try:
+            pane = self.call("pane.get", {"pane_id": pane_id}).get("pane", {})
+        except HerdrError:
+            return None
+        return pane.get("agent") or None
 
     def status(self, pane_id: str) -> str:
         """What is in a pane: an agent's lifecycle state, or why there isn't one.

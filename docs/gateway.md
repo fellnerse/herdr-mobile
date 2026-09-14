@@ -179,7 +179,7 @@ Two consequences worth knowing:
 
 | | |
 |---|---|
-| `GET /api/agents` | The herd: one row per pane, with status, cwd, the project it belongs to, and recency. |
+| `GET /api/agents` | The herd: one row per tab, with status, cwd, the project it belongs to, and recency. |
 | `GET /api/agents/{pane}/history` | Scrollback as text or ANSI. |
 | `GET /api/agents/{pane}/changes` | What git says the agent changed. |
 | `GET /api/agents/{pane}/diff?path=` | One file's unified diff. |
@@ -187,6 +187,8 @@ Two consequences worth knowing:
 | `POST /api/agents/{pane}/prompt`, `/keys` | Typing and single keys. |
 | `POST /api/agents/{pane}/attach` | An image, as raw bytes with its own `Content-Type`. Written to `.sheepit/` beside the agent's work and excluded from git; answers with the path to put in a prompt. |
 | `POST /api/workspaces`, `/api/workspaces/{id}/close` | Starting and closing projects. |
+| `POST /api/workspaces/{id}/rename`, `/api/tabs/{id}/rename` | Herdr's own labels, so the laptop is renamed too. |
+| `POST /api/workspaces/{id}/move` | Where a dragged project lands in Herdr's own order. |
 | `GET|POST /api/push/*` | Notification keys, subscriptions and the last finisher. |
 
 Everything under `/api/` and the WebSocket refuse a cross-origin request:
