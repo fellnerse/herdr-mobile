@@ -47,7 +47,7 @@ function loadMarks() {
   const to = src.indexOf("  /* Everything a row draws.");
   if (from < 0 || to < 0) throw new Error(`marks anchors moved in ${SRC}`);
   return new Function(
-    `${src.slice(from, to)} return { sheepMarks, sheepSvg, eyeOn, BREEDS, HORN_KINDS, COATS, knownStatus };`
+    `${src.slice(from, to)} return { sheepMarks, sheepSvg, eyeOn, BREEDS, MARKS, HORN_KINDS, COATS, knownStatus };`
   )();
 }
 
@@ -318,6 +318,48 @@ function order(agents, pickerHidden = true, held = []) {
         [working, blocked].map((svg) => svg.includes(breed.face)), [true, true]);
   check("and no status colour anywhere on it",
         [working, blocked].some((svg) => /#e3b341|#f85149|#3fb950|#58a6ff/.test(svg)), false);
+
+  /* Lightness alone cannot separate the dark end of the palette: at 44 pixels
+     charcoal, black and a dark badger grey are one animal three times. Hue can
+     - a brown sheep is nobody's black sheep - so the rule is about dark
+     *neutrals* specifically, and at most one of those may be a plain colour.
+     The rest have to carry a pattern, which is what stops a fourth dark grey
+     being quietly added later. */
+  const shade = (hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    const [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255];
+    return {
+      light: r * 0.299 + g * 0.587 + b * 0.114,
+      chroma: Math.max(r, g, b) - Math.min(r, g, b),
+    };
+  };
+  const plainDark = m.BREEDS.filter((b) => {
+    const { light, chroma } = shade(b.fleece);
+    return light < 110 && chroma < 45 && !b.mark;
+  });
+  check("only one plain dark neutral", plainDark.map((b) => b.id), ["black"]);
+
+  // A pattern with no second colour is a pattern nobody can see.
+  for (const b of m.BREEDS) {
+    if (b.mark && !b.patch) failures.push(`FAIL ${b.id} has a pattern and no colour for it`);
+    if (b.mark && !m.MARKS[b.mark]) failures.push(`FAIL ${b.id} wears a pattern nothing draws`);
+  }
+
+  /* The pattern is clipped to the body, and a clip is referenced by id - so
+     two sheep drawn into one list must not share one, or the second wears the
+     first one's shape. */
+  const idOf = (svg) => (/<clipPath id="([^"]+)"/.exec(svg) || [])[1];
+  const patterned = m.BREEDS.find((b) => b.mark).id;
+  const seedFor = ["wA:p1", "wB:p1", "wC:p1", "wD:p1", "wE:p1", "wF:p1", "wG:p1", "wH:p1"]
+    .find((id) => m.sheepMarks(id).breed.mark);
+  if (seedFor) {
+    const first = m.sheepSvg("idle", seedFor);
+    const second = m.sheepSvg("idle", seedFor);
+    check("a pattern is clipped to the body", first.includes("clip-path=\"url(#"), true);
+    check("and no two drawings share a clip", idOf(first) === idOf(second), false);
+  } else {
+    failures.push(`FAIL no test seed draws a patterned breed (${patterned})`);
+  }
 
   // A face has to stay off its own fleece, or it is not a face.
   for (const b of m.BREEDS) {

@@ -830,14 +830,32 @@
     { id: "cream", fleece: "#e8dcb9", face: "#b8a878" },
     { id: "oatmeal", fleece: "#d8c9a8", face: "#6f6650" },
     { id: "tan", fleece: "#cfa26b", face: "#a97c49" },
+    { id: "saddle", fleece: "#d9b98a", face: "#7a5636", patch: "#6b4a2f", mark: "saddle" },
     { id: "brown", fleece: "#8d5c3c", face: "#e0d4c4" },
     { id: "grey", fleece: "#9aa2b1", face: "#6d7688" },
-    { id: "charcoal", fleece: "#4a5162", face: "#d7dce6" },
-    { id: "black", fleece: "#333a49", face: "#20252f" },
-    { id: "badger", fleece: "#5c6678", face: "#e3e8f1" },
-    { id: "spotted", fleece: "#edf0f6", face: "#8d5c3c", patch: "#8d5c3c" },
-    { id: "jacob", fleece: "#c3c9d4", face: "#333a49", patch: "#333a49" },
+    /* The dark end of the palette cannot be told apart by shade - at this size
+       charcoal, black and a badger face are one animal three times. So only
+       one of them is a plain dark sheep; the others carry a pattern, which
+       reads at a glance where four points of lightness do not. */
+    { id: "dalmatian", fleece: "#474f61", face: "#d7dce6", patch: "#eef1f6", mark: "dots" },
+    { id: "black", fleece: "#2f3543", face: "#1d222c" },
+    { id: "badger", fleece: "#5c6678", face: "#e3e8f1", patch: "#e8edf6", mark: "belt" },
+    { id: "spotted", fleece: "#edf0f6", face: "#8d5c3c", patch: "#8d5c3c", mark: "spots" },
+    { id: "jacob", fleece: "#c3c9d4", face: "#333a49", patch: "#333a49", mark: "spots" },
   ];
+
+  /* Fleece patterns, clipped to whatever body the coat drew - a dot that falls
+     off a shorn sheep's slimmer barrel is a dot lying in the grass. */
+  const MARKS = {
+    spots: '<circle cx="13.5" cy="16.5" r="4.6"/><circle cx="27" cy="13.5" r="3.8"/>',
+    dots: [
+      [10, 14, 1.9], [15.5, 11, 1.7], [20.5, 15.5, 2], [25, 10.5, 1.7],
+      [29.5, 14.5, 1.9], [13, 21, 1.7], [19, 21.5, 1.6], [25.5, 20.5, 1.8],
+      [32, 19.5, 1.5], [8.5, 19, 1.5],
+    ].map(([x, y, r]) => `<circle cx="${x}" cy="${y}" r="${r}"/>`).join(""),
+    belt: '<rect x="14" y="0" width="7.5" height="34" rx="0.5"/>',
+    saddle: '<path d="M6 4 h26 v9 q-13 4 -26 0 z"/>',
+  };
 
   /* Horns: the cue that survives being small. Drawn in one canonical frame -
      base at the origin, curling back over the skull - and then placed by
@@ -872,7 +890,7 @@
      circles it is made of. So the same shapes are drawn twice: once in the
      card's colour with a fat stroke, and once filled on top. The first pass
      leaves a halo, the second covers every internal line of it. */
-  function sheepBody(dy, legs, marks) {
+  function sheepBody(dy, legs, marks, clip) {
     const woolly = `
       ${legs ? '<rect x="11" y="21" width="5" height="12" rx="2.5"/>' : ""}
       ${legs ? '<rect x="23" y="21" width="5" height="12" rx="2.5"/>' : ""}
@@ -881,25 +899,28 @@
       <circle cx="25.5" cy="11.5" r="7.5"/>
       <circle cx="31" cy="16" r="7"/>
       <rect x="5" y="13" width="27" height="13" rx="6.5"/>`;
-    /* Shorn: the same animal a week after the clippers - no cloud line, a
-       slimmer barrel, and more daylight under it. */
+    /* Shorn: the same animal a week after the clippers. Ellipses rather than a
+       rounded rectangle - a shorn sheep is a barrel that tapers into the neck,
+       and a box with round corners reads as furniture. */
     const shorn = `
       ${legs ? '<rect x="12" y="21" width="4.4" height="13" rx="2.2"/>' : ""}
-      ${legs ? '<rect x="23" y="21" width="4.4" height="13" rx="2.2"/>' : ""}
-      <rect x="6" y="13.5" width="27" height="11.5" rx="5.75"/>
-      <circle cx="30.5" cy="17" r="6"/>`;
+      ${legs ? '<rect x="23.5" y="21" width="4.4" height="13" rx="2.2"/>' : ""}
+      <ellipse cx="17" cy="18.5" rx="13" ry="7.4"/>
+      <ellipse cx="27.5" cy="16.5" rx="7" ry="6.2"/>`;
     const shape = marks.coat === "shorn" ? shorn : woolly;
-    const patches = marks.breed.patch
-      ? `<g fill="${marks.breed.patch}">
-           <circle cx="13.5" cy="16.5" r="4.6"/>
-           <circle cx="27" cy="13.5" r="3.8"/>
-         </g>`
+    const mark = MARKS[marks.breed.mark];
+    /* Clipped to the body the coat actually drew, so a pattern cannot spill
+       off a slimmer sheep - and defined per drawing, because several of these
+       share one page. */
+    const pattern = mark
+      ? `<clipPath id="${clip}">${shape}</clipPath>
+         <g clip-path="url(#${clip})" fill="${marks.breed.patch}">${mark}</g>`
       : "";
     return `
       <g transform="translate(0 ${dy})">
         <g class="sheep-edge">${shape}</g>
         <g fill="currentColor">${shape}</g>
-        ${patches}
+        ${pattern}
       </g>`;
   }
 
@@ -990,6 +1011,11 @@
     return Object.prototype.hasOwnProperty.call(POSE, status) ? status : "unknown";
   }
 
+  /* A clip path is referenced by id, and the list draws a dozen of these into
+     one document - so each drawing gets its own. The list is replaced whole on
+     every redraw, so the counter never has to be tidied up. */
+  let sheepSerial = 0;
+
   function sheepSvg(status, seed) {
     const pose = POSE[knownStatus(status)];
     // An empty pasture has nobody to tell apart.
@@ -1000,7 +1026,7 @@
     const asleep = pose === "sleep";
     return `
       <svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">
-        ${sheepBody(asleep ? 5 : 0, !asleep, marks)}
+        ${sheepBody(asleep ? 5 : 0, !asleep, marks, `fleece-${++sheepSerial}`)}
         ${HEADS[pose](marks)}
       </svg>`;
   }

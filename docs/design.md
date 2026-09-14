@@ -49,20 +49,40 @@ So the whole animal is identity, hashed from the pane id with FNV-1a:
 * **Horns** — hornless, a short curl, or a full spiral. The strongest cue at 44
   pixels, because it changes the outline.
 * **Coat** — woolly (the cloud line), shorn (a smooth, slimmer barrel with more
-  daylight under it), or a fringe down over the eyes.
-* **Breed** — twelve, near enough to real ones to be nameable: white, Suffolk
-  (white with a black face), cream, oatmeal, tan, brown, grey, charcoal, black,
-  badger face, spotted, Jacob. Each carries its own face colour, because the
-  pairing is what makes it read as an animal and a face has to stay off its own
-  fleece to be a face at all.
+  daylight under it, drawn as two ellipses so it tapers into the neck rather
+  than reading as furniture), or a fringe down over the eyes.
+* **Breed** — thirteen, near enough to real ones to be nameable: white,
+  Suffolk (white with a black face), cream, oatmeal, tan, saddleback, brown,
+  grey, dalmatian, black, badger face, spotted, Jacob. Each carries its own
+  face colour, because the pairing is what makes it read as an animal and a
+  face has to stay off its own fleece to be a face at all.
 * **Muzzle** — dark on a pale face, pale on a dark one, or none. The cheapest
   way to tell two of one breed apart.
 
-That is 216 animals, most of which differ in silhouette before they differ in
+That is 234 animals, most of which differ in silhouette before they differ in
 colour; over the pane ids Herdr actually hands out, two dozen panes come out
-with twenty-two distinct sheep. The test asserts that, and that both shape axes
-actually vary — a hash that quietly settled on one horn would leave the flock
-looking hashed but identical.
+with twenty-three distinct sheep. The test asserts that, and that both shape
+axes actually vary — a hash that quietly settled on one horn would leave the
+flock looking hashed but identical.
+
+#### Why five of them are patterned
+
+Lightness alone cannot separate the dark end of a palette. Charcoal, black and
+a dark badger grey are one animal three times at this size, and no amount of
+picking hex codes fixes it — the differences are real on a swatch and gone at
+44 pixels. Hue can do it, which is why a brown sheep is nobody's black sheep,
+but there is only so much dark hue to go round.
+
+So the dark neutrals carry patterns instead: dots for the dalmatian, a broad
+belt for the badger face, and black left as the one plain dark animal. Spots
+(spotted, Jacob) and a saddle over the back do the same work at the light end.
+A pattern is clipped to whatever body the coat drew, so nothing spills off a
+shorn sheep's slimmer barrel, and each drawing defines its own clip because a
+list draws a dozen of them into one document.
+
+The test holds the rule rather than the palette: at most one dark, near-neutral
+breed may be a plain colour. Add a fourth grey sheep with no pattern and it
+fails.
 
 ### Outlines, and the hole in the row
 

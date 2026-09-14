@@ -36,7 +36,7 @@ project telling you at a glance who is working and who is waiting.
   card, with number keys that follow however many options the agent listed.
   Claude Code and Codex panes are both read, whichever glyphs they draw with.
 - **Your herd at a glance.** The sheep is *who*, the row is *what*. Each pane
-  gets its own animal — horns or none, woolly or shorn, one of twelve breeds —
+  gets its own animal — horns or none, woolly or shorn, one of thirteen breeds —
   hashed from the pane, so two agents on one project are never the same sheep
   twice and you can say "the black one with horns" and mean something. What it
   is *doing* is the coloured spine down the row and the pose it stands in:
