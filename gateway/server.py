@@ -956,6 +956,18 @@ class HerdrHandler(BaseHTTPRequestHandler):
                             self.send_json({"ok": False, "error": "Empty prompt"}, 400)
                             return
                         sched_db.update(conn, prompt_id, prompt=text)
+                    elif action == "send":
+                        if queued.state != "waiting":
+                            self.send_json(
+                                {"ok": False, "error": f"Already {queued.state}"}, 409
+                            )
+                            return
+                        sent, why = send_now(queued)
+                        if not sent:
+                            self.send_json({"ok": False, "error": why}, 400)
+                            return
+                        sched_db.update(conn, prompt_id, state="sent",
+                                        sent_at=sched_db.now(), last_error=None)
                     else:
                         self.send_json({"ok": False, "error": "Unknown action"}, 400)
                         return
@@ -1392,6 +1404,28 @@ def quota_payload() -> dict:
         # One line for the whole machine, for anything that wants a yes or no.
         "blocked": all(r["blocked"] for r in readings) if readings else False,
     }
+
+
+def send_now(queued) -> tuple:
+    """Hand a queued prompt over immediately, whatever the agent is doing.
+
+    The queue's own timing is the polite version: wait for the turn in front to
+    finish so the agent reads one thing at a time. This is the impolite one,
+    for when you would rather the agent had it now - Claude Code and Codex both
+    hold what arrives mid-turn and read it when they come up for air, which is
+    the same thing the queue was arranging, minus the waiting.
+    """
+    res = call_herdr_rpc("agent.prompt", {"target": queued.pane_id, "text": queued.prompt})
+    if "error" not in res:
+        return True, ""
+    # No agent in the pane: it is a shell, and what it wants is keystrokes.
+    typed = call_herdr_rpc("pane.send_text",
+                           {"pane_id": queued.pane_id, "text": queued.prompt})
+    if "error" not in typed:
+        call_herdr_rpc("pane.send_keys", {"pane_id": queued.pane_id, "keys": ["enter"]})
+        return True, ""
+    error = res.get("error") or {}
+    return False, error.get("message") or str(error) or "could not send"
 
 
 def log_usage_problem(err: Exception) -> None:
