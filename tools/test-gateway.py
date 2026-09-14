@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
@@ -36,6 +37,15 @@ failures = []
 def check(name, actual, expected):
     if actual != expected:
         failures.append(f"FAIL {name}\n  expected {expected!r}\n  actual   {actual!r}")
+
+
+def error_of(call) -> str:
+    """What a call refuses with, as the message somebody would have to read."""
+    try:
+        call()
+    except Exception as e:
+        return str(e)
+    return "no error raised"
 
 
 # -- bincode ----------------------------------------------------------------
@@ -657,6 +667,162 @@ watcher = server.StatusWatcher()
 watcher.observe({"p1": "working"}, tell=False)
 watcher.observe({})
 check("a closed pane is forgotten", watcher.busy_since_told, set())
+
+# -- what is left to spend --------------------------------------------------
+
+# Both agents write their own usage down as they work, which is the only
+# source that needs no credentials and the only one Codex has at all. Reading
+# it wrong is invisible - a bar is drawn either way - so the shapes both tools
+# actually write are pinned here.
+
+import json as _json
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from scheduler import quota
+from scheduler import dispatch as sched_dispatch
+from scheduler.config import Config
+
+# Claude Code's own cache, as it sits in .claude.json: the endpoint's payload,
+# stamped with the account it belongs to and when it was taken.
+CLAUDE_STATE = {
+    "oauthAccount": {"accountUuid": "a89e-1"},
+    "cachedUsageUtilization": {
+        "fetchedAtMs": 1789384457174,
+        "accountUuid": "a89e-1",
+        "utilization": {
+            "five_hour": {"utilization": 66, "resets_at": "2026-09-14T16:10:00+00:00",
+                          "locked_reason": None},
+            "seven_day": {"utilization": 8, "resets_at": "2026-09-21T11:00:00+00:00",
+                          "locked_reason": None},
+            "seven_day_opus": None,
+            "extra_usage": {"something_else": True},
+        },
+    },
+}
+
+with tempfile.TemporaryDirectory() as tmp:
+    home = Path(tmp)
+    state = home / ".claude.json"
+    state.write_text(_json.dumps(CLAUDE_STATE))
+
+    q = quota._claude_observed(state)
+    check("Claude's own note is a usage reading", [b.name for b in q.buckets],
+          ["five_hour", "seven_day"])
+    check("with the numbers it wrote", [b.utilization for b in q.buckets], [66.0, 8.0])
+    check("and the account it wrote them for", q.account, "a89e-1")
+    check("it is never mistaken for a live answer", (q.source, q.stale), ("observed", True))
+    check("dated by the agent, not by us", q.fetched_at.year, 2026)
+    # A plan slot this account does not have is not a window at zero.
+    check("an empty slot is not a bucket", "seven_day_opus" in [b.name for b in q.buckets], False)
+
+    empty = home / "empty.json"
+    empty.write_text("{}")
+    check("a Claude that has written nothing down says so",
+          error_of(lambda: quota._claude_observed(empty)), "Claude has written down no usage yet")
+    check("and a missing file is not a crash",
+          "no Claude state" in error_of(lambda: quota._claude_observed(home / "nope.json")), True)
+
+# Codex records the limits of every turn in its session rollout. The newest
+# line wins, the file is read from the end, and a line that is not JSON is a
+# line, not a failure.
+def codex_line(primary, secondary, when=1789387974):
+    return _json.dumps({
+        "timestamp": "2026-09-14T12:47:59Z",
+        "payload": {"type": "token_count", "rate_limits": {
+            "limit_id": "codex",
+            "primary": {"used_percent": primary, "window_minutes": 300, "resets_at": when},
+            "secondary": {"used_percent": secondary, "window_minutes": 10080, "resets_at": when},
+        }},
+    })
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    home = Path(tmp)
+    day = home / "sessions" / "2026" / "09" / "14"
+    day.mkdir(parents=True)
+    rollout = day / "rollout-2026-09-14T12-47-59-01a0.jsonl"
+    rollout.write_text("\n".join([
+        _json.dumps({"payload": {"type": "message", "text": "hello"}}),
+        codex_line(12.0, 30.0),
+        "{ this line is not json",
+        codex_line(98.0, 87.0),
+    ]) + "\n")
+
+    q = quota._codex_observed(home)
+    check("Codex's windows come off its rollout",
+          [[b.name, b.utilization] for b in q.buckets],
+          [["five_hour", 98.0], ["seven_day", 87.0]])
+    check("the last word wins, not the first", q.buckets[0].utilization, 98.0)
+    check("a reset time is a time", q.buckets[0].resets_at.year, 2026)
+    check("and it says where it came from", (q.agent, q.source), ("codex", "observed"))
+
+    # A session opened yesterday and still running is not in today's directory,
+    # so the newest file is found by when it was written, not where it is filed.
+    old_day = home / "sessions" / "2026" / "09" / "13"
+    old_day.mkdir(parents=True)
+    yesterday = old_day / "rollout-2026-09-13T09-00-00-01a0.jsonl"
+    yesterday.write_text(codex_line(4.0, 5.0) + "\n")
+    os.utime(yesterday, (time.time() + 60, time.time() + 60))
+    check("a session still running from yesterday is the current one",
+          quota._codex_observed(home).buckets[0].utilization, 4.0)
+
+    quiet = Path(tmp) / "quiet"
+    (quiet / "sessions").mkdir(parents=True)
+    check("a Codex that has never reported is not an error to guess around",
+          "no Codex session" in error_of(lambda: quota._codex_observed(quiet)), True)
+
+# Whatever the window is measured in, it is named the way the other agent's
+# windows are named: one vocabulary on screen.
+check("five hours is five_hour", quota._codex_window_name(300), "five_hour")
+check("a week is seven_day", quota._codex_window_name(10080), "seven_day")
+check("an hour Codex invents later still reads", quota._codex_window_name(120), "2_hour")
+check("and so does a day", quota._codex_window_name(2880), "2_day")
+check("nothing at all is still a name", quota._codex_window_name(None), "window")
+
+# -- holding, and the far more dangerous not-holding -------------------------
+
+# A hold is forever: nothing retries a prompt the sweep declined to send. So it
+# takes a reading that actually says the window is full. "I could not find out"
+# parked every prompt on this machine for a day, which is the bug this asserts
+# against.
+
+class FakePane:
+    def __init__(self, kind):
+        self.kind = kind
+
+    def agent_kind(self, pane_id):
+        return self.kind
+
+
+def held(reading, threshold=85.0):
+    dispatcher = sched_dispatch.Dispatcher.__new__(sched_dispatch.Dispatcher)
+    dispatcher.herdr = FakePane("claude")
+    original = quota.current
+    quota.current = reading
+    try:
+        return dispatcher.held_on_quota("claude", ["w1:p1"], Config(threshold=threshold))
+    finally:
+        quota.current = original
+
+
+def reading(*utilizations):
+    def read(agent, *a, **kw):
+        return quota.Quota(
+            tuple(quota.Bucket(f"w{i}", u, None, None) for i, u in enumerate(utilizations)),
+            datetime.now(timezone.utc), stale=False, agent=agent, source="api")
+    return read
+
+
+def refuses(agent, *a, **kw):
+    raise quota.QuotaError("no credentials, no cache, no note")
+
+
+check("a full window holds its panes", held(reading(91.0)), True)
+check("an open one does not", held(reading(40.0, 8.0)), False)
+check("the threshold is the line", held(reading(85.0)), True)
+check("a window nobody can read delivers rather than parks", held(refuses), False)
 
 # ---------------------------------------------------------------------------
 # Picking back up after a usage window, which has exactly two ways to silently
