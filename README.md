@@ -42,6 +42,8 @@ project telling you at a glance who is working and who is waiting.
   pane, so two agents on one project are not the same animal twice. Grouped under the repository they work in — worktrees
   included — in the order they were started, with whoever is asking you a
   question on top.
+- **What is queued**, on the sheep it is stacked behind: prompts waiting for a
+  window or a busy chat, counted per project in its heading.
 - **What is left to spend**, above the flock: the same usage windows the queue
   runs on, so you can see the wall coming before you start three more agents.
 - **Notifications when an agent actually wants you** — a turn that finished, a
