@@ -5,6 +5,7 @@ Connects directly to the Herdr UNIX socket and serves a mobile-friendly PWA.
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -1231,6 +1232,89 @@ class StatusWatcher(threading.Thread):
         }
 
 
+# Codex only writes its usage down when the model answers, so a window that
+# reset while nobody was working still reads as full on disk. What `/status`
+# draws is fetched when it is asked for, so the pane is read first - and asked,
+# when what we have has gone old and the pane is in a state where asking is
+# free.
+USAGE_PANE_LINES = 60
+# How old a reading may get before a pane is asked for a fresh one.
+USAGE_ASK_AFTER = 900.0
+_ASKED = {}
+_ASKED_LOCK = threading.Lock()
+
+# What an empty composer looks like in the agents that have one. Anything else
+# on that line is something somebody is in the middle of typing, and sending
+# `/status` would submit it along with the command.
+RE_COMPOSER = re.compile(r"^\s*[>›❯]\s*(.*)$")
+PLACEHOLDERS = re.compile(
+    r"^(?:ask (?:codex|claude) to do anything|try \".*\"|type .*|)$", re.IGNORECASE)
+
+
+def pane_text(pane_id: str, lines: int = USAGE_PANE_LINES) -> str:
+    res = call_herdr_rpc("pane.read", {
+        "pane_id": pane_id, "lines": lines, "source": "recent_unwrapped",
+    })
+    read = res.get("result", {}).get("read") or {}
+    return read.get("text") or ""
+
+
+def composer_is_empty(text: str) -> bool:
+    """Whether the pane's composer has nothing half-typed in it.
+
+    Read from the bottom: the composer is the last prompt glyph on screen, and
+    what follows it is either a placeholder the agent drew or a sentence
+    somebody is still writing.
+    """
+    for line in reversed(strip_ansi(text).splitlines()):
+        match = RE_COMPOSER.match(line)
+        if match:
+            return bool(PLACEHOLDERS.match(match.group(1).strip()))
+    return False  # no composer found: assume something is in the way
+
+
+RE_ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+
+
+def strip_ansi(text: str) -> str:
+    return RE_ANSI.sub("", text or "")
+
+
+def refresh_codex_usage() -> None:
+    """Read Codex's own `/status` off the panes, and ask when it has gone old.
+
+    Asking types a command into somebody's session, so it happens only when the
+    pane is idle - not working, not stopped on a question - and its composer is
+    empty. A half-written prompt on screen is a prompt that would be sent along
+    with the command, so that pane is left alone and the older reading stands.
+    """
+    panes = [a for a in call_herdr_rpc("agent.list").get("result", {}).get("agents", [])
+             if a.get("agent") == "codex"]
+    for pane in panes:
+        pane_id = pane.get("pane_id")
+        if not pane_id:
+            continue
+        text = pane_text(pane_id)
+        buckets = sched_quota.parse_codex_status(text)
+        if buckets:
+            sched_quota.note(sched_quota.Quota(
+                buckets, sched_quota._now(), stale=True, agent="codex", source="pane"))
+            continue
+
+        noted = sched_quota.noted("codex")
+        age = (sched_quota._now() - noted.fetched_at).total_seconds() if noted else None
+        if age is not None and age < USAGE_ASK_AFTER:
+            continue
+        if pane.get("agent_status") != "idle" or not composer_is_empty(text):
+            continue
+        with _ASKED_LOCK:
+            if time.monotonic() - _ASKED.get(pane_id, 0.0) < USAGE_ASK_AFTER:
+                continue
+            _ASKED[pane_id] = time.monotonic()
+        call_herdr_rpc("agent.prompt", {"target": pane_id, "text": "/status"})
+        return  # one pane is enough; the account is the same either way
+
+
 def agents_running() -> list:
     """Which kinds of agent are on this machine right now.
 
@@ -1296,6 +1380,11 @@ def agent_quota(agent: str) -> dict:
 def quota_payload() -> dict:
     """What every agent on this machine has left to spend."""
     agents = agents_running() or ["claude"]
+    if "codex" in agents:
+        try:
+            refresh_codex_usage()
+        except Exception as e:  # a usage reading is never worth a failed page
+            log_usage_problem(e)
     readings = [agent_quota(agent) for agent in agents]
     return {
         "threshold": sched_config.load().threshold,
@@ -1303,6 +1392,10 @@ def quota_payload() -> dict:
         # One line for the whole machine, for anything that wants a yes or no.
         "blocked": all(r["blocked"] for r in readings) if readings else False,
     }
+
+
+def log_usage_problem(err: Exception) -> None:
+    print(f"[usage] could not refresh from a pane: {err}", file=sys.stderr)
 
 
 def run():

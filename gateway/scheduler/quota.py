@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -25,7 +26,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -109,11 +110,13 @@ class Bucket:
         window the provider has locked, or one within a percent of the top, is
         worth waiting out.
         """
-        # A lock does not roll over on its own, so it is exempt from expiry: an
-        # account that has been shut off stays shut off until somebody sees to
-        # it.
+        # A lock that was earned does not roll over on its own, so it is exempt
+        # from expiry: an account shut off for going over stays shut off until
+        # somebody sees to it. A window the plan never included is locked from
+        # the day it was born and has nothing to do with what anybody spent,
+        # which is why the usage on it is what tells the two apart.
         if self.locked_reason is not None:
-            return True
+            return self.utilization > 0
         if self.is_expired():
             return False
         return self.utilization >= EXHAUSTED
@@ -176,18 +179,16 @@ class Quota:
         return self.spent()
 
     def resume_at(self, threshold: float = DEFAULT_THRESHOLD) -> datetime | None:
-        """When the earliest blocking window frees up.
+        """When the earliest spent window comes back, if it says.
 
-        None means nothing is blocking. A blocking bucket with no reset time
-        yields a blind backoff instead, so we never wait forever on one.
+        None means there is nothing to wait for - either nothing is spent, or
+        what is spent never said when it reopens, and the caller has its own
+        backoff for that. It used to answer "fifteen minutes from now" instead,
+        which is a time that moves every time anybody asks: the phone showed
+        22:40, then 22:41 a minute later, for a window that was not out at all.
         """
-        blockers = self.blockers(threshold)
-        if not blockers:
-            return None
-        resets = [b.resets_at for b in blockers if b.resets_at]
-        if not resets:
-            return _now() + _seconds(BLIND_BACKOFF_SECONDS)
-        return max(min(resets), _now())
+        resets = [b.resets_at for b in self.spent() if b.resets_at]
+        return min(resets) if resets else None
 
 
 def _now() -> datetime:
@@ -346,6 +347,70 @@ def _codex_buckets(limits: dict) -> tuple[Bucket, ...]:
     return tuple(buckets)
 
 
+# What `/status` draws in a Codex pane. The percentage it prints is what is
+# *left*, which is the opposite of everywhere else, and the reset is a wall
+# clock time with no year on it.
+RE_CODEX_LIMIT = re.compile(
+    r"(?P<window>5h|weekly)\s+limit:.*?(?P<left>\d+(?:\.\d+)?)%\s*left"
+    r"(?:.*?resets\s+(?P<at>\d{1,2}:\d{2})(?:\s+on\s+(?P<day>\d{1,2})\s+(?P<month>\w{3}))?)?",
+    re.IGNORECASE)
+
+CODEX_STATUS_WINDOWS = {"5h": "five_hour", "weekly": "seven_day"}
+
+MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+
+def _status_reset(at: str, day: str, month: str, now: datetime = None) -> datetime | None:
+    """The wall clock time Codex prints, as an instant.
+
+    It says "03:36 on 15 Sep" with no year and in local time. The year is
+    whichever one makes the date near today, which is the only reading that is
+    ever meant - a reset is days away at most.
+    """
+    if not at:
+        return None
+    now = now or datetime.now().astimezone()
+    hour, minute = (int(part) for part in at.split(":"))
+    if day and month and month[:3].lower() in MONTHS:
+        when = now.replace(month=MONTHS[month[:3].lower()], day=int(day),
+                           hour=hour, minute=minute, second=0, microsecond=0)
+        # A December reset read in January belongs to the year just gone.
+        if (when - now).days > 180:
+            when = when.replace(year=when.year - 1)
+        elif (now - when).days > 180:
+            when = when.replace(year=when.year + 1)
+    else:
+        when = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if when < now:
+            when += timedelta(days=1)  # a time already past today is tomorrow's
+    return when.astimezone(timezone.utc)
+
+
+def parse_codex_status(text: str, now: datetime = None) -> tuple[Bucket, ...]:
+    """The windows out of a `/status` breakdown on screen.
+
+    This is the only reading of Codex that is current rather than as-of-a-turn:
+    its rollout is only written when the model actually answers, so a window
+    that reset while nobody was working still reads as full on disk. What the
+    pane is showing was fetched when somebody asked for it.
+    """
+    buckets = {}
+    for match in RE_CODEX_LIMIT.finditer(text or ""):
+        name = CODEX_STATUS_WINDOWS[match.group("window").lower()]
+        # "100% left" is an empty window, not a full one.
+        left = float(match.group("left"))
+        buckets[name] = Bucket(
+            name=name,
+            utilization=max(0.0, min(100.0, 100.0 - left)),
+            resets_at=_status_reset(match.group("at"), match.group("day"),
+                                    match.group("month"), now),
+            locked_reason=None,
+        )
+    order = list(CODEX_STATUS_WINDOWS.values())
+    return tuple(buckets[name] for name in order if name in buckets)
+
+
 def _codex_rollouts(home: Path, days: int = CODEX_DAYS) -> list[Path]:
     """The rollouts worth looking in, newest first.
 
@@ -496,8 +561,42 @@ def claude() -> Quota:
 
 
 def codex() -> Quota:
-    """Codex publishes no usage endpoint, so its own rollout is the source."""
-    return _codex_observed()
+    """Codex publishes no usage endpoint, so it has to be watched instead.
+
+    Two places to watch, and the fresher wins. Its rollout is written whenever
+    the model answers, which makes it right about a session that is working and
+    silent about one that is not. What a `/status` on screen says was fetched
+    when somebody asked, which is the only reading that survives a window
+    resetting while nobody was typing.
+    """
+    candidates = [q for q in (_noted.get("codex"), _rollout_or_none()) if q]
+    live = [q for q in candidates if not all(b.is_expired() for b in q.buckets)]
+    if not (live or candidates):
+        return _codex_observed()  # raises the error worth reporting
+    return max(live or candidates, key=lambda q: q.fetched_at)
+
+
+def _rollout_or_none() -> Quota | None:
+    try:
+        return _codex_observed()
+    except QuotaError:
+        return None
+
+
+# Readings somebody else obtained - parsed off a pane, which the gateway can
+# reach and this module cannot.
+_noted: dict = {}
+
+
+def note(quota: Quota) -> None:
+    """Remember a reading taken elsewhere, and let it be seen at once."""
+    _noted[quota.agent] = quota
+    with _memo_lock:
+        _memo.pop(quota.agent, None)
+
+
+def noted(agent: str) -> Quota | None:
+    return _noted.get(agent)
 
 
 SOURCES = {"claude": claude, "codex": codex}
