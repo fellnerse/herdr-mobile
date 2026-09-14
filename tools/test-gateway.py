@@ -779,6 +779,65 @@ check("an hour Codex invents later still reads", quota._codex_window_name(120), 
 check("and so does a day", quota._codex_window_name(2880), "2_day")
 check("nothing at all is still a name", quota._codex_window_name(None), "window")
 
+# -- reading Codex off its own screen ---------------------------------------
+
+# Codex writes its usage down only when the model answers, so a window that
+# reset while nobody was working still reads as full on disk. `/status` is the
+# one reading that is current, and this is the box it draws.
+CODEX_STATUS = """
++----------------------------------------------------------------------------+
+|  >_ OpenAI Codex (v0.154.0)                                                 |
+|  Account:              someone@example.com (Plus)                           |
+|  Context window:       92% left (32.2K used / 258K)                         |
+|  5h limit:             [####################] 100% left (resets 03:36 on 15 Sep) |
+|  Weekly limit:         [#...................] 6% left (resets 10:14 on 19 Sep)   |
++----------------------------------------------------------------------------+
+"""
+
+windows = quota.parse_codex_status(CODEX_STATUS)
+check("both windows come off the box", [b.name for b in windows],
+      ["five_hour", "seven_day"])
+# "100% left" is an empty window, not a full one - the one number on that
+# screen that means the opposite of everywhere else in this codebase.
+check("what is left is turned into what is spent",
+      [b.utilization for b in windows], [0.0, 94.0])
+check("a window with everything left is not spent", windows[0].is_spent(), False)
+check("the context window is not a usage window", len(windows), 2)
+
+five, week = windows
+check("the reset keeps its wall clock time",
+      [five.resets_at.astimezone().hour, five.resets_at.astimezone().minute], [3, 36])
+check("and its day", week.resets_at.astimezone().day, 19)
+check("a box with no limits in it reads as nothing",
+      quota.parse_codex_status("just some output"), ())
+
+# A time with no date is today's if it is still to come, and tomorrow's if it
+# has already passed - a reset is hours away, never a year.
+noon = datetime.now().astimezone().replace(hour=12, minute=0, second=0, microsecond=0)
+check("a time later today stays today",
+      quota._status_reset("23:30", None, None, noon).astimezone().day, noon.day)
+check("a time already past is tomorrow's",
+      quota._status_reset("06:00", None, None, noon).astimezone().day,
+      (noon + timedelta(days=1)).day)
+
+# -- typing into somebody's session -----------------------------------------
+
+# Asking a pane for its usage means sending a command to it, and a composer
+# with a half-written prompt in it would send that too. This is the guard, and
+# it is the difference between a reading and somebody's unfinished sentence
+# going to their agent.
+check("a half-written prompt is not an empty composer",
+      server.composer_is_empty("> Next feat: Biome rework"), False)
+check("nor is one that spans two lines",
+      server.composer_is_empty("> Next feat:\n  and more about it"), False)
+check("an empty composer is", server.composer_is_empty("> "), True)
+check("and so is the placeholder the agent draws",
+      server.composer_is_empty("> Ask Codex to do anything"), True)
+check("a pane with no composer at all is left alone",
+      server.composer_is_empty("some output\nand more"), False)
+check("the composer is read from the bottom, not the top",
+      server.composer_is_empty("> an old prompt, answered\nsome reply\n> "), True)
+
 # -- what counts as out of usage --------------------------------------------
 
 # A window is not a wall until it has nothing left. 87% of a weekly window is

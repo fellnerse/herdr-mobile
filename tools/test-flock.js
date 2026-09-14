@@ -748,8 +748,12 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
   check("seven days is a week", u.windowLabel("seven_day"), "week");
   check("and a window Codex invents later still reads", u.windowLabel("3_hour"), "3h");
 
-  // Today is a time; anything further out needs its date as well.
-  check("a reset today is a time", /^\d{1,2}[:.]\d{2}/.test(u.resetLabel(soon)), true);
+  /* Today is a time; anything further out needs its date as well. Noon rather
+     than "three hours from now", which is tomorrow if the test runs at 10pm. */
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  check("a reset today is a time",
+        /^\d{1,2}[:.]\d{2}/.test(u.resetLabel(noon.toISOString())), true);
   check("a reset next week carries its date", /^\d{1,2}\.\d{1,2}\./.test(u.resetLabel(week)), true);
   check("and nothing is nothing", u.resetLabel(null), "");
 
@@ -778,12 +782,21 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     agents: [{
       agent: "claude", ok: true, blocked: true, resume_at: soon, buckets: [
         { name: "five_hour", utilization: 100, resets_at: soon, spent: true, warning: true, expired: false },
+        { name: "seven_day", utilization: 40, resets_at: week, spent: false, warning: false, expired: false },
       ],
     }],
   }).quotaHtml();
-  check("a window with nothing left says when it comes back",
-        /Nothing left until \d/.test(out), true);
-  check("and draws its bar as a wall", /class="usage-bar over"/.test(out), true);
+  /* A window with nothing left says so on the time it comes back, which is the
+     only part worth reading - and says nothing else. A sentence underneath was
+     both noise and, when it was wrong, alarming. */
+  check("a window with nothing left is marked out",
+        /class="usage-window out"/.test(out), true);
+  check("and its own reset is what carries it",
+        /class="usage-window out">[^<]*<span class="usage-when">\(5h, resets/.test(out), true);
+  check("the window that still has room is not marked",
+        (out.match(/usage-window out/g) || []).length, 1);
+  check("and nothing is said underneath", /quota-note/.test(out), false);
+  check("the bar draws it as a wall", /class="usage-bar over"/.test(out), true);
 
   // An agent nobody can price keeps delivering, so the strip does not shout.
   const unknown = loadUsage({
