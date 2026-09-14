@@ -59,6 +59,21 @@ function loadMarks() {
   )();
 }
 
+/* The usage strip above the flock. Sliced on its own so the wording can be
+   asked for directly: it is the one part of the overview that is words rather
+   than sheep, and wrong words there read as a wrong number. */
+function loadUsage(quota) {
+  const src = fs.readFileSync(SRC, "utf8");
+  const from = src.indexOf("  /* How much subscription is left, per agent");
+  const to = src.indexOf("  // Which chat a prompt is queued for");
+  if (from < 0 || to < 0) throw new Error(`usage anchors moved in ${SRC}`);
+  return new Function("quota", `
+    const escapeHtml = (s) => String(s);
+    const state = { quota };
+    ${src.slice(from, to)}
+    return { quotaHtml, windowLabel, resetLabel };`)(quota);
+}
+
 function loadFlock(pickerHidden = true) {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf(FROM);
@@ -698,6 +713,74 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     "api", counts.get("wC:p1"));
   check("a sheep with an empty queue says nothing",
         quiet.includes("agent-row-queued"), false);
+}
+
+// -- what is left to spend ---------------------------------------------------
+
+/* A window is a percentage and a time, and the time is half the answer: "87%"
+   means something different on Tuesday than it does an hour before it resets.
+   The strip says both, in as few characters as will still carry them. */
+{
+  const soon = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
+  const gone = new Date(Date.now() - 3600 * 1000).toISOString();
+  const week = new Date(Date.now() + 5 * 86400 * 1000).toISOString();
+
+  const u = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "claude", ok: true, blocked: false, buckets: [
+        { name: "five_hour", utilization: 74, resets_at: soon, blocking: false, expired: false },
+        { name: "seven_day", utilization: 9, resets_at: week, blocking: false, expired: false },
+        { name: "seven_day_opus", utilization: 0, resets_at: null, blocking: false, expired: false },
+      ],
+    }],
+  });
+
+  const html = u.quotaHtml(false);
+  check("the agent is named", /class="usage-agent">Claude</.test(html), true);
+  check("the bar follows the fullest window", /width:74%/.test(html), true);
+  check("every window it has is spelled out",
+        (html.match(/class="usage-window/g) || []).length, 2);
+  // A plan slot this account does not use is not a window at zero percent.
+  check("an empty slot is not drawn", /opus/.test(html), false);
+
+  check("five hours is 5h", u.windowLabel("five_hour"), "5h");
+  check("seven days is a week", u.windowLabel("seven_day"), "week");
+  check("and a window Codex invents later still reads", u.windowLabel("3_hour"), "3h");
+
+  // Today is a time; anything further out needs its date as well.
+  check("a reset today is a time", /^\d{1,2}[:.]\d{2}/.test(u.resetLabel(soon)), true);
+  check("a reset next week carries its date", /^\d{1,2}\.\d{1,2}\./.test(u.resetLabel(week)), true);
+  check("and nothing is nothing", u.resetLabel(null), "");
+
+  /* Above the flock the threshold is answering a question nobody asked; in the
+     queue it is the line the queue stops sending at. */
+  check("the overview does not explain the queue", /Queue sends below/.test(html), false);
+  check("the queue does", /Queue sends below 85%/.test(u.quotaHtml(true)), true);
+
+  // A window that has already come back is not at the percentage it was: the
+  // strip must not draw a full bar for a wall that is gone.
+  const rolled = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "codex", ok: true, blocked: false, buckets: [
+        { name: "five_hour", utilization: 98, resets_at: gone, blocking: false, expired: true },
+        { name: "seven_day", utilization: 40, resets_at: week, blocking: false, expired: false },
+      ],
+    }],
+  }).quotaHtml(false);
+  check("an expired window shows no percentage", /class="usage-window spent">\s*—/.test(rolled), true);
+  check("and says it reset rather than that it resets", /reset \d/.test(rolled), true);
+  check("the bar is the window that is still running", /width:40%/.test(rolled), true);
+
+  // An agent nobody can price keeps delivering, so the strip does not shout.
+  const unknown = loadUsage({
+    threshold: 85,
+    agents: [{ agent: "gemini", ok: false, error: "no usage to read for gemini", buckets: [] }],
+  }).quotaHtml(false);
+  check("an unreadable agent explains itself quietly",
+        /usage-detail muted">no usage to read for gemini/.test(unknown), true);
+  check("and is not drawn as blocked", /blocked/.test(unknown), false);
 }
 
 if (failures) {

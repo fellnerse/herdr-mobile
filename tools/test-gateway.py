@@ -677,7 +677,7 @@ check("a closed pane is forgotten", watcher.busy_since_told, set())
 
 import json as _json
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scheduler import quota
@@ -818,6 +818,20 @@ def reading(*utilizations):
 def refuses(agent, *a, **kw):
     raise quota.QuotaError("no credentials, no cache, no note")
 
+
+# A window whose reset time has passed has rolled over: an agent that finished
+# a turn at 98% an hour before its window reopened is not at 98% now, and it is
+# certainly not full.
+past = datetime.now(timezone.utc) - timedelta(minutes=30)
+ahead = datetime.now(timezone.utc) + timedelta(hours=2)
+check("a window that has come back does not block",
+      quota.Bucket("five_hour", 98.0, past, None).is_blocking(85.0), False)
+check("one that has not still does",
+      quota.Bucket("five_hour", 98.0, ahead, None).is_blocking(85.0), True)
+check("a window with no reset time is taken at its word",
+      quota.Bucket("five_hour", 98.0, None, None).is_blocking(85.0), True)
+check("and an expired window knows it", 
+      quota.Bucket("five_hour", 98.0, past, None).is_expired(), True)
 
 check("a full window holds its panes", held(reading(91.0)), True)
 check("an open one does not", held(reading(40.0, 8.0)), False)
