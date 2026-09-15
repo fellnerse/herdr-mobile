@@ -192,6 +192,7 @@ def build_agent_rows(ws_list: list, tabs: list, panes: list, agents_raw: list) -
             if not chosen_panes:
                 chosen_panes = [next((p for p in tab_panes if p.get("focused")), tab_panes[0])]
 
+            tree = ws.get("worktree") or {}
             for chosen in chosen_panes:
                 pane_id = chosen.get("pane_id") or ""
                 a = by_pane.get(pane_id, {})
@@ -206,6 +207,15 @@ def build_agent_rows(ws_list: list, tabs: list, panes: list, agents_raw: list) -
                     # sits under the project it came from.
                     "project": project,
                     "project_name": project_name,
+                    # Whether the project heading can offer to cut another
+                    # worktree, and which of its rows to cut from. A branch
+                    # started from the project's own checkout starts where the
+                    # project does; one started from a linked worktree starts
+                    # on whatever that worktree was left sitting on, which is
+                    # somebody else's half-finished work.
+                    "repo": bool(tree.get("repo_root")),
+                    "main_checkout": bool(tree.get("repo_root"))
+                    and not tree.get("is_linked_worktree"),
                     "workspace_id": ws_id,
                     "tab_id": tab_id,
                     "tab_label": tab.get("label") or "",
@@ -983,6 +993,41 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 self.send_json(res, 400)
                 return
             self.send_json({"ok": True, "result": res.get("result", {})})
+            return
+
+        # API: Cut another worktree off a project
+        # One call does the whole thing - `git worktree add`, and a workspace
+        # opened on the checkout - which is the same call the desktop makes
+        # when you right-click a space. Naming a workspace rather than a path
+        # is what makes this mean "another one of these": Herdr resolves it to
+        # the repository, so any row under the project heading finds the repo
+        # even when the row that was tapped is itself a worktree.
+        if path == "/api/worktrees":
+            params = {"focus": False}
+            if workspace_id := (body.get("workspace_id") or "").strip():
+                params["workspace_id"] = workspace_id
+            elif cwd := (body.get("cwd") or "").strip():
+                params["cwd"] = cwd
+            else:
+                self.send_json({"ok": False, "error": "No project to cut from"}, 400)
+                return
+            # Blank means Herdr picks, which it does by generating a name.
+            if branch := (body.get("branch") or "").strip():
+                params["branch"] = branch
+            # A checkout is a copy of the tree on disk; a big repository takes
+            # longer than the five seconds an RPC is normally given.
+            res = call_herdr_rpc("worktree.create", params, timeout=120.0)
+            if "error" in res:
+                self.send_json(res, 400)
+                return
+            result = res.get("result", {})
+            self.send_json({
+                "ok": True,
+                # What the phone opens next, without having to work out which
+                # of the rows in the next poll was not there before.
+                "workspace_id": (result.get("workspace") or {}).get("workspace_id", ""),
+                "result": result,
+            })
             return
 
         # API: Close a workspace

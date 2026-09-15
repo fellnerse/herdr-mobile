@@ -287,6 +287,29 @@ html, body {
   color: var(--text-muted);
 }
 
+/* Cut another worktree off this project. A heading is 12px tall and a thumb is
+   not, so the tappable box is grown past the glyph with padding and pulled
+   back out of the layout with a negative margin - the heading keeps its height
+   and the target is still worth aiming at. */
+.agent-group-add {
+  flex: none;
+  margin: -10px -4px -10px 0;
+  padding: 10px 8px;
+  border: 0;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.agent-group-add:active {
+  color: var(--accent-primary);
+}
+
 /* The only thing in a heading worth colouring: somebody is waiting on you. */
 .agent-group-waiting {
   font-size: 11px;

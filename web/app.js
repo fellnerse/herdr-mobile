@@ -1113,6 +1113,7 @@
         [
           group.key,
           group.name,
+          group.from ? "+" : "",
           ...group.agents.map((a) =>
             [
               a.pane_id,
@@ -1260,12 +1261,22 @@
         const owedChip = owed
           ? `<span class="agent-group-queued">${owed} queued</span>`
           : "";
+        /* Another one of these, please: a worktree cut off this project, the
+           same thing a right-click on a space does on the desktop. It lives in
+           the heading because the project is what it needs to be told, and the
+           heading is the only thing on this screen that names one. */
+        const add = group.from
+          ? `<button class="agent-group-add" type="button"
+                     data-action="worktree" data-project="${escapeHtml(group.key)}"
+                     aria-label="New worktree in ${escapeHtml(group.name)}">+</button>`
+          : "";
         return `
           <section class="agent-group" data-project="${escapeHtml(group.key)}">
             <h2 class="agent-group-head">
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
               ${owedChip}
               ${tally}
+              ${add}
             </h2>
             ${group.agents
                 .map((a) => agentRowHtml(a, group.name, queued.get(a.pane_id)))
@@ -1376,6 +1387,36 @@
       else closePicker();
     } catch (err) {
       alert("Could not create workspace: " + err.message);
+    }
+  }
+
+  /* Cut a worktree off a project and open it. Herdr does both halves in the
+     one call, so all this has to decide is what the branch is called - and a
+     blank answer is a real answer, meaning "you name it", which is how this
+     stays one tap and a return key when you have not thought that far. */
+  async function createWorktree(projectKey) {
+    const group = state.groups.find((g) => g.key === projectKey);
+    if (!group || !group.from) return;
+    const branch = prompt(`New worktree in ${group.name}`, "");
+    if (branch === null) return;
+    triggerHaptic();
+    try {
+      const res = await fetch("/api/worktrees", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_id: group.from, branch: branch.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        const error = data.error;
+        throw new Error((error && error.message) || error || "refused");
+      }
+      await fetchAgents();
+      const created = state.agents.find((a) => a.workspace_id === data.workspace_id);
+      if (created) selectAgent(created.pane_id);
+      else renderAgentList();
+    } catch (err) {
+      alert("Could not create worktree: " + err.message);
     }
   }
 
@@ -2529,10 +2570,18 @@
       const key = projectKey(agent);
       let group = groups.get(key);
       if (!group) {
-        group = { key, name: agent.project_name || agent.name || key, agents: [] };
+        group = { key, name: agent.project_name || agent.name || key, agents: [], from: "" };
         groups.set(key, group);
       }
       group.agents.push(agent);
+      /* Which of the project's workspaces a new worktree gets cut from. The
+         project's own checkout when it is open, so a branch starts where the
+         project does rather than on top of whatever a worktree opened last
+         week was left sitting on. A project with no checkout open at all gets
+         no plus button - there is no repository to cut from. */
+      if (agent.repo && (!group.from || agent.main_checkout)) {
+        group.from = agent.workspace_id;
+      }
     }
     return [...groups.values()];
   }
@@ -2685,6 +2734,7 @@
     if (action) {
       if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
       else if (action.dataset.action === "rename") renameRow(action.dataset.paneId);
+      else if (action.dataset.action === "worktree") createWorktree(action.dataset.project);
       return;
     }
     const row = e.target.closest(".agent-row");

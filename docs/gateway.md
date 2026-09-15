@@ -189,6 +189,7 @@ Two consequences worth knowing:
 | `POST /api/workspaces`, `/api/workspaces/{id}/close` | Starting and closing projects. |
 | `POST /api/workspaces/{id}/rename`, `/api/tabs/{id}/rename` | Herdr's own labels, so the laptop is renamed too. |
 | `POST /api/workspaces/{id}/move` | Where a dragged project lands in Herdr's own order. |
+| `POST /api/worktrees` | Another worktree off a project: `git worktree add` and a workspace opened on it, the way a right-click on a space does it on the desktop. |
 | `GET|POST /api/push/*` | Notification keys, subscriptions and the last finisher. |
 
 Everything under `/api/` and the WebSocket refuse a cross-origin request:

@@ -554,6 +554,16 @@ check("a hand-opened workspace falls back to its directory",
 check("a pane with nowhere to be still has a heading",
       rows["wN:p1"]["project_name"], "notes")
 
+# Whether the heading can offer to cut another worktree, and which row to cut
+# from. A branch started off a linked worktree starts on whatever that worktree
+# was left sitting on, so the project's own checkout is worth telling apart.
+check("a checkout can be cut from",
+      [rows["wA:p1"]["repo"], rows["wA:p1"]["main_checkout"]], [True, True])
+check("so can a worktree, but not as the place to cut from",
+      [rows["wS:p1"]["repo"], rows["wS:p1"]["main_checkout"]], [True, False])
+check("a workspace Herdr knows no repository for cannot",
+      [rows["wH:p1"]["repo"], rows["wN:p1"]["repo"]], [False, False])
+
 # ---------------------------------------------------------------------------
 # Images from the phone. The one thing a phone has that a laptop does not, and
 # it lands inside a repository somebody is working in - so where it goes, what
