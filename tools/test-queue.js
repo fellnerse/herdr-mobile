@@ -71,6 +71,57 @@ function check(name, actual, expected) {
 
 const waiting = (id, pane, prompt) => ({ id, pane_id: pane, state: "waiting", prompt });
 
+/* The settling grace lives up in the queue's plumbing rather than in the strip
+   that draws it, so it is sliced separately. */
+const SETTLE_FROM = "  /* A prompt that is about to go out immediately";
+const SETTLE_TO = "  function quotaIsStale() {";
+
+function loadSettle(state) {
+  const src = fs.readFileSync(SRC, "utf8");
+  const from = src.indexOf(SETTLE_FROM);
+  const to = src.indexOf(SETTLE_TO);
+  if (from < 0 || to < 0) throw new Error(`settle anchors moved in ${SRC}`);
+  const PRELUDE = `
+    const setTimeout = () => {};
+    const fetchQueue = async () => {};
+  `;
+  return new Function(
+    "state",
+    `${PRELUDE}${src.slice(from, to)}
+     return { stillOwed, holdBack, QUEUE_SETTLE_MS };`
+  )(state);
+}
+
+// -- what it refuses to draw yet --------------------------------------------
+
+/* Typing into a free chat is the ordinary case, and there the prompt is gone
+   within the second. Drawing it as "queued" in the meantime is a chip that
+   appears and vanishes, which reads as a failure of the thing you just sent. */
+{
+  const state = { settling: new Map() };
+  const s = loadSettle(state);
+  s.holdBack(21);
+  check("a prompt just accepted is not owed yet",
+        s.stillOwed([waiting(21, "w3:p1", "go")]).length, 0);
+  check("but one queued a moment ago is",
+        s.stillOwed([waiting(21, "w3:p1", "go")], Date.now() + s.QUEUE_SETTLE_MS + 1).length,
+        1);
+}
+
+/* Nothing else is hidden: a prompt the gateway never accepted, and every
+   prompt that was already sitting there, are drawn the moment they are read. */
+{
+  const state = { settling: new Map() };
+  const s = loadSettle(state);
+  s.holdBack(22);
+  const failed = { id: 22, pane_id: "w3:p1", state: "failed", prompt: "go" };
+  check("a failure is not held back", s.stillOwed([failed]).length, 1);
+  check("nor is a prompt nobody just typed",
+        s.stillOwed([waiting(23, "w3:p1", "older")]).length, 1);
+  check("and a delivered one is still gone",
+        s.stillOwed([{ id: 24, pane_id: "w3:p1", state: "sent", prompt: "done" }]).length, 0);
+}
+
 // -- what it draws ----------------------------------------------------------
 
 {

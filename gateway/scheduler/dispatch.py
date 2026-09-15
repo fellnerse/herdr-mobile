@@ -215,8 +215,13 @@ class Dispatcher:
         remaining = db.count_waiting(conn, prompt.pane_id)
         self.herdr.report_queued(prompt.pane_id, remaining)
         log.info("delivered prompt %s to %s (%d left)", prompt.id, prompt.pane_id, remaining)
-        if not remaining:
-            _push("queue empty")
+        # Handing a prompt over is not news. The common queue is one prompt
+        # long - you type it and it goes out within the second - so pushing
+        # when the last one leaves meant the phone buzzed at you for the
+        # message you had just sent, and with the wrong words: nothing parks a
+        # record for this, so the service worker fell back to "Agent finished"
+        # about an agent that had only just started. What the queue draining
+        # is really worth saying comes later anyway, when the agent stops.
 
     # --- the wall ------------------------------------------------------
 
