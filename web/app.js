@@ -28,6 +28,7 @@
     listSignature: null,
     swiping: false,
     queue: [],
+    settling: new Map(),
     quota: null,
     quotaAt: 0,
     queueSignature: null,
@@ -1566,8 +1567,10 @@
       elBtnSend.disabled = true;
 
       state.isUserScrolledUp = false;
-      // The badge should show it the moment it is queued, whether or not it
-      // has been handed over yet.
+      // Held back for the moment it takes to be delivered, so the common case
+      // - straight into a free chat - never draws a queue chip at all. What is
+      // actually being held shows up when the grace is up.
+      holdBack(data.id);
       fetchQueue();
       setTimeout(() => {
         fetchAgents();
@@ -1970,6 +1973,49 @@
     failed: "failed",
   };
 
+  /* A prompt that is about to go out immediately should never be drawn as one
+     that is waiting. The ordinary queue is one prompt long: you type it into a
+     free chat with usage left and it leaves within the second, so drawing it
+     the moment the gateway accepts it put a "queued" chip above the composer
+     for a single poll and then took it away again - a flicker that reads as
+     something having gone wrong with the thing you just sent.
+
+     So a freshly accepted prompt is held back for as long as delivery takes.
+     Nothing is hidden beyond that: one that is still waiting when the grace is
+     up appears then, and one that failed appears at once, because a failure is
+     the case worth interrupting for. */
+  const QUEUE_SETTLE_MS = 1500;
+
+  function isSettling(prompt, now) {
+    const until = state.settling.get(prompt.id);
+    if (!until) return false;
+    if (now >= until) {
+      state.settling.delete(prompt.id);
+      return false;
+    }
+    return prompt.state === "waiting";
+  }
+
+  /* What the queue shows is what is still owed: prompts holding for a window
+     or a busy chat, plus anything that failed and is going nowhere. A
+     delivered prompt belongs to the conversation now - it is in the
+     transcript, and leaving it here only buries what still needs you. */
+  function stillOwed(prompts, now = Date.now()) {
+    return prompts.filter((p) => p.state !== "sent" && !isSettling(p, now));
+  }
+
+  /* Keep a just-queued prompt out of the strip, and come back when the grace
+     is up so one that is genuinely being held still appears without waiting on
+     the next poll. */
+  function holdBack(id) {
+    if (!id) return;
+    state.settling.set(id, Date.now() + QUEUE_SETTLE_MS);
+    setTimeout(() => {
+      state.settling.delete(id);
+      fetchQueue();
+    }, QUEUE_SETTLE_MS + 50);
+  }
+
   function quotaIsStale() {
     return Date.now() - state.quotaAt > 30000;
   }
@@ -1979,11 +2025,7 @@
       const res = await fetch("/api/queue");
       const data = await res.json();
       if (!data.ok) return;
-      /* What the queue shows is what is still owed: prompts holding for a
-         window or a busy chat, plus anything that failed and is going nowhere.
-         A delivered prompt belongs to the conversation now - it is in the
-         transcript, and leaving it here only buries what still needs you. */
-      state.queue = (data.prompts || []).filter((p) => p.state !== "sent");
+      state.queue = stillOwed(data.prompts || []);
       renderChatQueue();
       // The herd is polled before the queue, so the counts on the rows arrive
       // a beat later than the rows do. The signature keeps this cheap: it only
