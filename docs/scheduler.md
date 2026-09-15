@@ -192,9 +192,11 @@ Automatic is not the same as invisible.
   desktop without the phone.
 - **On the phone**, the queue view and the header badge count what is still
   owed. Delivered prompts belong to the conversation and stop being counted.
-- **A push** fires when a window is exhausted, when a queue empties, and when a
-  chat blocks with prompts stacked behind it. That last one is the case the
-  queue cannot get itself out of, so it comes and finds you.
+- **A push** fires when a window is exhausted and when a chat blocks with
+  prompts stacked behind it. That second one is the case the queue cannot get
+  itself out of, so it comes and finds you. Delivery itself is silent: a prompt
+  going out is what you asked for, and the agent stopping is what earns the
+  buzz.
 
 ## Recovery
 
