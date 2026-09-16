@@ -41,7 +41,8 @@ node tools/test-flock.js                        # the overview: grouping, order,
 node tools/test-queue.js                        # the queue above the composer
 python3 tools/test-gateway.py                   # bincode, framing, git, notifications
 
-tools/sheepit-queue list | add | cancel         # the prompt queue from a terminal
+tools/sheepit-queue list | add | rm | quota     # the prompt queue from a terminal
+tools/sheepit-queue wall --pane wM:p1           # what the wall would do, without doing it
 
 make -C menubar all                             # build SheepIt.app (clang, no Xcode)
 make -C menubar run | install | login | unlogin
