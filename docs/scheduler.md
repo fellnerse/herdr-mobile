@@ -121,7 +121,19 @@ minute later, for a window that was not out at all.
   prompt, not a sentence beside it.
 - **The wall.** When a window runs out mid-turn, `esc` halts it and a resume
   prompt is queued *in front* of everything else for that chat. There is no
-  separate pause state: a resume is just a prompt that jumps the queue.
+  separate pause state: a resume is just a prompt that jumps the queue. Current
+  Claude Code does not simply stop: it opens `/rate-limit-options` and waits on
+  "What do you want to do?", which is `blocked` — a chat nothing may write to,
+  all night, over a question whose answer is always the same. So the menu is
+  answered instead of escaped, and only ever with the option that says to wait;
+  a menu without one is left for a person. The agent opens that menu by typing
+  `/rate-limit-options` into its own composer, so answering is not the end of
+  it: the composer is cleared afterwards, because a prompt is *appended* to
+  whatever is already in there, and a resume that lands behind a slash command
+  is submitted as an argument to it and swallowed — sent, by the queue's
+  reckoning, and gone. Cleared only when the agent's own command is what is
+  sitting there; a half-written sentence somebody left on the desktop is not
+  this thread's to throw away.
 - **Blocked.** A chat sitting on a question is never written to — text sent now
   would answer it. It notifies instead, once, and the queue holds.
 - **No agent.** Typed into the pane as keystrokes rather than held. A chat whose
@@ -156,6 +168,35 @@ it from, the dispatcher reads each waiting pane itself and looks for the banner.
 for the same reason: the banner says go and ask, usage says yes or no. Acting on
 matched text directly parks a healthy chat that merely mentioned running out of
 usage — which is a thing agents say to each other constantly.
+
+### Checking it without running out
+
+The wall is the one part of this that cannot be rehearsed by using the app: it
+happens when a subscription runs out, at whatever hour that lands on, and when
+it gets it wrong the evidence is a chat that sat still all night. So it is
+asked instead of waited for:
+
+```bash
+tools/sheepit-queue wall --pane wM:p1        # a live chat, read-only
+tools/sheepit-queue wall --screen wall.txt   # a screen captured earlier
+tools/sheepit-queue wall --pane wM:p1 --send # press it, and watch the pane
+```
+
+It prints the same four answers `hit_the_wall` works from — does the text match,
+is a menu on screen, which option would be pressed, what usage says — and then
+the verdict. Without `--send` it touches nothing.
+
+`/rate-limit-options` is a real slash command, so the menu can be put on screen
+on purpose rather than waited for; Claude Code hides it and gates it on actually
+being limited, so on a healthy account it may do nothing, and the `--screen`
+path is the way to replay a menu you captured. The parse itself is pinned in
+`tools/test-gateway.py` from a real screen, including the two menus that must
+*not* be answered.
+
+The rate-limit *menu* is the one thing that outranks usage. A banner can be
+scrollback; a menu is the agent itself, stopped, saying it has run out. A cached
+reading that has not caught up — or, on a machine with no Keychain, no reading
+at all — must not be what leaves a chat sitting on that question until morning.
 
 ## The strip
 

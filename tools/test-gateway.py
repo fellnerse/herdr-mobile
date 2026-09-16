@@ -16,6 +16,7 @@ Standard library only, like everything else here.
 """
 
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -24,6 +25,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
+
+# Never write into the state dir a running gateway is using: these tests drive
+# the real dispatcher, and it keeps the screens it acts on.
+os.environ["SHEEPIT_STATE_DIR"] = tempfile.mkdtemp(prefix="sheepit-test-")
 
 import bincode  # noqa: E402
 import gitdiff  # noqa: E402
@@ -983,12 +988,21 @@ check("a fresh reading is never expired",
 class FakePane:
     """One pane with an agent in it, and a record of what was done to it."""
 
-    def __init__(self, status="idle", session="sess-abc", agent="claude"):
+    def __init__(self, status="idle", session="sess-abc", agent="claude", screen="",
+                 after=""):
         self.status_value, self.session, self.keys, self.sent, self.typed = \
             status, session, [], [], []
         # Which agent is in the pane decides whose usage window it spends, so
         # the wall has to ask before it can price what it saw.
         self.agent = agent
+        # What is on the pane when the wall comes and looks: a menu waiting to
+        # be answered, or nothing in particular. `after` is what it becomes
+        # once keys land, which is how a composer left holding the agent's own
+        # command is modelled -- the screen answering changes.
+        self.screen, self.after = screen, after
+
+    def pane_read(self, pane_id, lines=60, source="recent_unwrapped"):
+        return self.screen
 
     def agent_kind(self, pane_id):
         return self.agent
@@ -1005,6 +1019,7 @@ class FakePane:
 
     def agent_send_keys(self, pane_id, keys):
         self.keys.append(keys)
+        self.screen = self.after
 
     def agent_prompt(self, target, text):
         self.sent.append(text)
@@ -1087,6 +1102,193 @@ with _mock.patch.object(sched_quota, "current",
 check("a stale wall no longer holds the queue shut",
       [pane.sent[0] == RESUME_PROMPT, pane.sent[1]], [True, "continue, I told you so!"])
 check("and the queue empties", sched_db.count_waiting(conn, "wA:p1"), 0)
+
+# ---------------------------------------------------------------------------
+# The menu. Claude Code stopped just printing the wall and going idle: it opens
+# `/rate-limit-options` and blocks on "What do you want to do?", which the queue
+# used to report and then sit behind all night.
+
+RATE_LIMIT_SCREEN = """\
+  ⎿  You've hit your session limit · resets 12:50pm (UTC)
+✳ Cogitated for 1m 29s · 1 shell still running
+
+❯ /rate-limit-options
+
+  What do you want to do?
+
+  ❯ 1. Stop and wait for limit to reset
+    2. Upgrade your plan
+
+  Enter to confirm · Esc to cancel
+"""
+
+check("the wording on the screen is what makes us go and look",
+      bool(sched_dispatch.LIMIT_RE.search(RATE_LIMIT_SCREEN)), True)
+check("waiting is already selected, so it only needs confirming",
+      sched_dispatch.wall_menu_keys(RATE_LIMIT_SCREEN), ["enter"])
+check("and it is walked to when it is not",
+      sched_dispatch.wall_menu_keys(
+          "  What do you want to do?\n"
+          "  ❯ 1. Upgrade your plan\n"
+          "    2. Stop and wait for limit to reset\n"), ["down", "enter"])
+# Both shapes the agent actually builds: waiting is put first or last depending
+# on the account, and its label shortens to a bare "Stop". Pressing "1" would
+# have bought a plan on two of these three.
+check("waiting is found last in the list too",
+      sched_dispatch.wall_menu_keys(
+          "  ❯ 1. Upgrade your plan\n    2. Upgrade to Team plan\n    3. Stop\n"),
+      ["down", "down", "enter"])
+check("and walked back up to when the cursor is past it",
+      sched_dispatch.wall_menu_keys(
+          "    1. Stop\n  ❯ 2. Upgrade your plan\n"), ["up", "enter"])
+# The one that must never fire: a menu offering only things that cost money, or
+# a numbered list somebody's agent wrote. Both are for a person.
+check("a menu with nothing about waiting in it is left for a person",
+      sched_dispatch.wall_menu_keys("  ❯ 1. Upgrade your plan\n    2. Buy more usage\n"), None)
+check("and prose that merely counts to two is not a menu",
+      sched_dispatch.wall_menu_keys(
+          "Here is the plan:\n1. stop and wait for limit to reset\n2. carry on\n"), None)
+
+# Answering it is the whole point: the pane comes back free, the resume goes in
+# front of the queue, and nobody is woken up to press "1".
+menu = FakePane(screen=RATE_LIMIT_SCREEN)
+conn = fresh_db()
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    Dispatcher(herdr=menu, events=Silent()).hit_the_wall(conn, "wA:p1", Config())
+check("the menu is answered rather than escaped", menu.keys, [["enter"]])
+check("and the resume is queued behind it",
+      sched_db.next_for_pane(conn, "wA:p1").prompt, RESUME_PROMPT)
+
+# The trap the screenshot showed: the agent opens the menu by typing the command
+# into its own composer, so `/rate-limit-options` is sitting there when the menu
+# goes away. The resume arrives hours later as text appended to whatever the
+# composer holds — so left alone it is submitted as an argument to a slash
+# command, swallowed, and recorded as sent.
+LEFTOVER = "  ⎿  You've hit your session limit · resets 12:50pm (UTC)\n\n❯ /rate-limit-options\n"
+menu = FakePane(screen=RATE_LIMIT_SCREEN, after=LEFTOVER)
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    Dispatcher(herdr=menu, events=Silent()).hit_the_wall(fresh_db(), "wA:p1", Config())
+check("the command the agent typed for itself is cleared after answering",
+      menu.keys, [["enter"], ["esc"]])
+
+# And the line that must never be wiped: somebody's half-written prompt, left on
+# the desktop in the same pane. It is not a slash command and not ours to drop.
+typing = FakePane(screen=RATE_LIMIT_SCREEN, after="❯ I was in the middle of writing this")
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    Dispatcher(herdr=typing, events=Silent()).hit_the_wall(fresh_db(), "wA:p1", Config())
+check("a half-written prompt in the composer survives the wall", typing.keys, [["enter"]])
+
+# Usage is the authority for a banner, because a banner can be scrollback. A
+# menu cannot: the agent drew it, now, and is stopped on it. A cached reading
+# that has not caught up yet must not leave the pane sitting there.
+menu = FakePane(screen=RATE_LIMIT_SCREEN)
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(12.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    Dispatcher(herdr=menu, events=Silent()).hit_the_wall(fresh_db(), "wA:p1", Config())
+check("a menu outranks a usage reading that says the window is open",
+      menu.keys, [["enter"]])
+
+# ...but `working` is Herdr reading the spinner in the terminal title, and
+# Claude Code keeps it turning while a background shell runs — "1 shell still
+# running" is printed directly above the question. A menu waiting for a keypress
+# outranks it, or the one case this exists for is the one it sits out.
+spinning = FakePane(status="working", screen=RATE_LIMIT_SCREEN)
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    Dispatcher(herdr=spinning, events=Silent()).hit_the_wall(fresh_db(), "wA:p1", Config())
+check("a menu on screen is answered even while herdr still says working",
+      spinning.keys, [["enter"]])
+
+# End to end, from the event Herdr actually sends to the key that answers the
+# menu. The pieces above can all pass while the chain does nothing: the pattern
+# never reaches Herdr, the match arrives and is dropped for being too early, or
+# the pane is `blocked` and the sweep reports it and stops. This is the chain.
+class Matched:
+    """A stream that reports one limit match, then nothing, like Herdr's."""
+
+    connected, started_at = True, -3600.0  # subscribed long ago, so no grace
+
+    def __init__(self):
+        self.events = [{"event": "pane.output_matched", "data": {"pane_id": "wA:p1"}}]
+        self.subs = []
+
+    def ensure(self, subs):
+        self.subs = subs
+
+    def wake(self):
+        pass
+
+    def poll(self, timeout):
+        events, self.events = self.events, []
+        return events
+
+
+blocked = FakePane(status="blocked", screen=RATE_LIMIT_SCREEN)
+events = Matched()
+conn = fresh_db()
+sched_db.add(conn, "wA:p1", "the thing I queued from the sofa")
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    Dispatcher(herdr=blocked, events=events).tick(conn, Config())
+check("the pattern Herdr matches on carries its own case-insensitivity",
+      [s["match"]["value"] for s in events.subs if s["type"] == "pane.output_matched"],
+      [sched_dispatch.LIMIT_PATTERN])
+check("and matches the screen the way Herdr would",
+      bool(re.search(sched_dispatch.LIMIT_PATTERN, RATE_LIMIT_SCREEN)), True)
+check("a chat blocked on the menu is answered, not just reported", blocked.keys, [["enter"]])
+check("the prompt that was waiting behind it is still waiting", blocked.sent, [])
+check("with the resume now in front of it",
+      [p.prompt for p in sched_db.list_prompts(conn, "wA:p1", "waiting")],
+      [RESUME_PROMPT, "the thing I queued from the sofa"])
+
+# The five-hour bug, reproduced. The banner arrives while the turn is still
+# running, so the wall rightly declines — then the turn dies of the very limit
+# that printed it, the pane stops producing output, and the subscription (which
+# matches on output) never fires again. Nothing came back, and the chat sat
+# under its banner from 10:02 until a person noticed at 15:04.
+BANNER_MIDTURN = (
+    "● Bash(sed -n '60,95p' package.json)\n"
+    "  ⎿  You've hit your session limit · resets 11:20am (UTC)\n"
+    "✻ Cogitated for 45s · esc to interrupt\n"
+)
+dying = FakePane(status="working", screen=BANNER_MIDTURN, after=BANNER_MIDTURN)
+d = Dispatcher(herdr=dying, events=Matched())
+conn = fresh_db()
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=1))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    d.tick(conn, Config())                           # the one event that ever arrives
+    check("a live turn is still not interrupted", dying.keys, [])
+    check("but the pane is remembered", "wA:p1" in d.pending, True)
+
+    dying.status_value = "idle"                      # the turn dies; no more output
+    d.tick(conn, Config())                           # and no event with it
+check("the wall comes back on its own and lets the turn go", dying.keys, [["esc"]])
+queued = sched_db.next_for_pane(conn, "wA:p1")
+check("and the resume is queued without anyone noticing",
+      queued.prompt if queued else "nothing was queued at all", RESUME_PROMPT)
+check("the pane is not looked at forever", "wA:p1" in d.pending, False)
+
+# A pane that simply redrew past the banner is dropped, not watched for good.
+recovered = FakePane(status="working", screen=BANNER_MIDTURN, after="● all done\n❯ ")
+r = Dispatcher(herdr=recovered, events=Silent())
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=1))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    r.hit_the_wall(fresh_db(), "wA:p1", Config())
+    recovered.screen = "● all done\n❯ "
+    r.look_again(fresh_db(), Config())
+check("a banner that scrolled away stops being watched",
+      [recovered.keys, "wA:p1" in r.pending], [[], False])
 
 # A resume names a conversation. With no session there is none, and typing
 # "continue where you left off" at a bare shell is worse than losing it.
