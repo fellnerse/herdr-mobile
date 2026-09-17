@@ -18,10 +18,13 @@ const FROM = "  /* ----------------------------------------------------------- T
 const TO = "  // Opening a project is activity too";
 
 /* The row templates live further down app.js, past the picker plumbing. They
-   are sliced separately so this suite can ask what a row says without a DOM. */
+   are sliced separately so this suite can ask what a row says without a DOM.
+   The slice starts at the signature rather than at the first row template,
+   because drawing the list is guarded by it: a rebuild that the signature does
+   not notice is a heading that never changes. */
 function loadRows() {
   const src = fs.readFileSync(SRC, "utf8");
-  const from = src.indexOf("  /* What is still owed to each pane");
+  const from = src.indexOf("  function agentListSignature() {");
   const to = src.indexOf("  async function createWorkspace() {");
   if (from < 0 || to < 0) throw new Error(`row anchors moved in ${SRC}`);
   const PRELUDE = `
@@ -43,7 +46,8 @@ function loadRows() {
     "tabName",
     "tabNumber",
     `${PRELUDE}${src.slice(from, to)}
-     return { state, agentRowHtml, queuedByPane, queuedLabel };`
+     return { state, elAgentList, agentRowHtml, renderAgentList, agentListSignature,
+              queuedByPane, queuedLabel };`
   )(tabName, tabNumber);
 }
 
@@ -158,6 +162,42 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
       has_agent: true, cwd: "/p/api" },
   ]);
   check("the directory stands in for a missing project", f.state.groups[0].key, "/p/api");
+}
+
+// -- another one of these ---------------------------------------------------
+
+/* The plus on a project heading cuts a worktree, and which of the project's
+   workspaces it cuts from decides where the new branch starts. */
+{
+  const f = order([
+    row("wS:p1", 7, "/p/api", "working", { repo: true, main_checkout: false }),
+    row("wA:p1", 1, "/p/api", "working", { repo: true, main_checkout: true }),
+  ]);
+  check("a worktree is cut from the project's own checkout", f.state.groups[0].from, "wA");
+}
+
+// Whichever order the rows arrive in: the checkout wins, not the first row.
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working", { repo: true, main_checkout: true }),
+    row("wS:p1", 7, "/p/api", "working", { repo: true, main_checkout: false }),
+  ]);
+  check("and not from a worktree that arrived after it", f.state.groups[0].from, "wA");
+}
+
+/* The checkout is not always open - a project you only ever work on in
+   worktrees is the normal case for the scheduler - and Herdr resolves any of
+   them to the same repository, so there is still something to cut from. */
+{
+  const f = order([row("wS:p1", 7, "/p/api", "working", { repo: true, main_checkout: false })]);
+  check("a project open only as worktrees can still be cut from",
+        f.state.groups[0].from, "wS");
+}
+
+// A directory Herdr knows no repository for has no worktree to give.
+{
+  const f = order([row("wH:p1", 1, "/p/notes", "idle")]);
+  check("a project that is not a repository offers nothing", f.state.groups[0].from, "");
 }
 
 // -- order inside a project -------------------------------------------------
@@ -458,6 +498,68 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     "api");
   check("and each row wears the status of its own tab",
         [/sheep-wrap working/.test(busy), /sheep-wrap blocked/.test(other)], [true, true]);
+}
+
+// -- what a project's heading offers -----------------------------------------
+
+/* The heading is the only thing on this screen that names a project, so it is
+   where "another one of these" has to live. */
+{
+  const r = loadRows();
+  const group = (extra) => ({
+    key: "/p/api", name: "api", from: "wA",
+    agents: [{ ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite it" }],
+    ...extra,
+  });
+  const draw = (g) => {
+    r.state.groups = [g];
+    r.state.listSignature = null;
+    r.renderAgentList();
+    return r.elAgentList.innerHTML;
+  };
+
+  const repo = draw(group());
+  check("a repository's heading offers another worktree",
+        /class="agent-group-add"/.test(repo), true);
+  check("and says which project it would cut",
+        /data-action="worktree" data-project="\/p\/api"/.test(repo), true);
+  check("a project with nothing to cut from does not",
+        /agent-group-add/.test(draw(group({ from: "" }))), false);
+
+  /* The list is redrawn only when its signature moves, so a project that
+     becomes a repository - its checkout opened on the laptop a moment ago -
+     has to be a change the signature notices. */
+  r.state.groups = [group()];
+  const withPlus = r.agentListSignature();
+  r.state.groups = [group({ from: "" })];
+  check("the plus is part of what redraws the list",
+        withPlus === r.agentListSignature(), false);
+}
+
+// -- what a row lets you do to it --------------------------------------------
+
+/* Close stops a workspace and leaves its checkout on disk. For a worktree that
+   is half the job, so a worktree row offers Remove as well - and the project's
+   own checkout must never offer it, because that is the repository itself. */
+{
+  const { agentRowHtml } = loadRows();
+  const actions = (html) =>
+    [...html.matchAll(/data-action="([a-z]+)"/g)].map((m) => m[1]);
+  const of = (extra) =>
+    agentRowHtml({ ...row("wA:p1", 1, "/p/api", "working"), name: "api",
+                   title: "Rewrite it", ...extra }, "api");
+
+  check("a worktree can be renamed, closed and removed",
+        actions(of({ repo: true, main_checkout: false })),
+        ["rename", "close", "remove"]);
+  check("the project's own checkout cannot be removed",
+        actions(of({ repo: true, main_checkout: true })), ["rename", "close"]);
+  check("and neither can a workspace Herdr knows no repository for",
+        actions(of({ repo: false, main_checkout: false })), ["rename", "close"]);
+
+  // Remove needs the workspace to name, the same one Close acts on.
+  check("Remove names the workspace it would delete",
+        /data-action="remove" data-workspace-id="wA"/.test(of({ repo: true })), true);
 }
 
 // -- a row with something waiting behind it ----------------------------------

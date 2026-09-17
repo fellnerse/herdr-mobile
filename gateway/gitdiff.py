@@ -65,6 +65,47 @@ def repo_root(cwd: str) -> str:
     return out.strip()
 
 
+def is_repo_root(path: str) -> bool:
+    """Whether `path` is the top of a working tree, and not merely inside one.
+
+    The phone only ever names a root this gateway handed it, and this is what
+    makes that true rather than assumed - the same reason `safe_path` exists.
+
+    Both sides are resolved before comparing: `--show-toplevel` reports a real
+    path, and on macOS the directory a checkout is in is reached through a
+    symlink often enough that comparing the strings says no to a real root.
+    """
+    if not path or not os.path.isdir(path):
+        return False
+    top = repo_root(path)
+    return bool(top) and os.path.realpath(top) == os.path.realpath(path)
+
+
+def delete_branch(root: str, branch: str, force: bool = False) -> None:
+    """Delete a local branch, raising with git's own words if it refuses.
+
+    `-d` unless forced: git refuses a branch whose commits are not merged
+    anywhere else, which is the difference between tidying up after a worktree
+    and throwing away the work that was done in it. `run_git` is not used here
+    because it treats exit 1 as success for `diff --no-index`, and exit 1 is
+    exactly how that refusal arrives.
+    """
+    if not branch or branch.startswith("-") or "\x00" in branch:
+        raise GitError("bad branch name")
+    try:
+        proc = subprocess.run(
+            ["git", "-C", root, "branch", "-D" if force else "-d", "--", branch],
+            capture_output=True, timeout=STATUS_TIMEOUT, check=False,
+        )
+    except FileNotFoundError:
+        raise GitError("git is not installed")
+    except subprocess.TimeoutExpired:
+        raise GitError("git took too long")
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout).decode("utf-8", errors="replace")
+        raise GitError(message.strip().split("\n")[0] or f"git exited {proc.returncode}")
+
+
 def safe_path(root: str, rel: str) -> str:
     """A path the client named, resolved back inside the repository.
 

@@ -1113,6 +1113,7 @@
         [
           group.key,
           group.name,
+          group.from ? "+" : "",
           ...group.agents.map((a) =>
             [
               a.pane_id,
@@ -1201,11 +1202,20 @@
     if (named && named !== headline) sub = named;
     else if (label !== headline && label !== groupName) sub = label;
     else if (!agent.title) sub = agent.cwd || "";
+    /* Removing the checkout is offered on a worktree and never on the project
+       itself: Close leaves a worktree's copy of the tree on disk, which is the
+       right answer for a project you will open again on Monday and the wrong
+       one for a branch that was finished with last week. The project's own
+       checkout is not something the phone may delete at all. */
+    const removable = agent.repo && !agent.main_checkout;
     return `
       <div class="agent-row-wrap">
         <div class="agent-row-actions">
           <button class="agent-row-action rename" data-action="rename" data-pane-id="${escapeHtml(agent.pane_id)}">Rename</button>
           <button class="agent-row-action close" data-action="close" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+          ${removable
+            ? `<button class="agent-row-action remove" data-action="remove" data-workspace-id="${escapeHtml(agent.workspace_id)}">Remove</button>`
+            : ""}
         </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
           <span class="sheep-wrap ${status}"${fleece}>${sheepSvg(status, agent.pane_id)}</span>
@@ -1260,12 +1270,22 @@
         const owedChip = owed
           ? `<span class="agent-group-queued">${owed} queued</span>`
           : "";
+        /* Another one of these, please: a worktree cut off this project, the
+           same thing a right-click on a space does on the desktop. It lives in
+           the heading because the project is what it needs to be told, and the
+           heading is the only thing on this screen that names one. */
+        const add = group.from
+          ? `<button class="agent-group-add" type="button"
+                     data-action="worktree" data-project="${escapeHtml(group.key)}"
+                     aria-label="New worktree in ${escapeHtml(group.name)}">+</button>`
+          : "";
         return `
           <section class="agent-group" data-project="${escapeHtml(group.key)}">
             <h2 class="agent-group-head">
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
               ${owedChip}
               ${tally}
+              ${add}
             </h2>
             ${group.agents
                 .map((a) => agentRowHtml(a, group.name, queued.get(a.pane_id)))
@@ -1379,6 +1399,36 @@
     }
   }
 
+  /* Cut a worktree off a project and open it. Herdr does both halves in the
+     one call, so all this has to decide is what the branch is called - and a
+     blank answer is a real answer, meaning "you name it", which is how this
+     stays one tap and a return key when you have not thought that far. */
+  async function createWorktree(projectKey) {
+    const group = state.groups.find((g) => g.key === projectKey);
+    if (!group || !group.from) return;
+    const branch = prompt(`New worktree in ${group.name}`, "");
+    if (branch === null) return;
+    triggerHaptic();
+    try {
+      const res = await fetch("/api/worktrees", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_id: group.from, branch: branch.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        const error = data.error;
+        throw new Error((error && error.message) || error || "refused");
+      }
+      await fetchAgents();
+      const created = state.agents.find((a) => a.workspace_id === data.workspace_id);
+      if (created) selectAgent(created.pane_id);
+      else renderAgentList();
+    } catch (err) {
+      alert("Could not create worktree: " + err.message);
+    }
+  }
+
   async function closeWorkspace(workspaceId) {
     if (!workspaceId) return;
     const target = state.agents.find((a) => a.workspace_id === workspaceId);
@@ -1404,6 +1454,103 @@
     } catch (err) {
       alert("Could not close workspace: " + err.message);
     }
+  }
+
+  /* Removing a worktree takes the checkout with it, so the branch and the
+     directory both go. Asked for once here; asked for a second time only if
+     Herdr refuses, which it does when there is work in the checkout that is
+     not committed anywhere - that refusal is the whole safety net, so it is
+     repeated verbatim rather than swallowed and retried. */
+  async function removeWorktree(workspaceId) {
+    /* Loud rather than silent. A button that does nothing at all is the one
+       failure nobody can report usefully - and this one returned quietly on a
+       row whose workspace the poll had not caught up with yet. */
+    if (!workspaceId) {
+      alert("That row has no workspace to remove - pull to refresh and try again.");
+      return;
+    }
+    const target = state.agents.find((a) => a.workspace_id === workspaceId);
+    const name = target ? target.name : "this worktree";
+    if (!confirm(`Remove ${name}? The checkout is deleted and any agents in it stopped.`)) {
+      resetSwipe();
+      return;
+    }
+    triggerHaptic("warning");
+    try {
+      let done = await sendRemove(workspaceId, false);
+      if (done.refusal) {
+        if (!confirm(`Herdr refused: ${done.refusal}\n\nRemove ${name} anyway?`)) {
+          resetSwipe();
+          return;
+        }
+        done = await sendRemove(workspaceId, true);
+        if (done.refusal) throw new Error(done.refusal);
+      }
+      if (state.agents.find((a) => a.pane_id === state.activePaneId)?.workspace_id === workspaceId) {
+        state.activePaneId = null;
+      }
+      resetSwipe();
+      await fetchAgents();
+      renderAgentList();
+      // The checkout is gone; the branch it was on is not. Offered separately
+      // because it is the half that can still hold work.
+      await offerBranch(done.branch, done.repo_root);
+    } catch (err) {
+      alert("Could not remove worktree: " + err.message);
+    }
+  }
+
+  /* Herdr removes a checkout and leaves the ref, so a week of worktrees leaves
+     a week of branches. Asked rather than done: `git branch -d` refuses one
+     whose commits are merged nowhere else, and that refusal is worth reading
+     before it is overridden - it is the only thing that still knows the work
+     happened. */
+  async function offerBranch(branch, repoRoot) {
+    if (!branch || !repoRoot) return;
+    if (!confirm(`Checkout removed.\n\nAlso delete the branch ${branch}?`)) return;
+    let refusal = await sendBranchDelete(repoRoot, branch, false);
+    if (refusal) {
+      if (!confirm(`Git refused: ${refusal}\n\nDelete ${branch} anyway?`)) return;
+      refusal = await sendBranchDelete(repoRoot, branch, true);
+    }
+    if (refusal) alert(`Branch ${branch} was left behind: ${refusal}`);
+  }
+
+  // The message it refused with, or "" when it did the thing.
+  async function sendRemove(workspaceId, force) {
+    const data = await postAction(
+      `/api/worktrees/${encodeURIComponent(workspaceId)}/remove`,
+      { force }
+    );
+    return {
+      refusal: data.refusal,
+      branch: data.branch || "",
+      repo_root: data.repo_root || "",
+    };
+  }
+
+  async function sendBranchDelete(repoRoot, branch, force) {
+    const data = await postAction("/api/branches/delete", {
+      repo_root: repoRoot,
+      branch,
+      force,
+    });
+    return data.refusal;
+  }
+
+  /* One POST, and the refusal as a string rather than a throw: every one of
+     these has a "no" that is worth showing the person who asked, and none of
+     them is an error in the sense of something having gone wrong. */
+  async function postAction(url, payload) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok !== false) return { ...data, refusal: "" };
+    const error = data.error;
+    return { ...data, refusal: (error && error.message) || error || "refused" };
   }
 
   function openPicker() {
@@ -2529,10 +2676,18 @@
       const key = projectKey(agent);
       let group = groups.get(key);
       if (!group) {
-        group = { key, name: agent.project_name || agent.name || key, agents: [] };
+        group = { key, name: agent.project_name || agent.name || key, agents: [], from: "" };
         groups.set(key, group);
       }
       group.agents.push(agent);
+      /* Which of the project's workspaces a new worktree gets cut from. The
+         project's own checkout when it is open, so a branch starts where the
+         project does rather than on top of whatever a worktree opened last
+         week was left sitting on. A project with no checkout open at all gets
+         no plus button - there is no repository to cut from. */
+      if (agent.repo && (!group.from || agent.main_checkout)) {
+        group.from = agent.workspace_id;
+      }
     }
     return [...groups.values()];
   }
@@ -2685,6 +2840,8 @@
     if (action) {
       if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
       else if (action.dataset.action === "rename") renameRow(action.dataset.paneId);
+      else if (action.dataset.action === "remove") removeWorktree(action.dataset.workspaceId);
+      else if (action.dataset.action === "worktree") createWorktree(action.dataset.project);
       return;
     }
     const row = e.target.closest(".agent-row");
@@ -2738,6 +2895,44 @@
       r.style.transform = "";
     });
   }
+
+  /* Hold a row aside so its actions show. The swipe ends here, and so does the
+     right-click below - what a finger reaches by dragging is the same drawer,
+     not a second menu that could disagree with it. */
+  function openRowActions(row) {
+    const actions = row.parentElement.querySelector(".agent-row-actions");
+    const width = (actions && actions.offsetWidth) || SWIPE_WIDTH;
+    row.style.transition = "";
+    row.classList.add("swiped");
+    row.style.transform = `translateX(${-width}px)`;
+  }
+
+  /* A mouse has no swipe. Every one of these rows had its Rename and Close
+     reachable only by dragging it aside, which on a desktop browser meant not
+     reachable at all - so the gesture a mouse does have opens the same drawer.
+     The browser's own menu is not useful over a row and would cover it. */
+  elAgentList.addEventListener("contextmenu", (e) => {
+    const row = e.target.closest(".agent-row");
+    if (!row) return;
+    e.preventDefault();
+    resetSwipe();
+    openRowActions(row);
+  });
+
+  // Anywhere else puts it away, including the heading and the list's own gaps,
+  // so a drawer opened by a right-click is never left standing open.
+  document.addEventListener("pointerdown", (e) => {
+    if (!elAgentList.querySelector(".agent-row.swiped")) return;
+    if (e.target.closest(".agent-row-wrap")) return;
+    resetSwipe();
+  });
+
+  // And the key a keyboard reaches for to back out of anything.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!elAgentList.querySelector(".agent-row.swiped")) return;
+    resetSwipe();
+  });
 
   elAgentList.addEventListener("touchstart", (e) => {
     const row = e.target.closest(".agent-row");
@@ -2800,10 +2995,13 @@
     swipe = null;
     if (axis !== "x") return;
     row.style.transition = "";
-    const open = dx < -width / 2;
-    row.classList.toggle("swiped", open);
-    row.style.transform = open ? `translateX(${-width}px)` : "";
-    if (open) triggerHaptic();
+    if (dx < -width / 2) {
+      openRowActions(row);
+      triggerHaptic();
+    } else {
+      row.classList.remove("swiped");
+      row.style.transform = "";
+    }
   }, { passive: true });
 
   // A call or a notification cancels the touch: do not hold the redraw for

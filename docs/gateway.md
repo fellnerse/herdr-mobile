@@ -189,6 +189,9 @@ Two consequences worth knowing:
 | `POST /api/workspaces`, `/api/workspaces/{id}/close` | Starting and closing projects. |
 | `POST /api/workspaces/{id}/rename`, `/api/tabs/{id}/rename` | Herdr's own labels, so the laptop is renamed too. |
 | `POST /api/workspaces/{id}/move` | Where a dragged project lands in Herdr's own order. |
+| `POST /api/worktrees` | Another worktree off a project: `git worktree add` and a workspace opened on it, the way a right-click on a space does it on the desktop. |
+| `POST /api/worktrees/{id}/remove` | The checkout as well as the workspace. `force` is only sent after Herdr has refused a checkout with uncommitted work in it and the phone has asked a second time. Answers with the branch it left behind. |
+| `POST /api/branches/delete` | That branch, once it has been offered and accepted. `git branch -d` unless forced, and the `repo_root` is checked to be the top of a working tree rather than trusted. |
 | `GET|POST /api/push/*` | Notification keys, subscriptions and the last finisher. |
 
 Everything under `/api/` and the WebSocket refuse a cross-origin request:
