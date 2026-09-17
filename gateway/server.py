@@ -156,6 +156,27 @@ def tabs_from_panes(ws_id: str, ws_panes: list) -> list:
     ]
 
 
+def worktree_branch(workspace_id: str) -> dict:
+    """The branch and repository of the worktree a workspace has open.
+
+    Read from Herdr rather than guessed from the path: `worktree.list` is the
+    only thing that knows which checkout a workspace is holding, and it names
+    the branch outright. Returns empty when the workspace is not a worktree at
+    all, which is the answer for a project's own checkout.
+    """
+    res = call_herdr_rpc("worktree.list", {"workspace_id": workspace_id})
+    result = res.get("result") or {}
+    root = (result.get("source") or {}).get("repo_root", "")
+    for tree in result.get("worktrees") or []:
+        if tree.get("open_workspace_id") != workspace_id:
+            continue
+        # A detached checkout has no branch to leave behind.
+        if tree.get("is_detached") or not tree.get("is_linked_worktree"):
+            return {}
+        return {"branch": tree.get("branch") or "", "repo_root": root}
+    return {}
+
+
 def build_agent_rows(ws_list: list, tabs: list, panes: list, agents_raw: list) -> list:
     """One row per tab, grouped under its workspace and ordered the way the
     desktop orders them - `number` is the workspace's place in Herdr's own
@@ -1045,15 +1066,44 @@ class HerdrHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/worktrees/") and path.endswith("/remove"):
             parts = path.split("/")
             if len(parts) == 5:
-                params = {"workspace_id": unquote(parts[3])}
+                workspace_id = unquote(parts[3])
+                # Asked before the checkout goes, because afterwards there is
+                # no workspace left to ask about - and the branch is what the
+                # phone needs to offer next, since Herdr removes the checkout
+                # and leaves the ref behind.
+                left_behind = worktree_branch(workspace_id)
+                params = {"workspace_id": workspace_id}
                 if body.get("force"):
                     params["force"] = True
                 res = call_herdr_rpc("worktree.remove", params, timeout=120.0)
                 if "error" in res:
                     self.send_json(res, 400)
                     return
-                self.send_json({"ok": True, "result": res.get("result", {})})
+                self.send_json({
+                    "ok": True,
+                    "result": res.get("result", {}),
+                    "branch": left_behind.get("branch", ""),
+                    "repo_root": left_behind.get("repo_root", ""),
+                })
                 return
+
+        # API: Delete a branch a removed worktree left behind
+        # `-d` unless the phone has been told why it was refused and asked
+        # again; the root is checked to be a working tree's top rather than
+        # trusted, the same way a diff's path is.
+        if path == "/api/branches/delete":
+            root = (body.get("repo_root") or "").strip()
+            branch = (body.get("branch") or "").strip()
+            if not gitdiff.is_repo_root(root):
+                self.send_json({"ok": False, "error": "Not a repository"}, 400)
+                return
+            try:
+                gitdiff.delete_branch(root, branch, bool(body.get("force")))
+            except gitdiff.GitError as e:
+                self.send_json({"ok": False, "error": str(e)}, 400)
+                return
+            self.send_json({"ok": True, "branch": branch})
+            return
 
         # API: Close a workspace
         # /api/workspaces/{workspace_id}/close

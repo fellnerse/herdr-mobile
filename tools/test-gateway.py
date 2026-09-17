@@ -565,6 +565,61 @@ check("a workspace Herdr knows no repository for cannot",
       [rows["wH:p1"]["repo"], rows["wN:p1"]["repo"]], [False, False])
 
 # ---------------------------------------------------------------------------
+# The branch a removed worktree leaves behind. Herdr deletes the checkout and
+# keeps the ref, so this is the other half - and it is the half that can still
+# be holding the only copy of an afternoon's work.
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp) / "repo"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "Test")
+    (root / "f.txt").write_text("one\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "first")
+
+    # A root is the top of a working tree and nothing else: not a directory
+    # inside one, and not a directory that is no repository at all.
+    (root / "sub").mkdir()
+    check("a working tree's top is a root", gitdiff.is_repo_root(str(root)), True)
+    check("a directory inside one is not", gitdiff.is_repo_root(str(root / "sub")), False)
+    check("and neither is somewhere else", gitdiff.is_repo_root(str(Path(tmp))), False)
+    check("nor nothing at all", gitdiff.is_repo_root(""), False)
+
+    # A branch whose commits are all merged already is tidy-up, and goes.
+    git(root, "branch", "merged")
+    gitdiff.delete_branch(str(root), "merged")
+    check("a merged branch is deleted",
+          "merged" in gitdiff.run_git(str(root), ["branch", "--list", "merged"]), False)
+
+    # One with work on it is refused, in git's own words, until it is forced.
+    git(root, "checkout", "-q", "-b", "unmerged")
+    (root / "f.txt").write_text("two\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "work nobody merged")
+    git(root, "checkout", "-q", "main")
+
+    check("an unmerged branch is refused",
+          "not fully merged" in error_of(lambda: gitdiff.delete_branch(str(root), "unmerged")),
+          True)
+    check("and is still there afterwards",
+          "unmerged" in gitdiff.run_git(str(root), ["branch", "--list", "unmerged"]), True)
+    gitdiff.delete_branch(str(root), "unmerged", force=True)
+    check("forcing deletes it",
+          "unmerged" in gitdiff.run_git(str(root), ["branch", "--list", "unmerged"]), False)
+
+    # A name that could be read as a flag is a name, not an option - `-D` must
+    # not arrive by way of the branch argument.
+    check("a branch named like a flag is refused",
+          error_of(lambda: gitdiff.delete_branch(str(root), "-D")), "bad branch name")
+    check("and so is no name at all",
+          error_of(lambda: gitdiff.delete_branch(str(root), "")), "bad branch name")
+    # Nothing to delete is git's answer, not a crash.
+    check("a branch that is not there says so",
+          "not found" in error_of(lambda: gitdiff.delete_branch(str(root), "never")), True)
+
+# ---------------------------------------------------------------------------
 # Images from the phone. The one thing a phone has that a laptop does not, and
 # it lands inside a repository somebody is working in - so where it goes, what
 # it is called, and what git makes of it all have to be right.

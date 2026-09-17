@@ -1477,14 +1477,14 @@
     }
     triggerHaptic("warning");
     try {
-      let refusal = await sendRemove(workspaceId, false);
-      if (refusal) {
-        if (!confirm(`Herdr refused: ${refusal}\n\nRemove ${name} anyway?`)) {
+      let done = await sendRemove(workspaceId, false);
+      if (done.refusal) {
+        if (!confirm(`Herdr refused: ${done.refusal}\n\nRemove ${name} anyway?`)) {
           resetSwipe();
           return;
         }
-        refusal = await sendRemove(workspaceId, true);
-        if (refusal) throw new Error(refusal);
+        done = await sendRemove(workspaceId, true);
+        if (done.refusal) throw new Error(done.refusal);
       }
       if (state.agents.find((a) => a.pane_id === state.activePaneId)?.workspace_id === workspaceId) {
         state.activePaneId = null;
@@ -1492,25 +1492,65 @@
       resetSwipe();
       await fetchAgents();
       renderAgentList();
+      // The checkout is gone; the branch it was on is not. Offered separately
+      // because it is the half that can still hold work.
+      await offerBranch(done.branch, done.repo_root);
     } catch (err) {
       alert("Could not remove worktree: " + err.message);
     }
   }
 
-  // The message Herdr refused with, or "" when it did the thing.
+  /* Herdr removes a checkout and leaves the ref, so a week of worktrees leaves
+     a week of branches. Asked rather than done: `git branch -d` refuses one
+     whose commits are merged nowhere else, and that refusal is worth reading
+     before it is overridden - it is the only thing that still knows the work
+     happened. */
+  async function offerBranch(branch, repoRoot) {
+    if (!branch || !repoRoot) return;
+    if (!confirm(`Checkout removed.\n\nAlso delete the branch ${branch}?`)) return;
+    let refusal = await sendBranchDelete(repoRoot, branch, false);
+    if (refusal) {
+      if (!confirm(`Git refused: ${refusal}\n\nDelete ${branch} anyway?`)) return;
+      refusal = await sendBranchDelete(repoRoot, branch, true);
+    }
+    if (refusal) alert(`Branch ${branch} was left behind: ${refusal}`);
+  }
+
+  // The message it refused with, or "" when it did the thing.
   async function sendRemove(workspaceId, force) {
-    const res = await fetch(
+    const data = await postAction(
       `/api/worktrees/${encodeURIComponent(workspaceId)}/remove`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force }),
-      }
+      { force }
     );
+    return {
+      refusal: data.refusal,
+      branch: data.branch || "",
+      repo_root: data.repo_root || "",
+    };
+  }
+
+  async function sendBranchDelete(repoRoot, branch, force) {
+    const data = await postAction("/api/branches/delete", {
+      repo_root: repoRoot,
+      branch,
+      force,
+    });
+    return data.refusal;
+  }
+
+  /* One POST, and the refusal as a string rather than a throw: every one of
+     these has a "no" that is worth showing the person who asked, and none of
+     them is an error in the sense of something having gone wrong. */
+  async function postAction(url, payload) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     const data = await res.json().catch(() => ({}));
-    if (res.ok && data.ok !== false) return "";
+    if (res.ok && data.ok !== false) return { ...data, refusal: "" };
     const error = data.error;
-    return (error && error.message) || error || "refused";
+    return { ...data, refusal: (error && error.message) || error || "refused" };
   }
 
   function openPicker() {
