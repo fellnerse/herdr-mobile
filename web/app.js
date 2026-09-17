@@ -1462,7 +1462,13 @@
      not committed anywhere - that refusal is the whole safety net, so it is
      repeated verbatim rather than swallowed and retried. */
   async function removeWorktree(workspaceId) {
-    if (!workspaceId) return;
+    /* Loud rather than silent. A button that does nothing at all is the one
+       failure nobody can report usefully - and this one returned quietly on a
+       row whose workspace the poll had not caught up with yet. */
+    if (!workspaceId) {
+      alert("That row has no workspace to remove - pull to refresh and try again.");
+      return;
+    }
     const target = state.agents.find((a) => a.workspace_id === workspaceId);
     const name = target ? target.name : "this worktree";
     if (!confirm(`Remove ${name}? The checkout is deleted and any agents in it stopped.`)) {
