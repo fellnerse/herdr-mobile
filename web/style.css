@@ -22,6 +22,11 @@
   --status-blocked: #f85149;
   --status-done: #58a6ff;
   --status-unknown: #8b949e;
+  /* The grass a working sheep eats, which is the subscription it is spending.
+     Green while there is any of it left, dry once the window is gone - the
+     only two states a field has to have. */
+  --grass: #4c9a5a;
+  --grass-spent: #6b5f43;
   /* Work you stacked yourself, which is none of the four states an agent
      reports - orange so it reads as yours rather than as the agent's. */
   --status-queued: #f0883e;
@@ -566,10 +571,40 @@ html, body {
    so it keeps a colour of its own. */
 .sheep-wrap.unknown { color: var(--status-unknown); }
 
+/* The field under the sheep: what its subscription has left, drawn as blades
+   that shorten together rather than blades that disappear. Stroked rather than
+   filled - grass is a line with a bend in it, and a filled sliver at this size
+   is a smudge. */
+.grass-blade {
+  fill: none;
+  stroke: var(--grass);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+/* Ground that has been eaten off keeps its stubble, thinner and quieter than a
+   blade - bare ground and a pane nobody can read a window for would otherwise
+   be the same picture. */
+.grass-stubble {
+  stroke-width: 1.2;
+  opacity: 0.5;
+}
+
+/* A window that is gone: the same blades, dried off. Nothing is said about it
+   in words on the row, because the queue's own note already says it in the one
+   place it changes what you can do. */
+.grass.spent .grass-blade { stroke: var(--grass-spent); }
+
 /* The postures move the way they should: a grazing sheep munches, a blocked one
    twitches for attention, a sleeping one only breathes. Status kept the
-   animation when it gave up the colour. */
-.sheep-wrap.working { animation: sheep-graze 2.4s ease-in-out infinite; }
+   animation when it gave up the colour.
+
+   `--chew` is how fast, set per row from how fast that agent's window is
+   actually going down - so a herd working through a subscription visibly eats
+   faster than one nibbling at it. The three animations share the one duration
+   because they are one movement: the body dips, the head goes into the grass,
+   and the blade at the muzzle bends as it is taken. */
+.sheep-wrap.working { animation: sheep-graze var(--chew, 2.4s) ease-in-out infinite; }
 
 .sheep-wrap.blocked { animation: sheep-alert 1.2s ease-in-out infinite; }
 
@@ -578,9 +613,50 @@ html, body {
   animation: sheep-breathe 3.6s ease-in-out infinite;
 }
 
+/* The head chews on its own, hinged at the neck. Without this the whole animal
+   rocked, which reads as a sheep on a boat rather than a sheep eating - and
+   the muzzle never actually got any closer to the ground.
+
+   Both origins are in viewBox units rather than percentages: a percentage on an
+   SVG child resolves against the viewport unless `transform-box` is set, and
+   the numbers here are the drawing's own - the neck at 31,14 and the foot of
+   the mouthful at 38.6,33, which is where `HEADS` and `MOUTHFUL` put them. */
+.sheep-wrap.working .sheep-head {
+  transform-origin: 31px 14px;
+  animation: sheep-chew var(--chew, 2.4s) ease-in-out infinite;
+}
+
+/* One blade moves, the one in its mouth. Eight swaying blades on every row of
+   the list is a battery bill, not a meadow. */
+.sheep-wrap.working .grass-bite {
+  transform-origin: 38.6px 33px;
+  animation: grass-bite var(--chew, 2.4s) ease-in-out infinite;
+}
+
+/* All three amplitudes are larger than they look on paper, and deliberately:
+   the sheep is 44 CSS pixels wide, so a degree of rotation is a fraction of a
+   pixel and the first pass at this was invisible on a phone - an animation
+   nobody can see is the same as no animation, at the same cost. */
 @keyframes sheep-graze {
   0%, 100% { transform: translateY(0) rotate(0deg); }
-  50% { transform: translateY(1.5px) rotate(-4deg); }
+  50% { transform: translateY(1.5px) rotate(-3deg); }
+}
+
+/* Down into the grass and back up, with the pause at the bottom that makes it
+   a mouthful rather than a metronome. */
+@keyframes sheep-chew {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  35% { transform: translateY(1.6px) rotate(9deg); }
+  55% { transform: translateY(1.3px) rotate(7.5deg); }
+}
+
+/* The blade is pulled over and comes up short, which is a bite. It springs
+   back because the field's own height is not what is being animated - how much
+   is left is the count of blades behind it. */
+@keyframes grass-bite {
+  0%, 100% { transform: rotate(0deg) scaleY(1); }
+  35% { transform: rotate(-22deg) scaleY(0.76); }
+  55% { transform: rotate(-17deg) scaleY(0.8); }
 }
 
 @keyframes sheep-alert {
@@ -596,7 +672,9 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   .sheep-wrap.working,
   .sheep-wrap.blocked,
-  .sheep-wrap.done { animation: none; }
+  .sheep-wrap.done,
+  .sheep-wrap.working .sheep-head,
+  .sheep-wrap.working .grass-bite { animation: none; }
 }
 
 .agent-dot {
@@ -1369,14 +1447,27 @@ html, body {
   line-height: 1.4;
 }
 
+/* The name, and under it how fast this agent is spending - stacked rather than
+   given a column of its own, because the four the windows need are already all
+   the width a 360px phone has. */
 .usage-agent {
   flex-shrink: 0;
   width: 2.9rem;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+.usage-rate {
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .usage-window {

@@ -145,6 +145,15 @@ for `/status` needs an idle pane **and an empty composer**, or the command is
 submitted along with whatever somebody was typing. `docs/scheduler.md` is the
 detail.
 
+**The same reading is the grass.** A row's sheep stands in a field whose height
+is what that *agent kind* has left (`pastureOf` in `app.js`, keyed on
+`agent`, cut to the tightest live window), and a working one chews it at a
+speed set from how fast the window is going down — `burnRate`, arithmetic on
+one reading rather than a history, since the phone only asks for usage while
+the overview is open. Both are bucketed before they reach the list signature: a
+field that moved a third of a percent must not redraw the row and restart every
+sheep mid-chew. `docs/design.md` is the detail.
+
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's
 `StatusWatcher` thread parked when it saw the transition (TTL 120s, applied on
