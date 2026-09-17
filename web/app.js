@@ -1202,11 +1202,20 @@
     if (named && named !== headline) sub = named;
     else if (label !== headline && label !== groupName) sub = label;
     else if (!agent.title) sub = agent.cwd || "";
+    /* Removing the checkout is offered on a worktree and never on the project
+       itself: Close leaves a worktree's copy of the tree on disk, which is the
+       right answer for a project you will open again on Monday and the wrong
+       one for a branch that was finished with last week. The project's own
+       checkout is not something the phone may delete at all. */
+    const removable = agent.repo && !agent.main_checkout;
     return `
       <div class="agent-row-wrap">
         <div class="agent-row-actions">
           <button class="agent-row-action rename" data-action="rename" data-pane-id="${escapeHtml(agent.pane_id)}">Rename</button>
           <button class="agent-row-action close" data-action="close" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+          ${removable
+            ? `<button class="agent-row-action remove" data-action="remove" data-workspace-id="${escapeHtml(agent.workspace_id)}">Remove</button>`
+            : ""}
         </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
           <span class="sheep-wrap ${status}"${fleece}>${sheepSvg(status, agent.pane_id)}</span>
@@ -1445,6 +1454,57 @@
     } catch (err) {
       alert("Could not close workspace: " + err.message);
     }
+  }
+
+  /* Removing a worktree takes the checkout with it, so the branch and the
+     directory both go. Asked for once here; asked for a second time only if
+     Herdr refuses, which it does when there is work in the checkout that is
+     not committed anywhere - that refusal is the whole safety net, so it is
+     repeated verbatim rather than swallowed and retried. */
+  async function removeWorktree(workspaceId) {
+    if (!workspaceId) return;
+    const target = state.agents.find((a) => a.workspace_id === workspaceId);
+    const name = target ? target.name : "this worktree";
+    if (!confirm(`Remove ${name}? The checkout is deleted and any agents in it stopped.`)) {
+      resetSwipe();
+      return;
+    }
+    triggerHaptic("warning");
+    try {
+      let refusal = await sendRemove(workspaceId, false);
+      if (refusal) {
+        if (!confirm(`Herdr refused: ${refusal}\n\nRemove ${name} anyway?`)) {
+          resetSwipe();
+          return;
+        }
+        refusal = await sendRemove(workspaceId, true);
+        if (refusal) throw new Error(refusal);
+      }
+      if (state.agents.find((a) => a.pane_id === state.activePaneId)?.workspace_id === workspaceId) {
+        state.activePaneId = null;
+      }
+      resetSwipe();
+      await fetchAgents();
+      renderAgentList();
+    } catch (err) {
+      alert("Could not remove worktree: " + err.message);
+    }
+  }
+
+  // The message Herdr refused with, or "" when it did the thing.
+  async function sendRemove(workspaceId, force) {
+    const res = await fetch(
+      `/api/worktrees/${encodeURIComponent(workspaceId)}/remove`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force }),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok !== false) return "";
+    const error = data.error;
+    return (error && error.message) || error || "refused";
   }
 
   function openPicker() {
@@ -2734,6 +2794,7 @@
     if (action) {
       if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
       else if (action.dataset.action === "rename") renameRow(action.dataset.paneId);
+      else if (action.dataset.action === "remove") removeWorktree(action.dataset.workspaceId);
       else if (action.dataset.action === "worktree") createWorktree(action.dataset.project);
       return;
     }
@@ -2788,6 +2849,44 @@
       r.style.transform = "";
     });
   }
+
+  /* Hold a row aside so its actions show. The swipe ends here, and so does the
+     right-click below - what a finger reaches by dragging is the same drawer,
+     not a second menu that could disagree with it. */
+  function openRowActions(row) {
+    const actions = row.parentElement.querySelector(".agent-row-actions");
+    const width = (actions && actions.offsetWidth) || SWIPE_WIDTH;
+    row.style.transition = "";
+    row.classList.add("swiped");
+    row.style.transform = `translateX(${-width}px)`;
+  }
+
+  /* A mouse has no swipe. Every one of these rows had its Rename and Close
+     reachable only by dragging it aside, which on a desktop browser meant not
+     reachable at all - so the gesture a mouse does have opens the same drawer.
+     The browser's own menu is not useful over a row and would cover it. */
+  elAgentList.addEventListener("contextmenu", (e) => {
+    const row = e.target.closest(".agent-row");
+    if (!row) return;
+    e.preventDefault();
+    resetSwipe();
+    openRowActions(row);
+  });
+
+  // Anywhere else puts it away, including the heading and the list's own gaps,
+  // so a drawer opened by a right-click is never left standing open.
+  document.addEventListener("pointerdown", (e) => {
+    if (!elAgentList.querySelector(".agent-row.swiped")) return;
+    if (e.target.closest(".agent-row-wrap")) return;
+    resetSwipe();
+  });
+
+  // And the key a keyboard reaches for to back out of anything.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!elAgentList.querySelector(".agent-row.swiped")) return;
+    resetSwipe();
+  });
 
   elAgentList.addEventListener("touchstart", (e) => {
     const row = e.target.closest(".agent-row");
@@ -2850,10 +2949,13 @@
     swipe = null;
     if (axis !== "x") return;
     row.style.transition = "";
-    const open = dx < -width / 2;
-    row.classList.toggle("swiped", open);
-    row.style.transform = open ? `translateX(${-width}px)` : "";
-    if (open) triggerHaptic();
+    if (dx < -width / 2) {
+      openRowActions(row);
+      triggerHaptic();
+    } else {
+      row.classList.remove("swiped");
+      row.style.transform = "";
+    }
   }, { passive: true });
 
   // A call or a notification cancels the touch: do not hold the redraw for

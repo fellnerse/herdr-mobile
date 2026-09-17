@@ -1030,6 +1030,31 @@ class HerdrHandler(BaseHTTPRequestHandler):
             })
             return
 
+        # API: Remove a worktree, checkout and all
+        # /api/worktrees/{workspace_id}/remove
+        #
+        # Closing a workspace leaves the checkout on disk, which is right for a
+        # project and wrong for a worktree: a branch that was finished with a
+        # week ago is still a copy of the tree taking up room. This is the other
+        # half - `git worktree remove` as well as the workspace.
+        #
+        # `force` is not passed unless it is asked for. Herdr refuses a checkout
+        # with uncommitted work in it, and that refusal is the only thing
+        # standing between a stray tap and an afternoon's work, so the phone has
+        # to ask a second time before it is overridden.
+        if path.startswith("/api/worktrees/") and path.endswith("/remove"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                params = {"workspace_id": unquote(parts[3])}
+                if body.get("force"):
+                    params["force"] = True
+                res = call_herdr_rpc("worktree.remove", params, timeout=120.0)
+                if "error" in res:
+                    self.send_json(res, 400)
+                    return
+                self.send_json({"ok": True, "result": res.get("result", {})})
+                return
+
         # API: Close a workspace
         # /api/workspaces/{workspace_id}/close
         if path.startswith("/api/workspaces/") and path.endswith("/close"):

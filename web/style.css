@@ -338,19 +338,41 @@ html, body {
   display: flex;
 }
 
+/* Narrow enough that three of them still leave a readable row behind on a
+   phone: a worktree offers Rename, Close and Remove, which at the old 92px
+   slid the whole card off the screen. */
 .agent-row-action {
-  width: 92px;
+  width: 80px;
   border: none;
   color: #fff;
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
 }
 
 .agent-row-action.rename { background: var(--accent-primary); }
 .agent-row-action.close { background: var(--status-blocked); }
+/* Close stops a workspace; Remove deletes the checkout. The darker red is the
+   one that does not come back. */
+.agent-row-action.remove { background: #7d1d1d; }
 .agent-row-action:active { filter: brightness(0.88); }
+
+/* A mouse cannot swipe, so the drawer is opened by a right-click instead - and
+   the row needs to say it has one. The hint only exists where there is a
+   pointer that can hover, since a phone has the gesture already. */
+@media (hover: hover) and (pointer: fine) {
+  .agent-row-wrap:hover .agent-row::after {
+    content: "\2026";
+    position: absolute;
+    top: 2px;
+    right: 6px;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1;
+    color: var(--text-muted);
+  }
+}
 
 /* The row carries the status now, because the sheep carries who it is.
 

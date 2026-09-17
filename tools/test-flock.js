@@ -536,6 +536,32 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
         withPlus === r.agentListSignature(), false);
 }
 
+// -- what a row lets you do to it --------------------------------------------
+
+/* Close stops a workspace and leaves its checkout on disk. For a worktree that
+   is half the job, so a worktree row offers Remove as well - and the project's
+   own checkout must never offer it, because that is the repository itself. */
+{
+  const { agentRowHtml } = loadRows();
+  const actions = (html) =>
+    [...html.matchAll(/data-action="([a-z]+)"/g)].map((m) => m[1]);
+  const of = (extra) =>
+    agentRowHtml({ ...row("wA:p1", 1, "/p/api", "working"), name: "api",
+                   title: "Rewrite it", ...extra }, "api");
+
+  check("a worktree can be renamed, closed and removed",
+        actions(of({ repo: true, main_checkout: false })),
+        ["rename", "close", "remove"]);
+  check("the project's own checkout cannot be removed",
+        actions(of({ repo: true, main_checkout: true })), ["rename", "close"]);
+  check("and neither can a workspace Herdr knows no repository for",
+        actions(of({ repo: false, main_checkout: false })), ["rename", "close"]);
+
+  // Remove needs the workspace to name, the same one Close acts on.
+  check("Remove names the workspace it would delete",
+        /data-action="remove" data-workspace-id="wA"/.test(of({ repo: true })), true);
+}
+
 // -- a row with something waiting behind it ----------------------------------
 
 /* A prompt typed and not yet handed over is the row's state as much as the
