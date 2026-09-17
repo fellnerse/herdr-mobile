@@ -966,6 +966,21 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
   check("and nothing is said underneath", /quota-note/.test(out), false);
   check("its bar is full", /class="usage-window out">[\s\S]*?width:100%/.test(out), true);
 
+  /* A reading too old to hold work on is the one thing here no colour can say,
+     so it is said in words - the bars underneath it are the last thing we were
+     told rather than the truth. It was written and then left unrendered when
+     the strip went from one line to a line per agent. */
+  const stale = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "claude", ok: true, expired: true, blocked: false, buckets: [
+        { name: "five_hour", utilization: 60, resets_at: gone, spent: false, expired: true },
+      ],
+    }],
+  }).quotaHtml();
+  check("a reading nobody can refresh says so",
+        /quota-note">last known reading/.test(stale), true);
+
   // An agent nobody can price keeps delivering, so the strip does not shout.
   const unknown = loadUsage({
     threshold: 85,

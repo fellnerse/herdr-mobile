@@ -2298,7 +2298,8 @@
       <div class="usage">
         <span class="usage-agent">${escapeHtml(name)}</span>
         ${windows}
-      </div>`;
+      </div>
+      ${note}`;
   }
 
   function renderQuota() {
