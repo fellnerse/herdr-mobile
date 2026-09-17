@@ -1073,6 +1073,98 @@
       <path d="M33 20.6 q-0.8 -2.6 -2.4 -3.8" fill="none" stroke="currentColor"
             stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>`;
 
+  /* ---------------------------------------------------------- The pasture ---
+   *
+   * The grass under a sheep is what its subscription has left. A fresh window
+   * is a field it has barely started on; a spent one is stubble, which is the
+   * same thing the queue means when it says it is holding - there is nothing
+   * on the ground to feed a prompt with.
+   *
+   * The field goes blade by blade, from the far side in, and what is left of
+   * it is the count. Cutting every blade down together was the first attempt
+   * and it is the one thing this drawing cannot do: the grazing muzzle sits
+   * eleven units above the ground, so a field cropped to a quarter left the
+   * sheep chewing air nine units above the grass. The animal reads as standing
+   * on a lawn, not eating one.
+   *
+   * So the tuft at the muzzle - the mouthful - is not part of the count. It is
+   * always tall enough to reach a grazing head, because it is the bit the
+   * sheep has hold of, and it is the only blade the chewing moves. The seven
+   * behind it are the field, and they go one at a time from the far end, which
+   * puts the bare patch away from the animal and keeps something under its
+   * mouth until the window is actually gone.
+   *
+   * Eaten ground keeps its stubble. Bare ground and a pane whose usage nobody
+   * can read would otherwise be one drawing, and those are opposite things to
+   * know.
+   *
+   * The field belongs to the subscription rather than to the pane - every
+   * Claude sheep on this machine eats the same one, and the Codex sheep eat
+   * their own. `pastureOf` is what keys it that way.
+   * ------------------------------------------------------------------------ */
+
+  // Where the blades are rooted: low enough to be ground, high enough that a
+  // leg still ends below it.
+  const GROUND = 33;
+
+  // x, how tall it stands, which way it leans. Seven, eaten from the left.
+  const FIELD = [
+    [4.5, 5.4, -1.4],
+    [9, 7, 0.9],
+    [13.5, 5, -1],
+    [18, 6.6, 1.2],
+    [22.5, 5.2, -0.8],
+    [27, 7.2, 1],
+    [31.5, 6, -1.2],
+  ];
+
+  /* The mouthful. Tall because it has to arrive at the muzzle, which the
+     grazing pose puts at 39.5, 20.5 - `HEAD_AT.graze` is where that number
+     comes from, and moving one means checking the other. */
+  const MOUTHFUL = [38.6, 11.6, 1.3];
+
+  // What eaten ground keeps.
+  const STUBBLE = 1.3;
+
+  /* How much of the field is still standing. Seven blades is a coarse gauge on
+     purpose: it is read as how much green is left rather than counted, and a
+     gauge that moves in sevenths redraws the row - and restarts every sheep
+     mid-chew - seven times a window instead of continuously. */
+  function bladesFor(left) {
+    if (!(left > 0)) return 0;
+    return Math.max(1, Math.min(FIELD.length, Math.round(left * FIELD.length)));
+  }
+
+  function blade(x, height, lean, extra) {
+    const d = `M${x} ${GROUND} q${round1(lean * 0.4)} ${round1(-height * 0.55)} ${round1(lean)} ${round1(-height)}`;
+    return `<path class="grass-blade${extra || ""}" d="${d}"/>`;
+  }
+
+  function stubble(x, lean) {
+    return `<path class="grass-blade grass-stubble" d="M${x} ${GROUND} q${round1(lean * 0.2)} ${round1(-STUBBLE * 0.6)} ${round1(lean * 0.3)} ${round1(-STUBBLE)}"/>`;
+  }
+
+  function grassSvg(pasture) {
+    // No reading is no field. A sheep with no subscription behind it - a shell,
+    // an agent nobody can price - stands on the same plain ground it always did.
+    if (!pasture) return "";
+    const standing = bladesFor(pasture.left);
+    const eaten = FIELD.length - standing;
+    const blades = FIELD.map(([x, height, lean], i) =>
+      i < eaten ? stubble(x, lean) : blade(x, height, lean)
+    );
+    /* A window with nothing left leaves nothing in its mouth either. A sheep
+       still working through that is chewing at bare stubble, which is exactly
+       the picture: the field it was spending is gone. */
+    const [mx, mh, mlean] = MOUTHFUL;
+    blades.push(standing ? blade(mx, mh, mlean, " grass-bite") : stubble(mx, mlean));
+    return `<g class="grass${pasture.spent ? " spent" : ""}">${blades.join("")}</g>`;
+  }
+
+  function round1(n) {
+    return Math.round(n * 10) / 10;
+  }
+
   /* The statuses the app has a sheep, a colour and a class for - anything else
      Herdr grows later reads as unknown rather than an unstyled dot or a sheep
      that is not there. POSE is a plain object, so ask it what it owns:
@@ -1086,7 +1178,7 @@
      every redraw, so the counter never has to be tidied up. */
   let sheepSerial = 0;
 
-  function sheepSvg(status, seed) {
+  function sheepSvg(status, seed, pasture) {
     const pose = POSE[knownStatus(status)];
     // An empty pasture has nobody to tell apart.
     if (pose === "empty") {
@@ -1094,10 +1186,15 @@
     }
     const marks = sheepMarks(seed);
     const asleep = pose === "sleep";
+    /* The head is its own group so it can chew without the body doing it: a
+       whole animal rocking is a sheep on a boat, a head dipping into the grass
+       is a sheep eating. The grass goes on last, in front of the legs - a
+       blade behind a leg is a blade nobody sees. */
     return `
       <svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">
         ${sheepBody(asleep ? 5 : 0, !asleep, marks, `fleece-${++sheepSerial}`)}
-        ${HEADS[pose](marks)}
+        <g class="sheep-head">${HEADS[pose](marks)}</g>
+        ${grassSvg(pasture)}
       </svg>`;
   }
 
@@ -1126,6 +1223,7 @@
               a.title || a.cwd,
               agoLabel(a.pane_id),
               queuedLabel(queued.get(a.pane_id)),
+              pastureMark(pastureOf(a.has_agent ? a.agent : "")),
               a.pane_id === state.activePaneId ? "1" : "",
             ].join("\u001f")
           ),
@@ -1197,7 +1295,13 @@
        inline one would quietly win against. */
     const fleece = status === "unknown"
       ? ""
-      : ` style="color:${sheepMarks(agent.pane_id).breed.fleece}"`;
+      : `color:${sheepMarks(agent.pane_id).breed.fleece}`;
+    /* What this pane's subscription has left, and how fast it is going: the
+       first is the height of the grass, the second is how quickly the sheep
+       chews it. A shell has no subscription and so no field. */
+    const pasture = pastureOf(agent.has_agent ? agent.agent : "");
+    const chew = pasture && pasture.chew ? `--chew:${pasture.chew}` : "";
+    const wrapStyle = [fleece, chew].filter(Boolean).join(";");
     let sub = "";
     if (named && named !== headline) sub = named;
     else if (label !== headline && label !== groupName) sub = label;
@@ -1218,7 +1322,7 @@
             : ""}
         </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${status}"${fleece}>${sheepSvg(status, agent.pane_id)}</span>
+          <span class="sheep-wrap ${status}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(status, agent.pane_id, pasture)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             <span class="agent-row-meta">
@@ -2190,7 +2294,12 @@
       const res = await fetch("/api/queue/quota");
       state.quota = await res.json();
       state.quotaAt = Date.now();
-      if (state.pickerOpen) renderQuota();
+      if (state.pickerOpen) {
+        renderQuota();
+        // The grass is this reading too. The signature keeps it cheap: a field
+        // that has not visibly moved redraws nothing and restarts no animation.
+        renderAgentList();
+      }
     } catch (err) {
       /* keep the last reading */
     }
@@ -2226,6 +2335,103 @@
     const m = /^(\d+)_(hour|day)$/.exec(name || "");
     if (m) return m[2] === "hour" ? `${m[1]}h` : `${m[1]}d`;
     return String(name || "").replace(/_/g, " ");
+  }
+
+  // How long the window is, in hours, from the same name.
+  function windowHours(name) {
+    if (name === "five_hour") return 5;
+    if (name === "seven_day") return 168;
+    const m = /^(\d+)_(hour|day)$/.exec(name || "");
+    if (!m) return 0;
+    return m[2] === "hour" ? Number(m[1]) : Number(m[1]) * 24;
+  }
+
+  /* How fast a window is going down, in percent an hour.
+
+     No history is kept for this and none is needed: a window's length is in
+     its name and its end is in `resets_at`, so how far into it we are is
+     arithmetic on one reading. Which matters, because the phone only asks for
+     usage while the overview is open - a rate built from samples would be
+     blank every time you came back to it.
+
+     It is an average over the window so far, not a speedometer: an agent that
+     spent an hour hammering and then went quiet still reads high for a while.
+     That is the honest shape of the number the percentage is taken from. */
+  const RATE_FLOOR_HOURS = 0.25;
+
+  function burnRate(bucket) {
+    if (!bucket || bucket.expired || !bucket.resets_at) return null;
+    const length = windowHours(bucket.name);
+    if (!length) return null;
+    const left = (new Date(bucket.resets_at).getTime() - Date.now()) / 3600000;
+    if (!isFinite(left)) return null;
+    const elapsed = length - left;
+    // Minutes into a window, any rate is a rounding error with a decimal point.
+    if (elapsed < RATE_FLOOR_HOURS) return null;
+    return Math.max(0, bucket.utilization) / elapsed;
+  }
+
+  function rateLabel(rate) {
+    if (rate === null || rate === undefined) return "";
+    return `${rate >= 10 ? rate.toFixed(0) : rate.toFixed(1)}%/h`;
+  }
+
+  /* ---------------------------------------------------------- The pasture ---
+   *
+   * What the flock stands on, read off the same numbers the strip prints.
+   *
+   * `left` is the tightest window rather than an average of them: what stops
+   * you is whichever runs out first, and a weekly window with plenty in it
+   * says nothing about the five hours you are actually inside of. A window
+   * that has rolled over describes a wall that is gone, so it is not counted
+   * at all.
+   *
+   * `chew` is how fast the grazing animation runs - the visible half of "how
+   * much is this one eating". It is bucketed on purpose: the list only redraws
+   * when its signature moves, and a duration that tracked the rate exactly
+   * would restart every sheep's animation on every poll.
+   */
+  const CHEW_SPEEDS = [
+    [3, "3.4s"],   // nibbling
+    [10, "2.4s"],  // steady
+    [20, "1.7s"],  // hungry
+    [Infinity, "1.1s"],
+  ];
+
+  function chewSpeed(rate) {
+    if (rate === null || rate === undefined) return "";
+    return (CHEW_SPEEDS.find(([under]) => rate < under) || [])[1] || "";
+  }
+
+  function pastureOf(kind) {
+    if (!kind || !state.quota) return null;
+    const reading = (state.quota.agents || []).find((a) => a.agent === kind);
+    // An agent nobody can price gets no field rather than an empty one: not
+    // knowing and having nothing left are opposite things.
+    if (!reading || reading.ok === false) return null;
+    const live = (reading.buckets || [])
+      .filter((b) => !b.expired && (b.utilization > 0 || b.resets_at));
+    if (!live.length) return null;
+    const tightest = live.reduce((worst, b) => (b.utilization > worst.utilization ? b : worst));
+    const rate = burnRate(fastestWindow(reading));
+    return {
+      left: Math.max(0, Math.min(100, 100 - tightest.utilization)) / 100,
+      // Spent, not merely low - the same line the queue holds prompts on.
+      spent: !!reading.blocked || tightest.utilization >= 100,
+      rate,
+      chew: chewSpeed(rate),
+    };
+  }
+
+  /* What the flock's signature carries: sevenths, which is the granularity the
+     field is actually drawn at. A redraw restarts every sheep mid-chew, so a
+     window that moved a third of a percent - and took no blade with it - must
+     not cost the whole list its animation. */
+  const FIELD_BLADES = 7;
+
+  function pastureMark(pasture) {
+    if (!pasture) return "";
+    return `${Math.round(pasture.left * FIELD_BLADES)}${pasture.spent ? "s" : ""}${pasture.chew}`;
   }
 
   /* When the window comes back, in as few characters as will still say it.
@@ -2294,11 +2500,28 @@
       ? '<div class="quota-note">last known reading — running anyway until usage can be read</div>'
       : "";
 
+    /* How fast this one is eating, under its own name. The bars say what is
+       left; this says how long that will last, which is the question you are
+       actually asking when you look at a bar that is two thirds gone. It sits
+       in the name's column rather than getting one of its own, because the
+       strip already spends 316 of a 360px phone's pixels. */
+    const rate = rateLabel(burnRate(fastestWindow(a)));
+
     return `
       <div class="usage">
-        <span class="usage-agent">${escapeHtml(name)}</span>
+        <span class="usage-agent">${escapeHtml(name)}${
+          rate ? `<span class="usage-rate">${escapeHtml(rate)}</span>` : ""}</span>
         ${windows}
-      </div>`;
+      </div>
+      ${note}`;
+  }
+
+  // The shortest window still running: the one that says what is being spent
+  // now rather than what was spent since Monday.
+  function fastestWindow(a) {
+    return (a.buckets || [])
+      .filter((b) => !b.expired && windowHours(b.name))
+      .sort((x, y) => windowHours(x.name) - windowHours(y.name))[0];
   }
 
   function renderQuota() {

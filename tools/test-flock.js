@@ -34,6 +34,8 @@ function loadRows() {
     const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const knownStatus = (s) => s || "unknown";
     const sheepSvg = () => "";
+    const pastureOf = (kind) => (kind ? { left: 0.5, spent: false, rate: 8, chew: "2.4s" } : null);
+    const pastureMark = (p) => (p ? String(p.left) : "");
     const sheepMarks = (seed) => ({ breed: { id: "test", fleece: "#abcdef", face: "#123456" },
                                     horn: "curl", coat: "woolly", muzzle: false });
     const agoLabel = () => "";
@@ -59,7 +61,7 @@ function loadMarks() {
   const to = src.indexOf("  /* Everything a row draws.");
   if (from < 0 || to < 0) throw new Error(`marks anchors moved in ${SRC}`);
   return new Function(
-    `${src.slice(from, to)} return { sheepMarks, sheepSvg, eyeOn, hornOn, rimFor, isLight, BREEDS, MARKS, HORNS, HORN_KINDS, HEAD_AT, COATS, knownStatus };`
+    `${src.slice(from, to)} return { sheepMarks, sheepSvg, eyeOn, hornOn, rimFor, isLight, BREEDS, MARKS, HORNS, HORN_KINDS, HEAD_AT, COATS, knownStatus, grassSvg, bladesFor, FIELD, MOUTHFUL, GROUND, STUBBLE };`
   )();
 }
 
@@ -75,7 +77,8 @@ function loadUsage(quota) {
     const escapeHtml = (s) => String(s);
     const state = { quota };
     ${src.slice(from, to)}
-    return { quotaHtml, windowLabel, resetLabel };`)(quota);
+    return { quotaHtml, windowLabel, windowHours, resetLabel, burnRate, rateLabel,
+             chewSpeed, pastureOf, pastureMark };`)(quota);
 }
 
 function loadFlock(pickerHidden = true) {
@@ -820,6 +823,90 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
         [empty.includes("sheep-horn"), empty.includes("sheep-face")], [false, false]);
 }
 
+// -- the grass is what is left to spend --------------------------------------
+
+/* The field under the sheep is the subscription, so the one thing it must do
+   is get smaller as the subscription does. Everything here is about that being
+   true in the drawing rather than only in the number behind it. */
+{
+  const m = loadMarks();
+  const field = (left, spent) => m.grassSvg({ left, spent: !!spent, chew: "2.4s" });
+  const standing = (svg) => (svg.match(/class="grass-blade" /g) || []).length;
+  const stubbleCount = (svg) => (svg.match(/grass-stubble/g) || []).length;
+
+  check("a full field stands every blade it has", standing(field(1)), m.FIELD.length);
+  check("half a window is half a field", standing(field(0.5)), 4);
+  check("and the last of it is one blade", standing(field(0.06)), 1);
+  check("a window with nothing left has no field at all", standing(field(0)), 0);
+  /* Stubble, not nothing: ground that has been eaten off and a pane nobody can
+     price would otherwise be the same drawing, and those are opposite things to
+     know. */
+  check("what has been eaten keeps its stubble",
+        [stubbleCount(field(1)), stubbleCount(field(0.5)), stubbleCount(field(0))],
+        [0, 3, 8]);
+  check("no reading is no field at all", m.grassSvg(null), "");
+
+  /* The field goes from the far end in, so the bare patch opens up away from
+     the animal and there is still something under its mouth at the end. */
+  const roots = (svg) =>
+    [...svg.matchAll(/class="grass-blade(?: grass-bite)?" d="M([\d.]+) /g)]
+      .map(([, x]) => Number(x));
+  check("what is left of it is the end nearest the sheep",
+        roots(field(0.3)), m.FIELD.slice(-2).map(([x]) => x).concat([m.MOUTHFUL[0]]));
+
+  /* The mouthful, which is the whole reason the field is a count and not a
+     height. The grazing muzzle is at 39.5, 20.5 and it does not move: a tuft
+     that shortened with the window left the sheep chewing air nine units above
+     the grass, which draws an animal standing on a lawn rather than eating one. */
+  const tuft = /class="grass-blade grass-bite" d="M([\d.]+) ([\d.]+) q[-\d.]+ [-\d.]+ [-\d.]+ (-?[\d.]+)"/;
+  const reach = (left) => {
+    const at = tuft.exec(field(left));
+    return at && { x: Number(at[1]), tip: Number(at[2]) + Number(at[3]) };
+  };
+  check("the mouthful is at the muzzle", Math.abs(reach(1).x - 39.5) < 2, true);
+  check("and it reaches the mouth whatever is left of the field",
+        [reach(1).tip < 22, reach(0.15).tip < 22], [true, true]);
+  check("only the one blade moves", (field(1).match(/grass-bite/g) || []).length, 1);
+  // A window with nothing left leaves nothing in its mouth either.
+  check("a spent window is chewed at bare stubble", reach(0), null);
+
+  // Dry grass is a class, so the row does not have to be told in words.
+  check("a spent window dries the field off",
+        [field(0.4).includes('class="grass"'), field(0, true).includes('class="grass spent"')],
+        [true, true]);
+
+  /* A blade bends at its root, and the root is a number the stylesheet has to
+     be told - it cannot read `MOUTHFUL`. Get it wrong and the blade swings
+     around a point in mid-air, which is a blade being blown away rather than
+     one being eaten. */
+  const css = fs.readFileSync(path.join(__dirname, "..", "web", "style.css"), "utf8");
+  const hinge = /\.grass-bite \{\s*transform-origin: ([\d.]+)px ([\d.]+)px/.exec(css);
+  check("the stylesheet bends the blade at the root the drawing gave it",
+        hinge && [Number(hinge[1]), Number(hinge[2])],
+        [m.MOUTHFUL[0], m.GROUND]);
+
+  /* An animation nobody can see costs exactly what one they can see costs. The
+     sheep is 44 CSS pixels wide, so a degree of rotation is a fraction of a
+     pixel: the first pass at this moved everything by about one of them and
+     read as a still picture on the phone it was drawn for. */
+  const degrees = (name, sign) => {
+    const block = new RegExp(`@keyframes ${name} \\{([\\s\\S]*?)\\n\\}`).exec(css)[1];
+    const found = [...block.matchAll(new RegExp(`rotate\\(${sign}([\\d.]+)deg\\)`, "g"))];
+    return Math.max(...found.map(([, d]) => Number(d)));
+  };
+  check("the head dips far enough to be seen", degrees("sheep-chew", "") >= 8, true);
+  check("and the blade is pulled over far enough to be a bite",
+        degrees("grass-bite", "-") >= 15, true);
+
+  /* The sheep and the field are drawn into one picture, and the head has to be
+     its own group or it cannot dip without the whole animal rocking. */
+  const grazing = m.sheepSvg("working", "wJ:p1", { left: 0.7, spent: false, chew: "1.7s" });
+  check("a working sheep stands in its field", grazing.includes("grass-blade"), true);
+  check("and its head can move on its own", grazing.includes('class="sheep-head"'), true);
+  check("a sheep with no reading behind it stands on plain ground",
+        m.sheepSvg("working", "wJ:p1").includes("grass-blade"), false);
+}
+
 // -- the row wears the status ------------------------------------------------
 
 /* With the fleece carrying identity, the row has to carry status - and
@@ -837,7 +924,7 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
 
   /* The fleece colour on the wrapper is the breed's, not the status's. Two
      rows in different states must paint the same sheep. */
-  const fleece = (html) => /style="color:(#[0-9a-f]{6})"/.exec(html)[1];
+  const fleece = (html) => /style="color:(#[0-9a-f]{6})/.exec(html)[1];
   check("the same sheep in either state", fleece(of("working")), fleece(of("done")));
 }
 
@@ -966,6 +1053,21 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
   check("and nothing is said underneath", /quota-note/.test(out), false);
   check("its bar is full", /class="usage-window out">[\s\S]*?width:100%/.test(out), true);
 
+  /* A reading too old to hold work on is the one thing here no colour can say,
+     so it is said in words - the bars underneath it are the last thing we were
+     told rather than the truth. It was written and then left unrendered when
+     the strip went from one line to a line per agent. */
+  const stale = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "claude", ok: true, expired: true, blocked: false, buckets: [
+        { name: "five_hour", utilization: 60, resets_at: gone, spent: false, expired: true },
+      ],
+    }],
+  }).quotaHtml();
+  check("a reading nobody can refresh says so",
+        /quota-note">last known reading/.test(stale), true);
+
   // An agent nobody can price keeps delivering, so the strip does not shout.
   const unknown = loadUsage({
     threshold: 85,
@@ -974,6 +1076,80 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
   check("an unreadable agent explains itself quietly",
         /usage-detail muted">no usage to read for gemini/.test(unknown), true);
   check("and is not drawn as blocked", /blocked/.test(unknown), false);
+
+  /* How fast it is going, which is the other half of how much is left: 74% of
+     a five hour window with three hours still to run is two hours spent, so
+     37% an hour. No history is kept for this - the window's length is in its
+     name and its end is in `resets_at`. */
+  check("how long a window is comes from its name",
+        [u.windowHours("five_hour"), u.windowHours("seven_day"), u.windowHours("3_hour")],
+        [5, 168, 3]);
+  check("a rate is what has been spent over how long it took",
+        Math.round(u.burnRate({ name: "five_hour", utilization: 74, resets_at: soon })), 37);
+  check("and reads as a number an hour", u.rateLabel(37.4), "37%/h");
+  check("a slow one keeps its decimal", u.rateLabel(0.19), "0.2%/h");
+  // A window that has rolled over is describing a wall that is gone.
+  check("an expired window has no rate",
+        u.burnRate({ name: "five_hour", utilization: 98, resets_at: gone, expired: true }), null);
+  check("nor has one that never said when it ends",
+        u.burnRate({ name: "five_hour", utilization: 10, resets_at: null }), null);
+  /* Minutes into a window every rate is a rounding error with a decimal point
+     on it - and the sheep would be chewing at a speed nobody can justify. */
+  const fresh = new Date(Date.now() + 4.95 * 3600 * 1000).toISOString();
+  check("and a window that just opened is not guessed at",
+        u.burnRate({ name: "five_hour", utilization: 1, resets_at: fresh }), null);
+
+  check("the strip says the rate under the name",
+        /class="usage-rate">37%\/h</.test(html), true);
+  // It is the five hour window that says what is being spent now, not the week.
+  check("taken from the fastest window it has", /0\.2%\/h/.test(html), false);
+
+  /* The field the sheep stands in, read off the same numbers. What stops you is
+     whichever window runs out first, so that is the one the grass is cut to. */
+  const pasture = u.pastureOf("claude");
+  check("the grass is the tightest window, not the average",
+        Math.round(pasture.left * 100), 26);
+  check("a field with anything left in it is not spent", pasture.spent, false);
+  check("and a field is eaten at the speed it is going down",
+        pasture.chew, u.chewSpeed(37));
+  check("an agent that is not running has no field", u.pastureOf("codex"), null);
+  check("neither has one nobody can price",
+        loadUsage({ agents: [{ agent: "gemini", ok: false, buckets: [] }] }).pastureOf("gemini"),
+        null);
+  check("and neither has a shell", u.pastureOf(""), null);
+
+  const spent = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "claude", ok: true, blocked: true, buckets: [
+        { name: "five_hour", utilization: 100, resets_at: soon, spent: true, expired: false },
+      ],
+    }],
+  }).pastureOf("claude");
+  check("a window with nothing left is a field with nothing on it",
+        [spent.left, spent.spent], [0, true]);
+
+  /* A rolled-over window describes a wall that is gone, so it is not what the
+     grass is cut to either - the field is the one still running. */
+  const rolledPasture = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "codex", ok: true, blocked: false, buckets: [
+        { name: "five_hour", utilization: 98, resets_at: gone, spent: false, expired: true },
+        { name: "seven_day", utilization: 40, resets_at: week, spent: false, expired: false },
+      ],
+    }],
+  }).pastureOf("codex");
+  check("an expired window is not what the grass is cut to",
+        Math.round(rolledPasture.left * 100), 60);
+
+  /* The list only redraws when its signature moves, and a redraw restarts every
+     sheep mid-chew. So the mark has to notice a field being eaten and ignore it
+     twitching. */
+  const mark = (left) => u.pastureMark({ left, spent: false, chew: "2.4s" });
+  check("a field that has visibly gone down redraws", mark(0.8) === mark(0.6), false);
+  check("one that moved a third of a percent does not", mark(0.803), mark(0.8));
+  check("and no reading marks nothing at all", u.pastureMark(null), "");
 }
 
 if (failures) {

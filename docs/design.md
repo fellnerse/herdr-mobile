@@ -20,7 +20,7 @@ nothing is ever delivered into one.
 
 | State | Row | Sheep |
 |---|---|---|
-| Working 🟡 | amber spine | grazing, head down — munching bob |
+| Working 🟡 | amber spine | grazing, head down — chewing the grass it is spending |
 | Idle 🟢 | green spine | standing, head up |
 | Blocked 🔴 | red spine **and a tinted card** | head up, ear pricked — twitch |
 | Done 🔵 | blue spine | lying down asleep — slow breathing |
@@ -43,6 +43,47 @@ it at all is the empty pasture — which is what a project's plain shell tab
 draws, beside its siblings' sheep.
 
 Every animation stops under `prefers-reduced-motion`.
+
+### The grass says what is left to spend
+
+The field under a sheep is its subscription. Full window, tall grass; spent
+window, stubble — and the sheep that is working chews it: the head dips into
+the grass on its own hinge, and the tall tuft under the muzzle bends as it is
+taken.
+
+Three decisions hold that up.
+
+- **Cropped, not mown.** Every blade shortens together rather than blades
+  vanishing one at a time. At forty-four pixels, how many of a thing there are
+  is arithmetic and how tall it is is a glance — and a sheep that ate its way
+  across the field from one end would finish up chewing bare ground, since the
+  head does not move. A spent window still draws stubble, because bare ground
+  and *no reading at all* are opposite things to know and must not be one
+  picture. A pane with nothing behind it — a shell, an agent nobody can price —
+  gets no field.
+- **The tightest window, not the average.** What stops you is whichever window
+  runs out first, so the grass is cut to that one. A window that has rolled
+  over describes a wall that is gone and is left out of the reckoning entirely.
+  Once the window is spent the field dries off to brown, which is the same line
+  the queue holds prompts on.
+- **The field belongs to the subscription, not the pane.** Every Claude sheep
+  on this machine eats the same field and the Codex sheep eat their own, which
+  is the level `quota.py` can actually answer at. Two Claude agents on one
+  project therefore stand in identically tall grass — that is not a bug, it is
+  the same field twice.
+
+How fast it is going is the second half of the answer, and it needs no history:
+a window's length is in its name and its end is in `resets_at`, so how far into
+it we are is arithmetic on a single reading. That rate sets `--chew`, the one
+duration the body's bob, the head's dip and the blade's bend all share — a herd
+burning through a subscription visibly eats faster than one nibbling at it.
+The speed is bucketed into four, because the list only redraws when its
+signature moves and a duration that tracked the rate exactly would restart
+every sheep mid-chew on every poll. The number itself is printed under the
+agent's name in the usage strip, where it is a rate in percent an hour.
+
+Only the blade at the muzzle moves. Eight swaying blades on every row of a list
+is a battery bill, not a meadow.
 
 ### The sheep says which one it is
 
