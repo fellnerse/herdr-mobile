@@ -13,9 +13,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
 
-from herdr_rpc import call_herdr_rpc  # noqa: E402
+from herdr_rpc import Herdr, HerdrError, call_herdr_rpc  # noqa: E402
 from scheduler import config as sched_config  # noqa: E402
 from scheduler import db, quota  # noqa: E402
+from scheduler.dispatch import LIMIT_RE, wall_menu, wall_menu_keys  # noqa: E402
 
 MARK = {
     "waiting": "·",
@@ -89,6 +90,84 @@ def cmd_chats(args) -> int:
         return 0
     for a in agents:
         print(f"{a.get('pane_id'):<8} {a.get('agent_status', '?'):<8} {a.get('cwd', '')}")
+    return 0
+
+
+def cmd_wall(args) -> int:
+    """What the dispatcher would do about the limit, without waiting for one.
+
+    The wall is the one part of the queue that cannot be rehearsed by using the
+    app: it only happens when a subscription runs out, at whatever hour that
+    lands on, and if it gets it wrong the evidence is a chat that sat still all
+    night. So this asks the same questions `hit_the_wall` asks, against a real
+    pane, and prints the answers instead of acting on them.
+
+    To put the menu on screen on purpose, type `/rate-limit-options` into the
+    chat: it is the same menu Claude Code opens for itself, so answering it here
+    is the real thing and not a fixture. `--send` then presses it, which is the
+    last step this cannot prove on its own — that the keys land.
+    """
+    if args.screen:
+        text, where = Path(args.screen).read_text(), args.screen
+    else:
+        try:
+            text, where = Herdr().pane_read(args.pane, lines=args.lines), args.pane
+        except HerdrError as e:
+            print(f"error: cannot read {args.pane}: {e}", file=sys.stderr)
+            return 1
+
+    status, kind = "?", None
+    if args.pane:
+        # The same two questions the dispatcher asks, through the same client:
+        # whose window this pane spends, and whether it is mid-turn.
+        herdr = Herdr()
+        status, kind = herdr.status(args.pane), herdr.agent_kind(args.pane)
+    print(f"chat      {where}  status {status}  agent {kind or 'shell'}")
+
+    banner = LIMIT_RE.search(text)
+    print(f"banner    matched {banner.group(0)!r}" if banner
+          else "banner    no match — nothing would wake the wall up")
+
+    keys = wall_menu_keys(text)
+    options, selected, wanted = wall_menu(text)
+    for i, option in enumerate(options):
+        mark = "  ← would press" if i == wanted else ""
+        print(f"menu      {'❯' if i == selected else ' '} {i + 1}. {option}{mark}")
+    if not options:
+        print("menu      none on screen")
+    elif wanted is None:
+        print("menu      nothing here says to wait — left for a person")
+    elif selected is None:
+        print("menu      no cursor on any option — left for a person")
+    print(f"keys      {keys if keys else 'esc (nothing to answer)'}")
+
+    spent = None
+    try:
+        current = quota.current(kind or "", ttl=0.0)
+        spent = current.spent()
+        print(f"usage     {', '.join(f'{b.name} {b.utilization:.0f}%' for b in current.buckets)}"
+              f"{'  — out' if spent else '  — open'}")
+    except quota.QuotaError as e:
+        print(f"usage     no reading ({e})")
+
+    if status == "working":
+        verdict = "nothing: a pane mid-turn is never interrupted"
+    elif not banner:
+        verdict = "nothing: no limit text on screen"
+    elif keys:
+        verdict = f"answers the menu with {keys}, queues the resume, holds until the reset"
+    elif spent is None or spent:
+        verdict = "esc to drop the halted turn, queues the resume, holds until the reset"
+    else:
+        verdict = "nothing: the banner is there but usage says the window is open"
+    print(f"verdict   {verdict}")
+
+    if args.send:
+        if not args.pane:
+            print("error: --send needs --pane, not --screen", file=sys.stderr)
+            return 1
+        Herdr().agent_send_keys(args.pane, keys or ["esc"])
+        print(f"sent      {keys or ['esc']} to {args.pane} — watch the pane")
     return 0
 
 
@@ -167,6 +246,15 @@ def main() -> int:
                          help="just this agent's windows")
     p_quota.set_defaults(func=cmd_quota)
     sub.add_parser("chats", help="list chats you can queue against").set_defaults(func=cmd_chats)
+
+    wall = sub.add_parser("wall", help="what the wall would do about this chat, without doing it")
+    source = wall.add_mutually_exclusive_group(required=True)
+    source.add_argument("--pane", help="read a live chat, e.g. wM:p1")
+    source.add_argument("--screen", help="read a captured screen from a file instead")
+    wall.add_argument("--lines", type=int, default=80, help="how much of the pane to read")
+    wall.add_argument("--send", action="store_true",
+                      help="actually press it, so you can watch the pane answer")
+    wall.set_defaults(func=cmd_wall)
 
     add = sub.add_parser("add", help="queue a prompt for a chat")
     add.add_argument("prompt")

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import push
 from herdr_rpc import Events, Herdr, HerdrError
 
-from . import db, quota
+from . import STATE_DIR, db, quota
 from .config import Config
 
 log = logging.getLogger("scheduler")
@@ -28,7 +28,10 @@ log = logging.getLogger("scheduler")
 # may lag by up to a poll interval.
 LIMIT_RE = re.compile(
     r"(usage limit reached|limit reached|out of (?:usage|credits)|"
-    r"limit will reset|upgrade to increase your usage limit)",
+    r"limit will reset|upgrade to increase your usage limit|"
+    # The current wording: "You've hit your session limit · resets 12:50pm
+    # (UTC)", and the menu it opens underneath it.
+    r"hit your (?:\w+ )?limit|limit to reset|rate-limit-options)",
     re.IGNORECASE,
 )
 
@@ -44,6 +47,92 @@ RESUME_PROMPT = (
 # An agent in one of these is listening and free. `blocked` is deliberately not
 # here: it is sitting on a question, and text sent now would answer it.
 READY = ("idle", "done")
+
+# Claude Code no longer only prints the wall and stops: it opens
+# `/rate-limit-options` and waits on a menu. A pane sitting on that menu is
+# `blocked`, so the queue reports it and goes no further -- at 4am, over a
+# question whose answer is always the same one.
+#
+# "❯ 1. Stop and wait for limit to reset", the same shape the phone parses.
+MENU_OPTION_RE = re.compile(r"^\s*([❯›>])?\s*(\d{1,2})\.\s+(\S.*?)\s*$")
+# The only option this is ever allowed to press. Waiting is what the stall does
+# anyway, so answering with it changes nothing except that the pane is free
+# afterwards; anything else spends money or picks a plan. Claude Code shortens
+# the label to a bare "Stop" in some states and puts it last rather than first
+# in others, which is why the option is found by what it says and never by
+# where it sits. The rest of that menu is "Upgrade your plan" and "Upgrade to
+# Team plan": nothing this may press on somebody's behalf at 4am.
+WAIT_OPTION_RE = re.compile(r"stop and wait|wait for (?:the )?limit|^stop$", re.IGNORECASE)
+
+
+# Claude Code opens the menu by typing the command into its own composer, so
+# "❯ /rate-limit-options" is sitting above the box while the question is up. If
+# answering leaves it there, the resume -- delivered hours later, as text
+# appended to whatever the composer already holds -- is submitted as an argument
+# to a slash command and swallowed whole. That is the exact way a queued prompt
+# disappears without failing, and the queue would report it as sent.
+LEFTOVER_COMMAND_RE = re.compile(r"^\s*[❯›>]\s*/rate-limit-options\b", re.MULTILINE)
+
+
+def keep_the_screen(pane_id: str, text: str) -> None:
+    """Write down the screen the wall acted on.
+
+    The limit arrives once every few days, at whatever hour it likes, and the
+    screen it drew is gone by morning -- so when this gets it wrong the only
+    evidence is somebody's memory of a screenshot. Kept whether it worked or
+    not, because a hold that was right looks identical to one that was missed.
+    Replay it with `sheepit-queue wall --screen`.
+    """
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = STATE_DIR / f"wall-{pane_id.replace(':', '-')}-{stamp}.txt"
+        path.write_text(text)
+        log.info("kept the screen the wall acted on: %s", path)
+    except OSError as e:
+        log.warning("could not keep the wall screen for %s: %s", pane_id, e)
+
+
+def wall_menu(text: str):
+    """The menu on screen: its options, the one under the cursor, the one that
+    says to wait. Any of the last two may be None, and usually the list is empty.
+
+    The numbering has to run 1, 2, 3 with nothing missing, and a fresh `1.`
+    starts the list over -- which is what keeps an ordinary numbered list
+    further up the scrollback from being read as a question somebody is being
+    asked. `sheepit-queue wall` prints what this saw, so it is the same parse
+    being checked as the one that acts.
+    """
+    options, selected, wanted = [], None, None
+    for line in text.splitlines():
+        m = MENU_OPTION_RE.match(line)
+        if not m:
+            continue
+        cursor, number, label = m.group(1), int(m.group(2)), m.group(3)
+        if number == 1:
+            options, selected, wanted = [], None, None  # a menu starts here
+        elif number != len(options) + 1:
+            continue
+        if cursor:
+            selected = len(options)
+        if WAIT_OPTION_RE.search(label):
+            wanted = len(options)
+        options.append(label)
+    return options, selected, wanted
+
+
+def wall_menu_keys(text: str):
+    """The keys that answer the rate-limit menu, or None if there is none to answer.
+
+    Walked to with arrows rather than typed as a number, and chosen by what the
+    option says rather than where it sits: a menu whose options were reordered
+    must still answer "wait", and one with no such option is left for a person.
+    """
+    _, selected, wanted = wall_menu(text)
+    if wanted is None or selected is None:
+        return None
+    step = wanted - selected
+    return ["down"] * step + ["up"] * -step + ["enter"]
 
 # Output matching is evaluated against a window of recent output, so subscribing
 # to a pane that already has an old wall message on screen fires immediately.
@@ -98,6 +187,16 @@ class Dispatcher:
         # is reported once rather than on every pass. Cleared the moment it is
         # free again, which is what makes the next episode audible.
         self.reported: set[str] = set()
+        # Panes that were mid-turn when the banner appeared, to be looked at
+        # again. Matching is edge-triggered on output, and a turn that dies at
+        # the limit stops producing any -- so the one event that ever arrives
+        # is the one that finds the pane still working, and nothing comes back
+        # to it. Cost of not having this, measured: a chat sat under its banner
+        # from 10:02 until 15:04, when a person noticed.
+        self.pending: set[str] = set()
+        # Panes whose screen has already been kept, so one looked at every
+        # minute leaves one file behind rather than a hundred.
+        self.kept: set[str] = set()
 
     # --- delivery ------------------------------------------------------
 
@@ -242,29 +341,53 @@ class Dispatcher:
         if self.stalls.get(pane_id, 0.0) > time.monotonic():
             return  # already parked; the banner simply stayed on screen
 
+        # The screen is read first, because what is on it settles both of the
+        # questions below. A menu asking what to do about the limit is not
+        # scrollback and not a chat discussing usage: it is the agent itself,
+        # stopped, saying it has run out.
+        try:
+            screen = self.herdr.pane_read(pane_id)
+            keys = wall_menu_keys(screen)
+            if pane_id not in self.kept:
+                self.kept.add(pane_id)
+                keep_the_screen(pane_id, screen)
+        except HerdrError:
+            keys = None
+
         # A pane still working has not been stopped by anything: whatever
         # matched is either older than the turn in progress or something the
-        # chat is merely talking about. Checked before usage rather than only
-        # when usage is unreadable, because `esc` on a healthy turn throws away
-        # real work -- and now that every agent is watched rather than only the
-        # ones with a queue behind them, every agent is exposed to that.
-        if self.herdr.status(pane_id) == "working":
+        # chat is merely talking about, and `esc` on a healthy turn throws away
+        # real work.
+        #
+        # But `working` is not to be trusted over a menu that is visibly
+        # waiting for a keypress. Herdr reads `working` off the spinner in the
+        # terminal title -- rule `osc_title_working`, priority 1100, above its
+        # own `live_blocked_form` at 980 -- and Claude Code keeps that spinner
+        # turning while a background shell runs. "1 shell still running" sits
+        # directly above the question in the screen this was built from, so
+        # believing `working` there is precisely how the menu goes unanswered
+        # all night.
+        if keys is None and self.herdr.status(pane_id) == "working":
+            # Not a verdict, a postponement: the turn may be about to die of
+            # the very thing that put this banner on screen, and the event that
+            # would have said so is never coming.
+            if pane_id not in self.pending:
+                self.pending.add(pane_id)
+                log.info("%s has the banner but is still working; will look again", pane_id)
             return
+        self.pending.discard(pane_id)
 
         resume_at = None
         try:
             current = quota.current(self.herdr.agent_kind(pane_id) or "")
-            if not current.spent():
+            if not current.spent() and keys is None:
                 log.debug("limit banner on %s but the window is open; ignoring", pane_id)
                 return
             resume_at = current.resume_at()
         except quota.QuotaError:
             pass  # nothing to check against; a stopped turn under the banner is the evidence
 
-        try:
-            self.herdr.agent_send_keys(pane_id, ["esc"])
-        except HerdrError:
-            pass
+        self.answer(pane_id, keys)
 
         self.stalls[pane_id] = time.monotonic() + (
             max(0.0, (resume_at - datetime.now(timezone.utc)).total_seconds())
@@ -290,6 +413,29 @@ class Dispatcher:
         self.herdr.notify("usage window exhausted", f"{pane_id} will resume when it resets")
         _push("window exhausted")
         log.info("pane %s hit the wall; resuming at %s", pane_id, resume_at or "next check")
+
+    def answer(self, pane_id: str, keys) -> None:
+        """Let go of the halted turn, and leave the composer fit to type into.
+
+        `esc` is what drops a turn that merely stopped; on the menu it would
+        only cancel, so the menu is answered with its own keys instead. Either
+        way the composer has to come back empty, because what goes in next is a
+        resume prompt nobody will be watching arrive.
+
+        Only ever cleared when the agent's own command is what is sitting
+        there: a half-written sentence somebody left on the desktop is not this
+        thread's to throw away.
+        """
+        try:
+            self.herdr.agent_send_keys(pane_id, keys or ["esc"])
+        except HerdrError:
+            return
+        try:
+            if LEFTOVER_COMMAND_RE.search(self.herdr.pane_read(pane_id)):
+                self.herdr.agent_send_keys(pane_id, ["esc"])
+                log.info("cleared the leftover command from %s's composer", pane_id)
+        except HerdrError:
+            pass
 
     # --- cold recovery -------------------------------------------------
 
@@ -365,6 +511,26 @@ class Dispatcher:
         self.stalls.pop(pane_id, None)
         log.info("revived %s as %s from session %s", pane_id, target, prompt.session_uuid)
 
+    def look_again(self, conn: sqlite3.Connection, cfg: Config) -> None:
+        """Come back to the panes that were mid-turn when the banner appeared.
+
+        Everywhere else in this file the event stream is a latency
+        optimisation, because the next sweep re-reads whatever it missed. This
+        is the one state that is never re-read: `working` was true once, the
+        turn then died of the limit, and a dead turn writes nothing for the
+        subscription to match on. Cheap to run -- one read per pane, and only
+        for panes that have already shown a banner.
+        """
+        for pane_id in list(self.pending):
+            try:
+                if not LIMIT_RE.search(self.herdr.pane_read(pane_id)):
+                    self.pending.discard(pane_id)  # it redrew; nothing is waiting
+                    self.kept.discard(pane_id)
+                    continue
+            except HerdrError:
+                continue
+            self.hit_the_wall(conn, pane_id, cfg)
+
     def poll_for_wall(self, conn: sqlite3.Connection, pane_ids: list[str],
                       cfg: Config) -> None:
         """Look for the limit banner ourselves, when the stream is not there.
@@ -423,6 +589,7 @@ class Dispatcher:
         """One pass: forget what is done with, deliver what can go, then wait."""
         db.prune_sent(conn)
         self.sweep(conn, cfg)
+        self.look_again(conn, cfg)
 
         panes = self.watched(conn)
         try:
