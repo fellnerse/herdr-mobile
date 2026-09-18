@@ -1939,3 +1939,100 @@ html, body {
 @media (prefers-reduced-motion: no-preference) {
   .change-row { transition: background 0.12s ease; }
 }
+
+/* ---------------------------------------------------------- On a desktop ---
+ *
+ * The phone stacks: the flock is the page and a chat covers it, one screen at
+ * a time because there is only ever room for one. A Mac window has room for
+ * both, so past this width the flock stops being a sheet and becomes a column
+ * on the left that nothing closes - the chat opens beside it, and the back
+ * button and the X that got you between them have nothing left to do.
+ *
+ * The breakpoint is repeated once in app.js, which needs to know that closing
+ * the flock is not a thing here.
+ * --------------------------------------------------------------------------- */
+
+/* Between a phone and a window with two columns in it: still one screen at a
+   time, but a full-width list of rows on an iPad is mostly empty row. Hold the
+   flock to a readable column and centre it. The padding is a max() so this
+   does nothing to the narrow left-hand column above, where the arithmetic
+   comes out negative. */
+@media (min-width: 600px) {
+  .agent-list {
+    padding-left: max(12px, calc((100% - 760px) / 2));
+    padding-right: max(12px, calc((100% - 760px) / 2));
+  }
+}
+
+@media (min-width: 900px) {
+  body {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+  }
+
+  .agent-picker {
+    position: relative;
+    inset: auto;
+    z-index: 1;
+    order: -1;
+    flex: 0 0 auto;
+    /* A phone's width, near enough: the rows, the sheep and the usage strip
+       were all drawn to fit one, and nothing here has to be re-thought. */
+    width: 380px;
+    height: var(--app-height, 100vh);
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  /* Closing it is what a phone does. Here it is the furniture. */
+  .agent-picker.hidden { display: flex; }
+
+  .app-container {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  /* Both of these say "go back to the list", and the list never left. */
+  #btn-close-picker,
+  .agent-select-chevron { display: none; }
+
+  .agent-select {
+    cursor: default;
+    background: transparent;
+    border-color: transparent;
+  }
+
+  /* A send button at the far right of a monitor is a mouse journey, so the
+     chat holds to a column. The width is a wide terminal's worth of
+     characters rather than a reading width: this is a pane's output, and a
+     column narrower than the pane clips every long line at its right edge -
+     the container hides the overflow, so what is cut off is simply gone. */
+  .history-content,
+  .chat-queue,
+  .complete-bar,
+  .keys-bar,
+  .terminal-input-row,
+  .attach-strip,
+  .prompt-form {
+    max-width: 1100px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  /* A sheet across a monitor is a wall. Give it the shape it has on a phone,
+     floating, rather than a border the width of the screen. */
+  .settings-sheet {
+    left: 50%;
+    right: auto;
+    bottom: 24px;
+    transform: translateX(-50%);
+    width: min(520px, 90vw);
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+  }
+}
+
+/* The X only means something while there is a chat behind the flock to go
+   back to - on a fresh start there is not. */
+.icon-btn.hidden { display: none; }

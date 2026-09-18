@@ -16,7 +16,8 @@
     order: [],
     customOrder: [],
     groups: [],
-    pickerOpen: false,
+    // The flock is what the app opens on: a chat is something you go into.
+    pickerOpen: true,
     bleat: true,
     statuses: null,
     showKeys: true,
@@ -33,6 +34,8 @@
     quotaAt: 0,
     queueSignature: null,
     editingId: null,
+    listTouchedAt: 0,
+    chatVisited: false,
   };
 
   // DOM Elements
@@ -95,6 +98,17 @@
   const elChangesCount = document.getElementById("changes-count");
   const elBtnCloseChanges = document.getElementById("btn-close-changes");
   const elBtnDiffLayout = document.getElementById("btn-diff-layout");
+
+  /* A phone stacks: the flock is the page, a chat covers it. A desktop window
+     has room for both, so past this width the flock is a column on the left
+     that nothing closes and the chat opens beside it. The same breakpoint is
+     in style.css; the layout is the stylesheet's, this is only what the app
+     has to know about it. */
+  const wide = window.matchMedia("(min-width: 900px)");
+
+  function pickerVisible() {
+    return wide.matches || !elAgentPicker.classList.contains("hidden");
+  }
 
   /* The bleat an agent gets when it stops working, while you are looking at
      the app. iOS will not let a page make noise until it has been touched
@@ -706,10 +720,14 @@
         // a project whose tabs are all plain shells is still worth opening.
         const first = state.agents.find((a) => a.has_agent) || state.agents[0];
         if (first) {
-          selectAgent(first.pane_id);
+          /* Chosen, not opened, while the flock is on screen: the chat behind
+             it is loaded and ready, but nothing drags you into it. A workspace
+             closed from a chat still lands you in the next one. */
+          selectAgent(first.pane_id, !state.pickerOpen);
         } else {
           state.activePaneId = null;
           renderActiveAgentMeta();
+          syncPickerChrome();
           elHistoryContent.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
         }
       } else {
@@ -769,7 +787,7 @@
       : "No agents";
     elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
 
-    if (!elAgentPicker.classList.contains("hidden")) renderAgentList();
+    if (pickerVisible()) renderAgentList();
   }
 
   /* A sheep per tab, the same animal the home screen icon shows. Colour
@@ -1657,27 +1675,52 @@
     return { ...data, refusal: (error && error.message) || error || "refused" };
   }
 
-  function openPicker() {
-    triggerHaptic();
+  /* Home. Not a sheet over a chat any more: this is the screen the app starts
+     on and the one a chat is backed out of. */
+  function showFlock() {
     state.pickerOpen = true;
+    elAgentPicker.classList.remove("hidden");
     renderAgentList();
     renderQuota();
     fetchQuota();
-    elAgentPicker.classList.remove("hidden");
+    syncPickerChrome();
+  }
+
+  function openPicker() {
+    triggerHaptic();
+    showFlock();
   }
 
   function closePicker() {
+    // On a Mac the flock is the left column: there is nothing to close, and
+    // hiding it would leave the chat alone on a very wide screen.
+    if (wide.matches) return;
     state.pickerOpen = false;
     elAgentPicker.classList.add("hidden");
   }
 
-  // Select an Agent
-  function selectAgent(paneId) {
+  /* The X means "back to what I was reading", so it is only there once there
+     is something to go back to. On a fresh start there is not: a pane is
+     selected behind the flock, but nobody chose it, and an X that opens a chat
+     you never asked for is a door out of the home screen into a stranger. */
+  function canLeaveFlock() {
+    return Boolean(state.chatVisited && state.activePaneId) && !wide.matches;
+  }
+
+  function syncPickerChrome() {
+    elBtnClosePicker.classList.toggle("hidden", !canLeaveFlock());
+  }
+
+  /* Open a pane's chat. `open` false selects it without leaving the flock -
+     which is how the app starts: a pane is ready to talk to, but the herd is
+     still what you are looking at. */
+  function selectAgent(paneId, open = true) {
+    if (open) state.chatVisited = true; // there is now a chat to go back to
     if (state.activePaneId === paneId) {
-      closePicker();
+      if (open) closePicker();
       return;
     }
-    closePicker();
+    if (open) closePicker();
     setCtrlCArmed(false);
     // What is in the composer was written for the pane being left.
     rememberDraft(state.activePaneId);
@@ -1687,9 +1730,10 @@
     renderAttachments();
     state.historyText = "";
     elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
-    triggerHaptic();
+    if (open) triggerHaptic();
 
     renderAgentBar();
+    syncPickerChrome();
     renderActiveAgentMeta();
     renderChatQueue();
     fetchHistory(true);
@@ -2990,11 +3034,25 @@
     groups.sort((a, b) => Number(b.wants) - Number(a.wants) || a.born - b.born);
   }
 
+  /* Never reshuffle a list under a hand: an agent changing state would slide a
+     row out from under the thumb about to tap it. This used to hold for as
+     long as the picker was open, which was the length of a glance - now that
+     the flock is the home screen that would be the length of the session, and
+     an agent with a question would never rise to the top again. So it holds
+     for the gesture and the few seconds after it instead: a finger on the
+     list, a project being carried, a scroll still coming to rest. */
+  const LIST_SETTLE_MS = 3000;
+
+  function touchList() {
+    state.listTouchedAt = Date.now();
+  }
+
+  function listBusy() {
+    return Boolean(state.swiping) || Date.now() - (state.listTouchedAt || 0) < LIST_SETTLE_MS;
+  }
+
   function orderAgents() {
-    /* Never reshuffle a list somebody is looking at: an agent changing state
-       would slide a row out from under the thumb about to tap it. Hold the
-       last order until the picker closes. */
-    const held = !elAgentPicker.classList.contains("hidden") && state.order.length;
+    const held = listBusy() && state.order.length;
     if (held) {
       const rank = new Map(state.order.map((id, i) => [id, i]));
       const at = (id) => (rank.has(id) ? rank.get(id) : Number.MAX_SAFE_INTEGER);
@@ -3150,14 +3208,40 @@
     resetSwipe();
   });
 
-  // And the key a keyboard reaches for to back out of anything.
+  // And the key a keyboard reaches for to back out of anything: a row's
+  // drawer first, then the flock itself - but only into a chat that exists.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (!elAgentList.querySelector(".agent-row.swiped")) return;
-    resetSwipe();
+    if (elAgentList.querySelector(".agent-row.swiped")) {
+      resetSwipe();
+      return;
+    }
+    if (state.pickerOpen && canLeaveFlock()) closePicker();
   });
 
+  /* A window dragged past the breakpoint: the flock stops being a sheet and
+     becomes the column on the left, or the other way about. */
+  wide.addEventListener("change", () => {
+    if (wide.matches) {
+      state.pickerOpen = true; // the column is there whether it was open or not
+      renderQuota();
+      fetchQuota();
+      renderAgentList();
+    } else {
+      state.pickerOpen = !elAgentPicker.classList.contains("hidden");
+    }
+    syncPickerChrome();
+  });
+
+  // A hand on the list, by any of the ways it can be on one: while it is, the
+  // order is held exactly where it was last drawn.
+  elAgentList.addEventListener("scroll", touchList, { passive: true });
+  elAgentList.addEventListener("pointerdown", touchList, { passive: true });
+  elAgentList.addEventListener("pointermove", touchList, { passive: true });
+  elAgentList.addEventListener("wheel", touchList, { passive: true });
+
   elAgentList.addEventListener("touchstart", (e) => {
+    touchList();
     const row = e.target.closest(".agent-row");
     if (!row) return;
     suppressClick = false;
@@ -3185,6 +3269,7 @@
      underneath it - which is a preventDefault, which a passive listener is not
      allowed to make. */
   elAgentList.addEventListener("touchmove", (e) => {
+    touchList();
     const touch = e.touches[0];
     if (drag) {
       e.preventDefault();
@@ -4329,6 +4414,8 @@
 
   // Init
   loadPrefs();
+  // The flock, not a chat: what the app opens on is the whole herd.
+  showFlock();
   // The first touch anywhere is what buys the page the right to make noise.
   document.addEventListener("pointerdown", unlockAudio, { once: true });
   document.addEventListener("touchstart", unlockAudio, { once: true });
