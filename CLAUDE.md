@@ -104,6 +104,13 @@ shell is still reachable, and a split tab running two agents gets a row each
 rather than hiding one. A Herdr that does not answer `tab.list` falls back to
 the tab ids the panes carry (`tabs_from_panes`).
 
+**The flock is the page the app opens on**, and a chat is something you go into
+from it (`showFlock` / `selectAgent(paneId, open)` in `app.js`). Past 900px the
+same two screens sit side by side: `style.css` turns the flock into a fixed
+left column and `closePicker` becomes a no-op, so nothing there can leave the
+list off screen. A pane is still selected behind the flock — with `open` false,
+so the transcript is warm without the screen jumping into it.
+
 **The phone groups those rows by project, not by workspace** (`groupByProject`
 in `app.js`): the key is `worktree.repo_root` as read by `project_of`, so the
 scheduler's `sheep/` worktrees sit under the repository they were cut from. The

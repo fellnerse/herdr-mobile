@@ -8,6 +8,24 @@ the iOS limits that shaped them.
 The overview draws one sheep per pane, and the split is deliberate: **the sheep
 is who, the row is what**.
 
+### It is the page, not a sheet
+
+The flock is what the app opens on. It used to be a sheet pulled down over
+whichever chat the phone happened to have selected, which meant the first thing
+you saw on unlocking was one agent out of nine, chosen for you — and the
+question you picked the phone up for was behind a tap. Now a chat is somewhere
+you go: a row opens it, and the header's back chevron is the way out of it. A
+pane is still chosen behind the flock so its transcript is loaded by the time
+you ask for it; it just does not drag the screen with it.
+
+On a Mac the same two screens fit side by side. Past 900px the flock stops
+being a sheet and becomes a 360px column on the left that nothing closes: the
+chat opens beside it, the back chevron and the X have nothing left to do and go
+away, and the transcript and composer hold to a column of their own rather than
+running the width of a monitor. Everything below that width still stacks, which
+is what a phone and a narrow window both want. The breakpoint lives in
+`style.css`; `app.js` knows only that closing the flock is not a thing there.
+
 ### The row says what it is doing
 
 When something is queued behind a pane, the row says *that* instead — "1
@@ -188,9 +206,13 @@ that goes nowhere without you, so it rises to the top of its project and
 carries its project to the top of the list. Two waiting projects do not fight —
 creation order breaks the tie.
 
-None of it moves while the list is open. A state change that reorders rows
-under a thumb about to tap one is the failure this whole section is about, so
-the last drawn order is held until the picker closes.
+None of it moves while a hand is on it. A state change that reorders rows under
+a thumb about to tap one is the failure this whole section is about, so the
+last drawn order is held through a touch, a swipe, a carried project or a
+scroll, and for three seconds after the finger lifts. It used to be held for as
+long as the list was open, which was the length of a glance; now that the flock
+is the screen the app opens on, that would have been the length of the session,
+and the question that rises to the top would never have risen.
 
 Herdr still exposes no timestamps, and `state_change_seq` is still watched: the
 phone stamps a wall-clock time whenever it moves — or whenever you open a

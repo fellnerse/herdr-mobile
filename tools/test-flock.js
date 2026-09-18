@@ -81,22 +81,23 @@ function loadUsage(quota) {
              chewSpeed, pastureOf, pastureMark };`)(quota);
 }
 
-function loadFlock(pickerHidden = true) {
+function loadFlock(busy = false) {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf(FROM);
   const to = src.indexOf(TO);
   if (from < 0 || to < 0) throw new Error(`anchors moved in ${SRC}`);
+  /* `swiping` is a hand on the list. The flock is the home screen now, so
+     being on screen is no longer what holds the order still - a finger is. */
   const PRELUDE = `
-    const state = { agents: [], groups: [], order: [], customOrder: [] };
-    const elAgentPicker = { hidden: ${pickerHidden},
-                            classList: { contains(name) { return name === "hidden" && elAgentPicker.hidden; } } };
+    const state = { agents: [], groups: [], order: [], customOrder: [],
+                    swiping: ${busy}, listTouchedAt: 0 };
     const store = {};
     const readPref = (name) => (name in store ? store[name] : null);
     const savePref = (key, value) => { store[key.replace("sheepit.", "")] = value; };
   `;
   return new Function(
     `${PRELUDE}${src.slice(from, to)}
-     return { state, store, elAgentPicker, orderAgents, groupByProject, bornAt, wantsInput,
+     return { state, store, orderAgents, groupByProject, bornAt, wantsInput, listBusy,
               projectKey, tabName, tabNumber, reorder, insertIndexFor, loadOrder, saveOrder };`
   )();
 }
@@ -125,8 +126,8 @@ function row(pane, ws, project, status, extra = {}) {
   };
 }
 
-function order(agents, pickerHidden = true, held = [], custom = []) {
-  const f = loadFlock(pickerHidden);
+function order(agents, busy = false, held = [], custom = []) {
+  const f = loadFlock(busy);
   f.state.agents = agents;
   f.state.order = held;
   f.state.customOrder = custom;
@@ -285,11 +286,34 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     row("wA:p1", 1, "/p/api", "working"),
     row("wB:p1", 2, "/p/web", "blocked"),
   ];
-  // The list somebody is reading was drawn before the question appeared.
-  const f = order(agents, false, ["wA:p1", "wB:p1"]);
-  check("an open picker does not reshuffle",
+  // The list under the thumb was drawn before the question appeared.
+  const f = order(agents, true, ["wA:p1", "wB:p1"]);
+  check("a hand on the list does not reshuffle",
         f.state.agents.map((a) => a.pane_id), ["wA:p1", "wB:p1"]);
   check("and still draws its groups", f.state.groups.map((g) => g.key), ["/p/api", "/p/web"]);
+}
+
+{
+  /* And lets go of it. The flock is the home screen, so a hold that lasted as
+     long as the list was on screen would last the session, and the question
+     that rises to the top is the whole point of the overview. */
+  const agents = [
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wB:p1", 2, "/p/web", "blocked"),
+  ];
+  const f = order(agents, false, ["wA:p1", "wB:p1"]);
+  check("a list nobody is touching lets the question rise",
+        f.state.agents.map((a) => a.pane_id), ["wB:p1", "wA:p1"]);
+}
+
+{
+  // The seconds after a finger lifts count as a hand on the list: a row must
+  // not move out from under the tap that is already on its way.
+  const f = loadFlock();
+  f.state.listTouchedAt = Date.now();
+  check("a list just touched is still held", f.listBusy(), true);
+  f.state.listTouchedAt = Date.now() - 10000;
+  check("and lets go once it settles", f.listBusy(), false);
 }
 
 {
@@ -299,7 +323,7 @@ function order(agents, pickerHidden = true, held = [], custom = []) {
     row("wA:p1", 1, "/p/api", "working"),
     row("wB:p1", 2, "/p/web", "working"),
     row("wA:p2", 1, "/p/api", "working"),
-  ], false, ["wA:p1", "wB:p1"]);
+  ], true, ["wA:p1", "wB:p1"]);
   check("a new pane joins its project", f.state.groups.map((g) => g.agents.map((a) => a.pane_id)),
         [["wA:p1", "wA:p2"], ["wB:p1"]]);
 }
