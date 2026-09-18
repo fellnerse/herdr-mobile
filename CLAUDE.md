@@ -111,6 +111,20 @@ left column and `closePicker` becomes a no-op, so nothing there can leave the
 list off screen. A pane is still selected behind the flock — with `open` false,
 so the transcript is warm without the screen jumping into it.
 
+**The overview collapses those rows to one per workspace** (`byWorkspace` in
+`app.js`): a row is a pen, so it can offer Close and Remove honestly — every
+action in the swipe drawer acts on the workspace, and when a row was a tab,
+closing one stopped the whole branch and took its neighbours with it. The row
+says `3 tabs` and is led by the tab that needs you most (`urgency`: blocked,
+done, working, idle, shell), which is also the pane it opens. Its sheep is
+hashed from the workspace (`penSeed`) rather than the leading pane, or the
+animal would change face whenever another tab started asking something. The
+tabs themselves are reached in the strip above the transcript
+(`tabStripHtml`), the only place one tab is switched, renamed (`tab.rename`) or
+closed (`tab.close`) — and the only place another is opened (`tab.create`).
+No `×` on the last tab: Herdr closes the workspace along with it, which is the
+row's own Close.
+
 **The phone groups those rows by project, not by workspace** (`groupByProject`
 in `app.js`): the key is `worktree.repo_root` as read by `project_of`, so the
 scheduler's `sheep/` worktrees sit under the repository they were cut from. The
@@ -132,8 +146,8 @@ tested exhaustively. `state_change_seq` orders nothing; it feeds the "3m" label.
 
 **Renames go through Herdr** (`workspace.rename`, `tab.rename`) rather than
 being kept phone-side, so the desktop's workspace strip and tab bar change too.
-A row is a tab, so Rename is `tab.rename` — except on a workspace holding one
-tab, where it renames the workspace (`renameRow`). A tab's *displayed* number is
+A row is a worktree, so Rename is `workspace.rename` (`renameRow`); a single
+tab is renamed by holding its chip in the strip (`renameTabByPane`). A tab's *displayed* number is
 its `label`, not its `number` — see `tabNumber`.
 
 **The queue waits for the window.** Prompts from the phone go to `/api/queue`
@@ -163,6 +177,21 @@ the overview is open. Both are bucketed before they reach the list signature: a
 field that moved a third of a percent must not redraw the row and restart every
 sheep mid-chew. `docs/design.md` is the detail.
 
+**The machine is the other wall.** Under the usage windows the strip draws the
+host — cpu, ram, swap, disk, network and load average, two to a line, read by
+`gateway/machine.py` (`/proc` on Linux, `sysctl`/`vm_stat`/`netstat` on macOS,
+standard library like everything else) and carried on the same
+`/api/queue/quota` poll rather than one of its own, because a machine with six
+builds on it and a subscription that is nearly gone feel identical from the
+phone. The three rates come from one pass of every counter against one previous
+pass, so the span is the poll interval rather than a sleep. What it refuses to
+do is the part to keep: used memory is what is not *available* and never what
+is not free, time waiting on a disk is not busy, partitions and device-mapper
+views are not counted on top of the drive they are part of, overlays like
+`tailscale0` are not counted on top of the wire they ride on, and a rate of
+nothing (`0`) is not a counter nobody keeps (`—`). `docs/design.md` is the
+detail.
+
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's
 `StatusWatcher` thread parked when it saw the transition (TTL 120s, applied on
@@ -186,11 +215,14 @@ refuses paths that escape the pane's directory.
   `function renderTranscript(text)` (transcript), `function statusLabel(file)` →
   `elBtnChanges.addEventListener` (diff), `const DRAFTS_KEY` →
   `/* Stamp anything whose sequence moved` (drafts). Check the anchors in
-  `tools/test-*.js` after refactoring `app.js`. `test-flock.js` slices three
+  `tools/test-*.js` after refactoring `app.js`. `test-flock.js` slices four
   times: `/* ---- The flock ---` → `// Opening a project is activity too`
-  (the order), `function agentRowHtml(` → `async function createWorkspace() {`
-  (a row's markup), and `const POSE = {` → `/* Everything a row draws.` (the
-  sheep and their markings).
+  (the order, and the collapse to one row per workspace),
+  `function agentListSignature() {` → `async function createWorkspace() {`
+  (a row's markup), `// In the order the laptop's tab bar has them` →
+  `// Render Metadata (lives in the settings sheet)` (the tab strip), and
+  `const POSE = {` → `/* Everything a row draws.` (the sheep and their
+  markings).
 - **The gateway runs on Python 3.9.** The menubar app launches it with the
   python Xcode ships, so `str | None` outside `from __future__ import
   annotations` is a `TypeError` at import - and the only symptom is the menubar

@@ -23,6 +23,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import push
 import gitdiff
+import machine
 import wsproto
 from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
 from terminal import TerminalStream, TerminalError
@@ -1174,6 +1175,54 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "label": label})
                 return
 
+        # API: Another tab in a workspace that is already open
+        # /api/tabs   {"workspace_id": ..., "cwd": ...}
+        #
+        # A tab, not a workspace: the phone asks for this from inside a
+        # worktree, and a second agent on the same branch belongs beside the
+        # first rather than in a checkout of its own. `cwd` is the directory
+        # the tab it was asked from is sitting in, so the new tab opens where
+        # its neighbours are rather than wherever the workspace was created.
+        if path == "/api/tabs":
+            workspace_id = (body.get("workspace_id") or "").strip()
+            if not workspace_id:
+                self.send_json({"ok": False, "error": "No workspace to add a tab to"}, 400)
+                return
+            params = {"workspace_id": workspace_id, "focus": False}
+            if cwd := (body.get("cwd") or "").strip():
+                params["cwd"] = cwd
+            res = call_herdr_rpc("tab.create", params)
+            if "error" in res:
+                self.send_json(res, 400)
+                return
+            result = res.get("result", {})
+            self.send_json({
+                "ok": True,
+                # What the phone opens next, without waiting for a poll to
+                # tell it which row is new.
+                "pane_id": (result.get("root_pane") or {}).get("pane_id", ""),
+                "tab_id": (result.get("tab") or {}).get("tab_id", ""),
+            })
+            return
+
+        # API: Close one tab, leaving the workspace and its other tabs alone
+        # /api/tabs/{tab_id}/close
+        #
+        # The counterpart to workspace.close, and the reason the overview lists
+        # worktrees rather than tabs: closing a tab used to mean closing
+        # everything the worktree was holding. Herdr takes the workspace with
+        # the last tab in it, which is the one case where this does more than
+        # it says - so the phone only offers it where there is another tab.
+        if path.startswith("/api/tabs/") and path.endswith("/close"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                res = call_herdr_rpc("tab.close", {"tab_id": unquote(parts[3])})
+                if "error" in res:
+                    self.send_json(res, 400)
+                    return
+                self.send_json({"ok": True})
+                return
+
         # Prompts do not have a direct route any more: everything the phone
         # sends goes through /api/queue, which is what lets a message typed at
         # 4am wait for the window instead of failing against an empty one.
@@ -1521,6 +1570,10 @@ def quota_payload() -> dict:
     return {
         "threshold": sched_config.load().threshold,
         "agents": readings,
+        # What the machine itself has left, beside what the subscriptions have:
+        # it rides on this poll rather than one of its own, because it is read
+        # at the same moment, for the same glance.
+        "machine": machine.snapshot(),
         # One line for the whole machine, for anything that wants a yes or no.
         "blocked": all(r["blocked"] for r in readings) if readings else False,
     }

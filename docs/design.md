@@ -103,6 +103,49 @@ agent's name in the usage strip, where it is a rate in percent an hour.
 Only the blade at the muzzle moves. Eight swaying blades on every row of a list
 is a battery bill, not a meadow.
 
+### The machine is the other wall
+
+Under the subscriptions' windows, in the same columns, sits the computer
+itself: hostname, one-minute load average under it, then five readings two to a
+line — `cpu`, `ram` and `swap` as bars in percent of the whole machine, `disk`
+and `net` as throughput. The core count sits beside the CPU bar because 100% of
+two is not 100% of sixteen, and the installed total beside memory and swap, in
+the column the reset times use. `gateway/machine.py` takes it — `/proc` on
+Linux, `sysctl`, `vm_stat` and `netstat` on macOS, no third-party package — and
+it rides on the usage poll rather than one of its own, because it answers the
+same glance.
+
+The continuation rows carry an empty name column rather than starting at the
+margin: a wrapped flex item lands half a column left of the readings above it,
+and five bars that do not line up are harder to read than three that do.
+
+Three of the five are rates, and a rate is the difference between two readings.
+All the counters are therefore read in one pass against one previous pass, so
+the span is the phone's own polling interval — an honest average over the last
+thirty seconds. The first paint has nothing to subtract from and samples a
+tenth of a second instead, which is coarse and says so by being the only
+reading taken that way.
+
+What the numbers refuse to do matters more than what they do:
+
+- **Used memory is what is not *available*, never what is not free.** Linux
+  spends every spare page on cache and hands it back on demand; macOS counts
+  active, wired and compressed. Free memory on a healthy machine reads as a
+  machine about to die.
+- **Waiting on a disk is not being busy.** A build blocked on IO would
+  otherwise turn every build into 100% CPU.
+- **Nothing is counted twice.** `sda1` is part of `sda` and `dm-3` is a view of
+  it again, so only whole drives count; Tailscale's traffic leaves through
+  `eth0` as well, wrapped, so overlays and bridges are left out and the wire is
+  counted once.
+- **Measured-and-idle is not the same as not measured.** A rate of nothing
+  prints `0`, a counter this operating system does not keep prints `—`, and a
+  machine with swap turned off gets no swap bar at all rather than an empty one.
+
+Amber at 75% and red at 95%, the same colours the windows use — except swap,
+which is amber at 25% and red at 60%: memory at three quarters is a machine
+doing its job, swap at three quarters is a machine already paying for it.
+
 ### The sheep says which one it is
 
 Two agents on one project used to be the same animal twice, and grouping the
@@ -215,6 +258,12 @@ A question still outranks a finished turn — it has work stopped mid-air, where
 a finished agent has already put its work down. Two projects waiting the same
 way do not fight: creation order breaks the tie.
 
+The panes are sorted before they are collapsed into pens, so what actually
+rises is the workspace the waiting tab is in — and that is the tab the row is
+already wearing, since [the tab a row speaks for](#tabs) is picked by the same
+preference. The row you see float is the row that opens on the thing that
+floated it.
+
 None of it moves while a hand is on it. A state change that reorders rows under
 a thumb about to tap one is the failure this whole section is about, so the
 last drawn order is held through a touch, a swipe, a carried project or a
@@ -260,20 +309,39 @@ with the whole four-by-four of it checked in `tools/test-flock.js`.
 
 ## Tabs
 
-A workspace has tabs — the laptop shows them in its tab bar, and the phone used
-to show whichever of them had an agent in it. Now every tab is a row, including
-the ones running nothing but a shell, which is what you want when the thing you
-need is the `npm run dev` two tabs over. A row with no agent says `shell` where
-the others say what their agent is doing, and draws the bare ground it has
-always drawn for a pane with nobody in it.
+A workspace has tabs — the laptop shows them in its tab bar — and the overview
+does not list them. A row is the workspace: one sheep per pen, which for
+everything the scheduler cuts is one sheep per worktree. This is a change from
+listing a row per tab, and the reason is what the rows could *do*: every action
+a swipe revealed acted on the workspace, so closing what looked like one tab
+stopped the whole branch and took its neighbours with it. A row that is a
+worktree can offer Close and Remove honestly.
 
-Each row is its own sheep, so a project with one agent working and another
-waiting on an answer draws both rather than averaging them into one animal.
+All the row says about the tabs inside is how many there are — `3 tabs` on the
+small line, and nothing at all on a worktree with one, which is the common
+case. Which of them the row speaks for is whichever needs you most: a question
+first, then a turn that finished and is sitting there, then work in progress,
+and a plain shell last. That is also the pane the row opens, so the sheep, the
+status word and the tap all agree.
 
-Herdr keeps two numbers for a tab, and the phone wants the one the desktop's
-tab bar draws — which is the label, not `number`. A tab somebody has named is
-called that; a tab Herdr has only numbered is called what the laptop calls it,
-and lets its pane's title lead instead.
+The sheep is hashed from the workspace rather than the pane, so a worktree
+keeps one face for as long as it is open — hashing the leading pane would hand
+it a new animal every time another of its tabs started asking something.
+
+The tabs themselves live in a strip above the transcript: a chip each, the one
+you are reading in the accent colour. Tap to switch, hold to rename, `+` for
+another tab in the same checkout, and `×` on the chip you are in to close that
+tab alone. The `×` is absent on the last tab, because Herdr closes the
+workspace along with it — that is the row's own Close, where it says so. The
+chips scroll and the `+` does not: Herdr's tab labels are whole sentences, and
+a plus that scrolls away with them is a plus nobody knows is there.
+
+A tab running nothing but a shell is still reachable, which is what you want
+when the thing you need is the `npm run dev` two tabs over. Herdr keeps two
+numbers for a tab, and the phone wants the one the desktop's tab bar draws —
+which is the label, not `number`. A tab somebody has named is called that; a
+tab Herdr has only numbered is called what the laptop calls it, and lets its
+pane's title lead instead.
 
 ## Renaming
 
@@ -284,11 +352,13 @@ keeps no private nickname of its own: a name the machine under the desk knows
 nothing about is a name that disagrees with every other way of looking at the
 same workspace.
 
-Swipe a row left to reach Rename and Close. A row is a tab, so Rename is
-`tab.rename` — except on a workspace holding a single tab, where the name the
-row is showing is the workspace's own and renaming the tab would leave the row
-saying exactly what it said before. The row is dragged aside by however wide
-those buttons actually are rather than by a number written down twice.
+Swipe a row left to reach Rename and Close. A row is a worktree, so Rename is
+`workspace.rename` and every button in the drawer names the same workspace —
+Rename used to be handed a pane and rename the tab behind it, which on a
+two-tab worktree renamed something the row was not even showing. A single tab
+is renamed by holding its chip in the strip, where you can see which one you
+meant. The row is dragged aside by however wide those buttons actually are
+rather than by a number written down twice.
 
 ## Reading the pane
 
