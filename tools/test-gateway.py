@@ -32,6 +32,7 @@ os.environ["SHEEPIT_STATE_DIR"] = tempfile.mkdtemp(prefix="sheepit-test-")
 
 import bincode  # noqa: E402
 import gitdiff  # noqa: E402
+import machine  # noqa: E402
 import server  # noqa: E402
 import terminal  # noqa: E402
 import wsproto  # noqa: E402
@@ -1367,6 +1368,161 @@ with _mock.patch("scheduler.dispatch._push"):
     d.recover(conn, "wB:p1", "no-agent", Config())
 check("an unrecoverable resume is dropped, not typed at a shell",
       shell.typed, ["a real thing I typed"])
+
+# ---------------------------------------------------------------------------
+# The machine's own load, under the subscriptions'. The parsing is the part
+# that can be wrong quietly: a percentage read off the wrong column is still a
+# plausible-looking number, and nobody checks a bar they believe.
+
+PROC_STAT = (
+    "cpu  100 10 40 800 50 0 0 0 0 0\n"
+    "cpu0 50 5 20 400 25 0 0 0 0 0\n"
+    "intr 12345\n"
+)
+
+check("the aggregate line is read, not the first core's",
+      machine.parse_proc_stat(PROC_STAT), (150, 1000))
+
+# Idle and iowait are both "not busy": an agent waiting on a disk is not what
+# makes the machine feel buried, and counting it turns every build into 100%.
+check("waiting on a disk is not being busy",
+      machine.parse_proc_stat("cpu 0 0 0 0 100 0 0 0\n"), (0, 100))
+
+check("guest time is not counted twice",
+      machine.parse_proc_stat("cpu 1 1 1 1 1 1 1 1 900 900\n"), (6, 8))
+check("a kernel with no cpu line is an error, not a zero",
+      "cpu" in error_of(lambda: machine.parse_proc_stat("intr 1\n")), True)
+
+check("two readings are a percentage", machine.cpu_delta((0, 0), (25, 100)), 25.0)
+check("and counters that did not move are not a zero",
+      machine.cpu_delta((5, 10), (5, 10)), None)
+check("a counter that rolled over is not a negative percentage",
+      machine.cpu_delta((90, 100), (10, 200)), 0.0)
+
+# Disk. The trap here is counting the same bytes twice: sda1 is part of sda,
+# and dm-3 is a view of it again through device-mapper - on a machine with LVM
+# the naive sum reports three times the traffic that happened.
+DISKSTATS = (
+    "   7       0 loop0 0 0 0 0 0 0 0 0 0 0 0\n"
+    " 254       0 sda 100 0 200 0 50 0 400 0 0 0 0\n"
+    " 254       1 sda1 10 0 20 0 5 0 40 0 0 0 0\n"
+    " 253       3 dm-3 100 0 200 0 50 0 400 0 0 0 0\n"
+)
+
+check("only whole drives are counted, once",
+      machine.parse_diskstats(DISKSTATS, {"sda"}),
+      (200 * machine.SECTOR, 400 * machine.SECTOR))
+check("a machine whose drives are all virtual reads zero",
+      machine.parse_diskstats(DISKSTATS, set()), (0, 0))
+
+# Network. Tailscale's traffic leaves through eth0 as well, wrapped, so an
+# overlay counted beside the wire it rides on doubles every byte.
+NET_DEV = (
+    "Inter-|   Receive                        |  Transmit\n"
+    " face |bytes packets errs drop fifo frame compressed multicast|"
+    "bytes packets errs drop fifo colls carrier compressed\n"
+    "    lo: 44076351951 4385895 0 0 0 0 0 0 44076351951 4385895 0 0 0 0 0 0\n"
+    "  eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n"
+    "tailscale0: 500 5 0 0 0 0 0 0 700 7 0 0 0 0 0 0\n"
+)
+
+check("loopback and overlays are not the network", machine.parse_net_dev(NET_DEV),
+      (1000, 2000))
+
+# macOS prints a row per address, each carrying the whole interface's totals.
+NETSTAT_IB = (
+    "Name  Mtu   Network     Address        Ipkts Ierrs Ibytes Opkts Oerrs "
+    "Obytes  Coll\n"
+    "lo0   16384 <Link#1>                   9 0 900 9 0 900 0\n"
+    "en0   1500  <Link#6>    ac:de:48:00:11 5 0 1000 4 0 2000 0\n"
+    "en0   1500  192.168.1   192.168.1.5    5 - 1000 4 - 2000 -\n"
+    "utun3 1280  <Link#18>                  1 0 77 1 0 88 0\n"
+)
+
+check("an interface is counted once, not once per address",
+      machine.parse_netstat_ib(NETSTAT_IB), (1000, 2000))
+
+# Swap. A machine that is swapping is already hurting, and one with swap off
+# has no swap line at all rather than an empty bar.
+check("swap is what is not free",
+      machine.parse_swapinfo("SwapTotal: 1000 kB\nSwapFree: 250 kB\n"),
+      (1000 * 1024, 750 * 1024))
+check("and no swap is not a reading",
+      machine.parse_swapinfo("SwapTotal: 0 kB\nSwapFree: 0 kB\n"), (0, 0))
+check("macOS says it in megabytes",
+      machine.parse_swapusage("total = 2048.00M  used = 512.00M  free = 1536.00M"),
+      (2048 * 1024 * 1024, 512 * 1024 * 1024))
+check("a Mac that has never swapped has no swap file",
+      machine.parse_swapusage("total = 0.00M  used = 0.00M  free = 0.00M"), (0, 0))
+
+# Counters into rates, over a span. A counter that went backwards is a reboot
+# or a device that went away, not a negative throughput.
+before = {"cpu": (0, 0), "disk": (0, 0), "net": (100, 100)}
+after = {"cpu": (25, 100), "disk": (2048, 4096), "net": (50, 1124)}
+moved = machine.rates(before, after, 2.0)
+check("bytes become bytes a second",
+      [moved["disk"], moved["net"]],
+      [{"read": 1024.0, "write": 2048.0}, {"rx": 0.0, "tx": 512.0}])
+check("a counter this machine does not keep stays unknown",
+      machine.rates({"cpu": (0, 0), "disk": None, "net": None},
+                    {"cpu": (1, 2), "disk": None, "net": None}, 1.0)["disk"], None)
+
+MEMINFO = (
+    "MemTotal:       16000000 kB\n"
+    "MemFree:          200000 kB\n"
+    "MemAvailable:    8000000 kB\n"
+    "Buffers:          100000 kB\n"
+    "Cached:          7000000 kB\n"
+)
+
+# Linux spends every spare page on cache: a machine with 200MB free and 8GB
+# available is half used, not 99% gone, and the bar must say the former.
+check("used is what is not available, not what is not free",
+      machine.parse_meminfo(MEMINFO), (16000000 * 1024, 8000000 * 1024))
+
+NO_AVAILABLE = (
+    "MemTotal:       1000 kB\n"
+    "MemFree:         100 kB\n"
+    "Buffers:          50 kB\n"
+    "Cached:          250 kB\n"
+)
+check("an old kernel adds the cache up itself",
+      machine.parse_meminfo(NO_AVAILABLE), (1000 * 1024, 600 * 1024))
+check("and a file without a total is an error",
+      "MemTotal" in error_of(lambda: machine.parse_meminfo("MemFree: 1 kB\n")), True)
+
+VM_STAT = (
+    "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+    'Pages free:                          100.\n'
+    'Pages active:                        200.\n'
+    'Pages inactive:                      400.\n'
+    'Pages speculative:                    50.\n'
+    'Pages wired down:                    100.\n'
+    'Pages occupied by compressor:         50.\n'
+)
+
+# Inactive and speculative pages are cache by another name - the same argument
+# as MemAvailable, on the other operating system.
+check("macOS counts active, wired and compressed",
+      machine.parse_vm_stat(VM_STAT, 1000 * 16384), (1000 * 16384, 350 * 16384))
+check("and never more than the machine has",
+      machine.parse_vm_stat(VM_STAT, 100 * 16384), (100 * 16384, 100 * 16384))
+
+# The whole reading, off whatever this machine is. Nothing here is asserted
+# about the numbers themselves - only that taking them is not an exception and
+# that the phone gets the shape it draws.
+snap = machine.snapshot()
+check("a reading can be taken at all", snap.get("ok"), True)
+check("with a memory percentage in it",
+      isinstance(snap["memory"]["percent"], float), True)
+check("and a cpu percentage that is a percentage",
+      snap["cpu"] is None or 0 <= snap["cpu"] <= 100, True)
+check("every reading the strip draws is either there or honestly missing",
+      sorted(k for k in snap if snap[k] is not None or k in ("swap", "disk", "net")),
+      ["cores", "cpu", "disk", "host", "load", "memory", "net", "ok", "swap"])
+check("and nothing flows backwards",
+      all(v >= 0 for part in ("disk", "net") if snap[part]
+          for v in snap[part].values()), True)
 
 # ---------------------------------------------------------------------------
 

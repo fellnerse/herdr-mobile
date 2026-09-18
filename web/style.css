@@ -1543,6 +1543,35 @@ html, body {
   color: var(--text-muted);
 }
 
+/* The machine's own line, under the subscriptions': the same columns, so cpu
+   and ram read straight down from the windows above them, with a hairline
+   saying these are a different kind of number - percent of this computer, not
+   percent of what has been paid for. */
+.usage.machine {
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Its second and third rows: the strip's own 9px gap would read as three
+   separate things, and they are one thing that did not fit on a line. */
+.usage.machine.more {
+  padding-top: 0;
+  border-top: none;
+  margin-top: -5px;
+}
+
+/* Throughput spends the bar's column and the two number columns on one value,
+   because what it has to say is two numbers wide and none of it is a share of
+   anything. */
+.usage-window.flow {
+  grid-template-columns: 1.7rem 1fr;
+}
+
+.usage-flow {
+  text-align: right;
+  color: var(--text-muted);
+}
+
 .quota-note {
   font-size: 12px;
   color: var(--text-muted);

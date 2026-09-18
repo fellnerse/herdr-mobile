@@ -2368,8 +2368,111 @@
     const q = state.quota;
     if (!q) return '<div class="quota-note">Reading usage…</div>';
     const agents = q.agents || [];
-    if (!agents.length) return '<div class="quota-note">No agents running.</div>';
-    return agents.map((a) => agentQuotaHtml(a)).join("");
+    const lines = agents.length
+      ? agents.map((a) => agentQuotaHtml(a)).join("")
+      : '<div class="quota-note">No agents running.</div>';
+    return lines + machineHtml(q.machine);
+  }
+
+  /* And what the machine they all run on has left, under the same bars.
+
+     The subscription is one wall and the laptop is the other: four agents
+     compiling at once is slow in a way no usage window explains, and it is the
+     same glance that asks. Percentages of the whole machine, so the number
+     means the same thing on a laptop as on the box under the desk - with the
+     core count beside it, because 100% of two is not 100% of sixteen.
+
+     Swap is held to a harder line than memory: memory at three quarters is a
+     machine doing its job, swap at three quarters is a machine already paying
+     for it in page faults. */
+  const CPU_NEAR = 75;
+  const CPU_OUT = 95;
+  const SWAP_NEAR = 25;
+  const SWAP_OUT = 60;
+
+  /* Five readings and room for two of them a line, so the block is laid out in
+     pairs: cpu and ram, then whatever else this machine keeps. The continuation
+     rows carry an empty name column rather than starting at the margin, so
+     every bar sits under the one above it - a wrapped flex item would land
+     half a column to the left of the readings it belongs with. */
+  function machineHtml(m) {
+    if (!m || m.ok === false) return "";
+    const mem = m.memory || {};
+    const cells = [
+      meterHtml("cpu", m.cpu, m.cores ? `${m.cores}×` : ""),
+      meterHtml("ram", mem.percent, fmtBytes(mem.total)),
+    ];
+    // A machine with swap off has no swap line: 0% of nothing is not a fact
+    // about it. Same for the counters an operating system does not keep.
+    if (m.swap) {
+      cells.push(meterHtml("swap", m.swap.percent, fmtBytes(m.swap.total),
+                           SWAP_NEAR, SWAP_OUT));
+    }
+    if (m.disk) cells.push(flowHtml("disk", m.disk.read, m.disk.write));
+    if (m.net) cells.push(flowHtml("net", m.net.rx, m.net.tx));
+
+    const load = m.load === null || m.load === undefined
+      ? "" : `<span class="usage-rate">load ${m.load.toFixed(1)}</span>`;
+    const rows = [];
+    for (let i = 0; i < cells.length; i += 2) {
+      const head = i === 0
+        ? `<span class="usage-agent">${escapeHtml(m.host || "machine")}${load}</span>`
+        : '<span class="usage-agent" aria-hidden="true"></span>';
+      rows.push(`<div class="usage machine${i ? " more" : ""}">${
+        head}${cells.slice(i, i + 2).join("")}</div>`);
+    }
+    return rows.join("");
+  }
+
+  /* One bar, built like a usage window so the two line up column for column -
+     a reading nobody could take draws the empty bar rather than disappearing,
+     since a missing line reads as a machine with nothing running on it. */
+  function meterHtml(label, percent, trailing, near, out) {
+    const known = percent !== null && percent !== undefined && isFinite(percent);
+    const pct = known ? Math.max(0, Math.min(100, percent)) : 0;
+    const hot = out === undefined ? CPU_OUT : out;
+    const warm = near === undefined ? CPU_NEAR : near;
+    const cls = !known ? "past" : pct >= hot ? "out" : pct >= warm ? "near" : "";
+    return `
+      <span class="usage-window${cls ? " " + cls : ""}">
+        <span class="usage-label">${escapeHtml(label)}</span>
+        <span class="usage-bar"><span class="usage-fill" style="width:${pct}%"></span></span>
+        <span class="usage-pct">${known ? `${pct.toFixed(0)}%` : "—"}</span>
+        <span class="usage-when">${escapeHtml(trailing || "")}</span>
+      </span>`;
+  }
+
+  /* Throughput has no full: a disk is not 80% of anything, it is simply moving
+     this much right now. So these two get the same column as a bar but spend it
+     on both directions instead, in and out under one arrow each. */
+  function flowHtml(label, down, up) {
+    return `
+      <span class="usage-window flow">
+        <span class="usage-label">${escapeHtml(label)}</span>
+        <span class="usage-flow">↓${fmtRate(down)} ↑${fmtRate(up)}</span>
+      </span>`;
+  }
+
+  function fmtBytes(bytes) {
+    if (!bytes) return "";
+    const gb = bytes / 1073741824;
+    if (gb >= 10) return `${gb.toFixed(0)}G`;
+    if (gb >= 1) return `${gb.toFixed(1)}G`;
+    return `${Math.round(bytes / 1048576)}M`;
+  }
+
+  /* Bytes a second, in the fewest characters that still say it - two of these
+     share the width one bar gets. Under a kilobyte a second is the machine
+     breathing, and prints as a plain 0 rather than a decimal nobody wants;
+     nothing at all is a dash, because measured-and-idle and not-measured must
+     not look the same. */
+  function fmtRate(bytes) {
+    if (bytes === null || bytes === undefined || !isFinite(bytes)) return "—";
+    const mb = bytes / 1048576;
+    if (mb >= 10) return `${mb.toFixed(0)}M`;
+    if (mb >= 1) return `${mb.toFixed(1)}M`;
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)}k`;
+    return "0";
   }
 
   // "five_hour" is what the endpoint calls it; "5h" is what fits on a phone.

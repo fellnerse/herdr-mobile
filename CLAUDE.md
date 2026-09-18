@@ -161,6 +161,21 @@ the overview is open. Both are bucketed before they reach the list signature: a
 field that moved a third of a percent must not redraw the row and restart every
 sheep mid-chew. `docs/design.md` is the detail.
 
+**The machine is the other wall.** Under the usage windows the strip draws the
+host — cpu, ram, swap, disk, network and load average, two to a line, read by
+`gateway/machine.py` (`/proc` on Linux, `sysctl`/`vm_stat`/`netstat` on macOS,
+standard library like everything else) and carried on the same
+`/api/queue/quota` poll rather than one of its own, because a machine with six
+builds on it and a subscription that is nearly gone feel identical from the
+phone. The three rates come from one pass of every counter against one previous
+pass, so the span is the poll interval rather than a sleep. What it refuses to
+do is the part to keep: used memory is what is not *available* and never what
+is not free, time waiting on a disk is not busy, partitions and device-mapper
+views are not counted on top of the drive they are part of, overlays like
+`tailscale0` are not counted on top of the wire they ride on, and a rate of
+nothing (`0`) is not a counter nobody keeps (`—`). `docs/design.md` is the
+detail.
+
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's
 `StatusWatcher` thread parked when it saw the transition (TTL 120s, applied on
