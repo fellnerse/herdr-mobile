@@ -3166,11 +3166,11 @@
    * project's sheep stay where you last saw them, and a new one joins the end
    * of its own project rather than jumping to the front of everything.
    *
-   * The single exception is an agent stopped on a question. It is the only
-   * state that goes nowhere at all without you, so it rises to the top of its
-   * project and carries its project to the top of the list - until a finger
-   * says otherwise, because an order somebody made by hand is a promise that
-   * the project stays where it was put.
+   * The exception is a sheep that is waiting on you, and there are two ways to
+   * be: stopped on a question, and finished a turn nobody has read yet. Both
+   * rise to the top of their project and carry their project to the top of the
+   * list - until a finger says otherwise, because an order somebody made by
+   * hand is a promise that the project stays where it was put.
    * ------------------------------------------------------------------------ */
 
   /* When a row was created, as a number that only ever grows. Herdr numbers
@@ -3182,9 +3182,32 @@
     return (Number.isFinite(ws) ? ws : Number.MAX_SAFE_INTEGER) * 1000 + pane;
   }
 
-  // The one thing nothing moves off without you: an agent asking a question.
+  /* How badly a row wants you, as a number to sort on. Herdr has no separate
+     "you have not looked at this yet" flag - what it has is `done`, which is
+     the state it puts a pane in when the turn ended, and which the agent
+     leaves the moment anything happens in it. That is near enough to unread:
+     a finished agent is owed an answer exactly as much as a blocked one is,
+     and leaving it at the bottom of its project is how a turn that ended an
+     hour ago goes unnoticed. It is the same pair the badge counts and the
+     same pair a push fires for, so the list now agrees with both.
+
+     A question still outranks a finished turn. An agent on a prompt has its
+     work sitting half-done on screen; a finished one has already put its work
+     down, and can wait the length of a scroll.
+
+     `URGENCY` further down ranks the same two states the same way round, for a
+     different question: which tab a pen's row speaks for. Both agreeing is
+     what makes a row that floats open on the tab that floated it - keep them
+     that way if either changes. */
+  const ATTENTION = { blocked: 2, done: 1 };
+
+  function attentionOf(agent) {
+    return (agent.has_agent && ATTENTION[agent.status]) || 0;
+  }
+
+  // Nothing here moves on without you.
   function wantsInput(agent) {
-    return agent.has_agent && agent.status === "blocked";
+    return attentionOf(agent) > 0;
   }
 
   /* Which project a row belongs under. The gateway reads it off Herdr's
@@ -3345,7 +3368,7 @@
 
   /* A hand-made order wins over both rules above it: a project put third stays
      third even when one of its agents starts asking something. Inside a
-     project the question still rises - that costs nothing, since a project
+     project the waiting sheep still rise - that costs nothing, since a project
      stays where the finger left it either way. */
   function sortGroups(groups) {
     const rank = new Map(state.customOrder.map((key, i) => [key, i]));
@@ -3354,7 +3377,7 @@
       groups.sort((a, b) => at(a.key) - at(b.key) || a.born - b.born);
       return;
     }
-    groups.sort((a, b) => Number(b.wants) - Number(a.wants) || a.born - b.born);
+    groups.sort((a, b) => b.wants - a.wants || a.born - b.born);
   }
 
   /* Never reshuffle a list under a hand: an agent changing state would slide a
@@ -3389,9 +3412,11 @@
     const groups = groupByProject(state.agents);
     for (const group of groups) {
       group.agents.sort(
-        (a, b) => Number(wantsInput(b)) - Number(wantsInput(a)) || bornAt(a) - bornAt(b)
+        (a, b) => attentionOf(b) - attentionOf(a) || bornAt(a) - bornAt(b)
       );
-      group.wants = group.agents.some(wantsInput);
+      // A project is as loud as its loudest sheep: a question ahead of a
+      // finished turn, both ahead of a project that wants nothing.
+      group.wants = Math.max(0, ...group.agents.map(attentionOf));
       group.born = Math.min(...group.agents.map(bornAt));
     }
     sortGroups(groups);
