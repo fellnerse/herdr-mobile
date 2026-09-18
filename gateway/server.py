@@ -23,6 +23,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import push
 import gitdiff
+import machine
 import wsproto
 from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
 from terminal import TerminalStream, TerminalError
@@ -1521,6 +1522,10 @@ def quota_payload() -> dict:
     return {
         "threshold": sched_config.load().threshold,
         "agents": readings,
+        # What the machine itself has left, beside what the subscriptions have:
+        # it rides on this poll rather than one of its own, because it is read
+        # at the same moment, for the same glance.
+        "machine": machine.snapshot(),
         # One line for the whole machine, for anything that wants a yes or no.
         "blocked": all(r["blocked"] for r in readings) if readings else False,
     }

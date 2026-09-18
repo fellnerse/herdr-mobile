@@ -103,6 +103,49 @@ agent's name in the usage strip, where it is a rate in percent an hour.
 Only the blade at the muzzle moves. Eight swaying blades on every row of a list
 is a battery bill, not a meadow.
 
+### The machine is the other wall
+
+Under the subscriptions' windows, in the same columns, sits the computer
+itself: hostname, one-minute load average under it, then five readings two to a
+line — `cpu`, `ram` and `swap` as bars in percent of the whole machine, `disk`
+and `net` as throughput. The core count sits beside the CPU bar because 100% of
+two is not 100% of sixteen, and the installed total beside memory and swap, in
+the column the reset times use. `gateway/machine.py` takes it — `/proc` on
+Linux, `sysctl`, `vm_stat` and `netstat` on macOS, no third-party package — and
+it rides on the usage poll rather than one of its own, because it answers the
+same glance.
+
+The continuation rows carry an empty name column rather than starting at the
+margin: a wrapped flex item lands half a column left of the readings above it,
+and five bars that do not line up are harder to read than three that do.
+
+Three of the five are rates, and a rate is the difference between two readings.
+All the counters are therefore read in one pass against one previous pass, so
+the span is the phone's own polling interval — an honest average over the last
+thirty seconds. The first paint has nothing to subtract from and samples a
+tenth of a second instead, which is coarse and says so by being the only
+reading taken that way.
+
+What the numbers refuse to do matters more than what they do:
+
+- **Used memory is what is not *available*, never what is not free.** Linux
+  spends every spare page on cache and hands it back on demand; macOS counts
+  active, wired and compressed. Free memory on a healthy machine reads as a
+  machine about to die.
+- **Waiting on a disk is not being busy.** A build blocked on IO would
+  otherwise turn every build into 100% CPU.
+- **Nothing is counted twice.** `sda1` is part of `sda` and `dm-3` is a view of
+  it again, so only whole drives count; Tailscale's traffic leaves through
+  `eth0` as well, wrapped, so overlays and bridges are left out and the wire is
+  counted once.
+- **Measured-and-idle is not the same as not measured.** A rate of nothing
+  prints `0`, a counter this operating system does not keep prints `—`, and a
+  machine with swap turned off gets no swap bar at all rather than an empty one.
+
+Amber at 75% and red at 95%, the same colours the windows use — except swap,
+which is amber at 25% and red at 60%: memory at three quarters is a machine
+doing its job, swap at three quarters is a machine already paying for it.
+
 ### The sheep says which one it is
 
 Two agents on one project used to be the same animal twice, and grouping the

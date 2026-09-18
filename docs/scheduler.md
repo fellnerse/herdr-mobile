@@ -283,7 +283,7 @@ it.
 | | |
 |---|---|
 | `GET /api/queue` | queued prompts; `?pane_id=` or `?state=` to filter |
-| `GET /api/queue/quota` | usage windows per agent: what each has spent, when it resets, and whether it is out |
+| `GET /api/queue/quota` | usage windows per agent: what each has spent, when it resets, and whether it is out — plus `machine`, the host's own cpu, memory, swap, disk, network and load |
 | `POST /api/queue` | `{prompt, pane_id}` — the only send path; answers `delivered: "terminal"` when the pane had no agent and the text was typed instead |
 | `POST /api/queue/{id}/update` | `{prompt}`, while it is still waiting |
 | `POST /api/queue/{id}/send` | hand it over now, whatever the agent is doing |
