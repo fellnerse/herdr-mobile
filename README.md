@@ -42,8 +42,9 @@ project telling you at a glance who is working and who is waiting.
   is *doing* is the coloured spine down the row and the pose it stands in:
   grazing while it works, head up when idle, ear pricked when blocked, asleep
   when done. Grouped under the repository they work in — worktrees included —
-  in the order they were started, with whoever is asking you a question on top,
-  until you drag the projects into an order of your own.
+  in the order they were started, with whoever is waiting on you on top — a
+  question first, then a turn that finished and nobody has read — until you
+  drag the projects into an order of your own.
 - **Every tab of a project**, not just the ones with an agent in them: shells
   included, each with its own row and its own sheep, the way they sit in the
   laptop's tab bar. The row you want at 11pm is often the one running the dev
@@ -240,18 +241,19 @@ cut from rather than in a project each. Under a heading is every tab of it,
 shells included, each with its own sheep and its own status: the tabs of a
 workspace the way the laptop's tab bar has them.
 
-Sheep stay in the order they were started; the one exception is an agent
-stopped on a question, which rises to the top of its project and takes its
-project to the top of the list. Nothing else moves, and nothing moves at all
-while you are looking at it. Above the list is what is left of the usage
+Sheep stay in the order they were started; the exception is a sheep waiting on
+you — an agent stopped on a question, or one that finished a turn nobody has
+read yet — which rises to the top of its project and takes its project to the
+top of the list, the question ahead of the finished turn. Nothing else moves,
+and nothing moves at all while you are looking at it. Above the list is what is left of the usage
 window.
 
 **Order.** **Hold a row for a moment** and its project lifts off the list to be
 dragged somewhere else. The new order is kept on the phone, and pushed back to
 Herdr when the project is a single workspace, so the laptop's strip reorders to
 match. Let go near the top or bottom and the list scrolls itself. An order you
-made by hand stays made: after a drag, a question no longer pulls a project to
-the front.
+made by hand stays made: after a drag, nothing waiting pulls a project to the
+front.
 
 **Rename.** Swipe a row left for **Rename** and **Close**. Rename changes the
 tab's name, or the workspace's when the workspace has only that one tab. These

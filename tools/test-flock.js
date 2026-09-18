@@ -39,7 +39,7 @@ function loadRows() {
     const sheepMarks = (seed) => ({ breed: { id: "test", fleece: "#abcdef", face: "#123456" },
                                     horn: "curl", coat: "woolly", muzzle: false });
     const agoLabel = () => "";
-    const wantsInput = (a) => a.status === "blocked";
+    const wantsInput = (a) => a.status === "blocked" || a.status === "done";
   `;
   // What a tab is called is tested on its own further down; a row is asked
   // here with the real thing rather than a stub that could agree with nothing.
@@ -209,8 +209,8 @@ function order(agents, busy = false, held = [], custom = []) {
 {
   const f = order([
     row("wC:p1", 3, "/p/api", "working"),
-    row("wA:p1", 1, "/p/api", "done"),
-    row("wB:p1", 2, "/p/api", "idle"),
+    row("wA:p1", 1, "/p/api", "idle"),
+    row("wB:p1", 2, "/p/api", "working"),
   ]);
   check("creation order, whatever the agents are doing",
         f.state.groups[0].agents.map((a) => a.pane_id), ["wA:p1", "wB:p1", "wC:p1"]);
@@ -218,11 +218,36 @@ function order(agents, busy = false, held = [], custom = []) {
 
 {
   const f = order([
-    row("wA:p1", 1, "/p/api", "done"),
+    row("wA:p1", 1, "/p/api", "idle"),
     row("wB:p1", 2, "/p/api", "working"),
     row("wC:p1", 3, "/p/api", "blocked"),
   ]);
   check("a question comes first",
+        f.state.groups[0].agents.map((a) => a.pane_id), ["wC:p1", "wA:p1", "wB:p1"]);
+}
+
+/* The other way of waiting: a turn that ended and nobody has read. Herdr keeps
+   the pane in `done` until something happens in it, which is the closest thing
+   it has to unread - and a finished agent left at the bottom of its project is
+   an answer nobody goes back for. */
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "idle"),
+    row("wB:p1", 2, "/p/api", "working"),
+    row("wC:p1", 3, "/p/api", "done"),
+  ]);
+  check("a finished turn rises too",
+        f.state.groups[0].agents.map((a) => a.pane_id), ["wC:p1", "wA:p1", "wB:p1"]);
+}
+
+// A question is still the louder of the two: it has work stopped mid-air.
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "done"),
+    row("wB:p1", 2, "/p/api", "working"),
+    row("wC:p1", 3, "/p/api", "blocked"),
+  ]);
+  check("a question outranks a finished turn",
         f.state.groups[0].agents.map((a) => a.pane_id), ["wC:p1", "wA:p1", "wB:p1"]);
 }
 
@@ -262,10 +287,22 @@ function order(agents, busy = false, held = [], custom = []) {
   const f = order([
     row("wA:p1", 1, "/p/api", "working"),
     row("wB:p1", 2, "/p/web", "blocked"),
-    row("wC:p1", 3, "/p/cli", "done"),
+    row("wC:p1", 3, "/p/cli", "idle"),
   ]);
   check("a project with a question floats",
         f.state.groups.map((g) => g.key), ["/p/web", "/p/api", "/p/cli"]);
+}
+
+/* A project carries its loudest sheep: the question first, then the project
+   holding a finished turn, then the ones getting on with it. */
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wB:p1", 2, "/p/web", "done"),
+    row("wC:p1", 3, "/p/cli", "blocked"),
+  ]);
+  check("a finished turn floats its project, under a question",
+        f.state.groups.map((g) => g.key), ["/p/cli", "/p/web", "/p/api"]);
 }
 
 // Two waiting projects do not fight: creation order breaks the tie.

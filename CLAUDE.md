@@ -118,11 +118,13 @@ list is only redrawn when its signature changes — a blind redraw restarts ever
 sheep animation, drops a row held open by a swipe, and pulls the floor out from
 under a project being dragged.
 
-**Order is creation order, then a question, then a finger.** Rows sort by
-`bornAt` (workspace `number` × 1000 + pane index — Herdr exposes no creation
-date anywhere, and never renumbers); an agent `blocked` on a question rises to
-the top of its project and takes the project with it; a drag overrides both and
-is saved to `localStorage` (`sortGroups`). The drag also calls `workspace.move`,
+**Order is creation order, then whoever is waiting, then a finger.** Rows sort
+by `bornAt` (workspace `number` × 1000 + pane index — Herdr exposes no creation
+date anywhere, and never renumbers); an agent waiting on you rises to the top
+of its project and takes the project with it, ranked by `ATTENTION` in
+`app.js` — `blocked` above `done`, which is as close to "unread" as Herdr's
+status vocabulary gets and the same pair the badge and the pushes use; a drag
+overrides both and is saved to `localStorage` (`sortGroups`). The drag also calls `workspace.move`,
 but only when the project is a single workspace — a project is a repository and
 Herdr reorders workspaces. `workspace.move` counts the workspace being moved
 when it resolves `insert_index`, which is why `insertIndexFor` exists and is

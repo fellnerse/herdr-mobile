@@ -201,10 +201,19 @@ directory stands in. Inside a project, rows sort by when they were created —
 Herdr numbers workspaces as they are opened and never renumbers them, and a
 pane's own index orders the several agents one workspace can hold.
 
-One thing overrides that: an agent stopped on a question. It is the only state
-that goes nowhere without you, so it rises to the top of its project and
-carries its project to the top of the list. Two waiting projects do not fight —
-creation order breaks the tie.
+One thing overrides that: a sheep waiting on you. Two states are, and both rise
+to the top of their project and carry their project to the top of the list — an
+agent stopped on a question, and one whose turn ended with nobody having read
+it. Herdr has no unread flag to offer; what it has is `done`, the state a pane
+sits in from the end of a turn until something happens in it, which is near
+enough. It is the same pair the icon badge counts and the same pair earns a
+push, so the order of the list now agrees with both: a finished agent that used
+to sit wherever it was created, under four working ones, is where the answer it
+is owed can be given.
+
+A question still outranks a finished turn — it has work stopped mid-air, where
+a finished agent has already put its work down. Two projects waiting the same
+way do not fight: creation order breaks the tie.
 
 None of it moves while a hand is on it. A state change that reorders rows under
 a thumb about to tap one is the failure this whole section is about, so the
@@ -212,7 +221,7 @@ last drawn order is held through a touch, a swipe, a carried project or a
 scroll, and for three seconds after the finger lifts. It used to be held for as
 long as the list was open, which was the length of a glance; now that the flock
 is the screen the app opens on, that would have been the length of the session,
-and the question that rises to the top would never have risen.
+and nothing waiting on you would ever have risen.
 
 Herdr still exposes no timestamps, and `state_change_seq` is still watched: the
 phone stamps a wall-clock time whenever it moves — or whenever you open a
@@ -228,9 +237,10 @@ the list to be carried somewhere else, and where it lands is kept in
 `localStorage` so the list is right before the next poll rather than after it.
 
 An order made by hand outranks both rules above it — a project put third stays
-third, and a question no longer pulls it to the front, because a list somebody
+third, and nothing waiting pulls it to the front, because a list somebody
 arranged and a list that rearranges itself cannot both be true. Inside a
-project the question still rises: the project is not going anywhere either way.
+project a waiting sheep still rises: the project is not going anywhere either
+way.
 A project the saved order has never seen — made since the last drag — falls
 back to when it was created, which is the end.
 
