@@ -188,6 +188,8 @@ Two consequences worth knowing:
 | `POST /api/agents/{pane}/attach` | An image, as raw bytes with its own `Content-Type`. Written to `.sheepit/` beside the agent's work and excluded from git; answers with the path to put in a prompt. |
 | `POST /api/workspaces`, `/api/workspaces/{id}/close` | Starting and closing projects. |
 | `POST /api/workspaces/{id}/rename`, `/api/tabs/{id}/rename` | Herdr's own labels, so the laptop is renamed too. |
+| `POST /api/tabs` | Another tab in a workspace that is already open — a second agent on the same branch rather than a checkout of its own. |
+| `POST /api/tabs/{id}/close` | One tab, leaving the workspace and its other tabs alone. Only offered where another tab is left, since Herdr takes the workspace with its last one. |
 | `POST /api/workspaces/{id}/move` | Where a dragged project lands in Herdr's own order. |
 | `POST /api/worktrees` | Another worktree off a project: `git worktree add` and a workspace opened on it, the way a right-click on a space does it on the desktop. |
 | `POST /api/worktrees/{id}/remove` | The checkout as well as the workspace. `force` is only sent after Herdr has refused a checkout with uncommitted work in it and the phone has asked a second time. Answers with the branch it left behind. |
