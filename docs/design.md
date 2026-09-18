@@ -293,20 +293,39 @@ with the whole four-by-four of it checked in `tools/test-flock.js`.
 
 ## Tabs
 
-A workspace has tabs — the laptop shows them in its tab bar, and the phone used
-to show whichever of them had an agent in it. Now every tab is a row, including
-the ones running nothing but a shell, which is what you want when the thing you
-need is the `npm run dev` two tabs over. A row with no agent says `shell` where
-the others say what their agent is doing, and draws the bare ground it has
-always drawn for a pane with nobody in it.
+A workspace has tabs — the laptop shows them in its tab bar — and the overview
+does not list them. A row is the workspace: one sheep per pen, which for
+everything the scheduler cuts is one sheep per worktree. This is a change from
+listing a row per tab, and the reason is what the rows could *do*: every action
+a swipe revealed acted on the workspace, so closing what looked like one tab
+stopped the whole branch and took its neighbours with it. A row that is a
+worktree can offer Close and Remove honestly.
 
-Each row is its own sheep, so a project with one agent working and another
-waiting on an answer draws both rather than averaging them into one animal.
+All the row says about the tabs inside is how many there are — `3 tabs` on the
+small line, and nothing at all on a worktree with one, which is the common
+case. Which of them the row speaks for is whichever needs you most: a question
+first, then a turn that finished and is sitting there, then work in progress,
+and a plain shell last. That is also the pane the row opens, so the sheep, the
+status word and the tap all agree.
 
-Herdr keeps two numbers for a tab, and the phone wants the one the desktop's
-tab bar draws — which is the label, not `number`. A tab somebody has named is
-called that; a tab Herdr has only numbered is called what the laptop calls it,
-and lets its pane's title lead instead.
+The sheep is hashed from the workspace rather than the pane, so a worktree
+keeps one face for as long as it is open — hashing the leading pane would hand
+it a new animal every time another of its tabs started asking something.
+
+The tabs themselves live in a strip above the transcript: a chip each, the one
+you are reading in the accent colour. Tap to switch, hold to rename, `+` for
+another tab in the same checkout, and `×` on the chip you are in to close that
+tab alone. The `×` is absent on the last tab, because Herdr closes the
+workspace along with it — that is the row's own Close, where it says so. The
+chips scroll and the `+` does not: Herdr's tab labels are whole sentences, and
+a plus that scrolls away with them is a plus nobody knows is there.
+
+A tab running nothing but a shell is still reachable, which is what you want
+when the thing you need is the `npm run dev` two tabs over. Herdr keeps two
+numbers for a tab, and the phone wants the one the desktop's tab bar draws —
+which is the label, not `number`. A tab somebody has named is called that; a
+tab Herdr has only numbered is called what the laptop calls it, and lets its
+pane's title lead instead.
 
 ## Renaming
 
@@ -317,11 +336,13 @@ keeps no private nickname of its own: a name the machine under the desk knows
 nothing about is a name that disagrees with every other way of looking at the
 same workspace.
 
-Swipe a row left to reach Rename and Close. A row is a tab, so Rename is
-`tab.rename` — except on a workspace holding a single tab, where the name the
-row is showing is the workspace's own and renaming the tab would leave the row
-saying exactly what it said before. The row is dragged aside by however wide
-those buttons actually are rather than by a number written down twice.
+Swipe a row left to reach Rename and Close. A row is a worktree, so Rename is
+`workspace.rename` and every button in the drawer names the same workspace —
+Rename used to be handed a pane and rename the tab behind it, which on a
+two-tab worktree renamed something the row was not even showing. A single tab
+is renamed by holding its chip in the strip, where you can see which one you
+meant. The row is dragged aside by however wide those buttons actually are
+rather than by a number written down twice.
 
 ## Reading the pane
 
