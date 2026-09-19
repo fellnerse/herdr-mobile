@@ -875,6 +875,17 @@ html, body {
   margin: 6px 0;
 }
 
+.t-block a {
+  color: var(--accent-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+.t-block span a {
+  color: inherit;
+}
+
 .t-assistant {
   color: var(--role-assistant);
 }
