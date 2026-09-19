@@ -275,6 +275,49 @@
     return (+m[1] * 0.299 + +m[2] * 0.587 + +m[3] * 0.114) < 40;
   }
 
+  const RE_URL = /https?:\/\/[^\s<>"'`]+/g;
+
+  function linkifyHtml(html) {
+    return html.replace(RE_URL, (rawUrl) => {
+      let url = rawUrl;
+      let trail = "";
+      while (url.length > 0) {
+        if (url.endsWith("&quot;")) {
+          url = url.slice(0, -6);
+          trail = "&quot;" + trail;
+        } else if (url.endsWith("&gt;")) {
+          url = url.slice(0, -4);
+          trail = "&gt;" + trail;
+        } else if (url.endsWith("&lt;")) {
+          url = url.slice(0, -4);
+          trail = "&lt;" + trail;
+        } else if (url.endsWith("&#39;")) {
+          url = url.slice(0, -5);
+          trail = "&#39;" + trail;
+        } else if (url.endsWith("&amp;")) {
+          url = url.slice(0, -5);
+          trail = "&amp;" + trail;
+        } else if (/[.,:;!?'"\]]$/.test(url)) {
+          trail = url.slice(-1) + trail;
+          url = url.slice(0, -1);
+        } else if (url.endsWith(")")) {
+          const openCount = (url.match(/\(/g) || []).length;
+          const closeCount = (url.match(/\)/g) || []).length;
+          if (closeCount > openCount) {
+            trail = ")" + trail;
+            url = url.slice(0, -1);
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+      if (!url) return rawUrl;
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${trail}`;
+    });
+  }
+
   function runsToHtml(runs) {
     return runs
       .map((r) => {
@@ -285,7 +328,7 @@
         if (r.bold) css.push("font-weight:600");
         if (r.italic) css.push("font-style:italic");
         if (r.underline) css.push("text-decoration:underline");
-        const text = escapeHtml(r.text);
+        const text = linkifyHtml(escapeHtml(r.text));
         return css.length ? `<span style="${css.join(";")}">${text}</span>` : text;
       })
       .join("");

@@ -42,7 +42,7 @@ function loadParser() {
   if (from < 0 || to < 0) throw new Error(`anchors moved in ${SRC}`);
   const body = PRELUDE + src.slice(from, to);
   return new Function(
-    `${body}\nreturn { parseTranscript, renderNumberKeys, plainHtml, state, elKeysNumbers };`
+    `${body}\nreturn { parseTranscript, renderNumberKeys, plainHtml, state, elKeysNumbers, linkifyHtml };`
   )();
 }
 
@@ -408,7 +408,7 @@ function plainLines(text) {
   return html
     .replace(/^<div[^>]*>/, "")
     .replace(/<\/div>$/, "")
-    .replace(/<\/?span[^>]*>/g, "")
+    .replace(/<\/?(span|a\b)[^>]*>/g, "")
     .split("\n");
 }
 
@@ -449,6 +449,45 @@ check(
   "keypad: ten choices stop at nine - a tenth is not one keypress",
   keys(10).join("") === "123456789",
   `got ${keys(10).join("")}`
+);
+
+/* Link parsing: bare URLs, markdown links, wrapped in parens or punctuation,
+   and balanced parentheses like Wikipedia articles. */
+const linkify = parser.linkifyHtml;
+check(
+  "link: bare URL",
+  linkify("https://github.com/foo/bar") ===
+    '<a href="https://github.com/foo/bar" target="_blank" rel="noopener noreferrer">https://github.com/foo/bar</a>'
+);
+check(
+  "link: trailing period excluded",
+  linkify("Visit https://example.com.") ===
+    'Visit <a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>.'
+);
+check(
+  "link: markdown link wrapper",
+  linkify("[docs](https://example.com)") ===
+    '[docs](<a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>)'
+);
+check(
+  "link: parentheses around URL",
+  linkify("(https://example.com)") ===
+    '(<a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>)'
+);
+check(
+  "link: balanced parens in Wikipedia URL",
+  linkify("https://en.wikipedia.org/wiki/Sheep_(animal)") ===
+    '<a href="https://en.wikipedia.org/wiki/Sheep_(animal)" target="_blank" rel="noopener noreferrer">https://en.wikipedia.org/wiki/Sheep_(animal)</a>'
+);
+check(
+  "link: angle brackets around URL",
+  linkify("&lt;https://example.com&gt;") ===
+    '&lt;<a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>&gt;'
+);
+check(
+  "link: query params with escaped ampersand",
+  linkify("https://example.com/search?q=foo&amp;hl=en") ===
+    '<a href="https://example.com/search?q=foo&amp;hl=en" target="_blank" rel="noopener noreferrer">https://example.com/search?q=foo&amp;hl=en</a>'
 );
 
 console.log(failed ? `\n${failed} failed` : "all transcript tests passed");
