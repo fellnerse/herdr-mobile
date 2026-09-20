@@ -1524,6 +1524,169 @@ check("and nothing flows backwards",
       all(v >= 0 for part in ("disk", "net") if snap[part]
           for v in snap[part].values()), True)
 
+# -- the tokens the agents wrote down ---------------------------------------
+
+# The tokens page reads the agents' own session logs rather than recording
+# anything itself, which buys it a history on the day it ships and costs it
+# every quirk of somebody else's file format. Three of those quirks can silently
+# double or halve the week: Claude Code writes the same assistant message three
+# times as it streams, a log is appended to between one reading and the next, and
+# Codex reports its cached input inside the input it was part of.
+
+import json  # noqa: E402
+
+import tokens  # noqa: E402
+
+
+def claude_line(stamp, model="claude-opus-5", ident="msg_1", request="req_1",
+                cwd="/repo", **counts):
+    return json.dumps({
+        "type": "assistant",
+        "timestamp": stamp,
+        "cwd": cwd,
+        "requestId": request,
+        "message": {
+            "id": ident,
+            "model": model,
+            "usage": {
+                "input_tokens": counts.get("input", 0),
+                "output_tokens": counts.get("output", 0),
+                "cache_read_input_tokens": counts.get("cache_read", 0),
+                "cache_creation_input_tokens": counts.get("cache_write", 0),
+            },
+        },
+    })
+
+
+def codex_line(stamp, last=None, total=None, model=None, cwd=None):
+    info = {}
+    if last is not None:
+        info["last_token_usage"] = last
+    if total is not None:
+        info["total_token_usage"] = total
+    payload = {"type": "token_count", "info": info}
+    if model:
+        payload["model"] = model
+    if cwd:
+        payload["cwd"] = cwd
+    return json.dumps({"timestamp": stamp, "type": "event_msg", "payload": payload})
+
+
+def tally(cache, path=None):
+    """Everything counted so far, as {(hour, agent, model, project): counts}."""
+    total = tokens.refresh(cache)
+    return {tuple(key.split(tokens.SEP)): value for key, value in total.items()}
+
+
+with tempfile.TemporaryDirectory(prefix="sheepit-logs-") as logs:
+    root = Path(logs)
+    projects = root / "claude" / "projects" / "-repo"
+    projects.mkdir(parents=True)
+    sessions = root / "codex" / "sessions" / "2026" / "09" / "18"
+    sessions.mkdir(parents=True)
+    repo = root / "repo"
+    (repo / ".git").mkdir(parents=True)
+
+    tokens.CLAUDE_PROJECTS = root / "claude" / "projects"
+    tokens.CODEX_HOME = root / "codex"
+    tokens._ROOTS.clear()
+
+    # A message written three times as it streamed is one message. Counting the
+    # copies would treble a week's tokens, and nothing on the page would look
+    # wrong enough to notice.
+    session = projects / "a.jsonl"
+    line = claude_line("2026-09-18T05:30:00Z", cwd=str(repo), output=100, input=10,
+                       cache_read=900, cache_write=50)
+    session.write_text("\n".join([line, line, line]) + "\n")
+
+    cache = {"version": tokens.CACHE_VERSION, "files": {}}
+    counted = tally(cache)
+    check("a streamed message is counted once", len(counted), 1)
+    key = next(iter(counted))
+    check("counted in the hour it happened", key[0], "2026-09-18T05:00:00Z")
+    check("under the repository it was spent on", key[3], str(repo))
+    check("with every kind of token",
+          {k: counted[key][k] for k in tokens.KINDS},
+          {"input": 10, "output": 100, "cache_read": 900, "cache_write": 50})
+
+    # A log is appended to while the page is open. The pass that follows reads
+    # only what arrived, and adds it to what was already counted.
+    with session.open("a") as fh:
+        fh.write(claude_line("2026-09-18T06:00:00Z", ident="msg_2", request="req_2",
+                             cwd=str(repo), output=7) + "\n")
+    counted = tally(cache)
+    check("an appended turn joins the tally", len(counted), 2)
+    check("and the turn before it is not counted twice",
+          counted[key]["output"], 100)
+
+    # A log that got shorter is not the log we were reading. Everything tallied
+    # from it goes with it, or the new file's tokens land on top of the old
+    # file's and the day reads as twice what it was.
+    session.write_text(claude_line("2026-09-18T07:00:00Z", ident="msg_3",
+                                   request="req_3", cwd=str(repo), output=5) + "\n")
+    counted = tally(cache)
+    check("a rewritten log is read again from the top", len(counted), 1)
+    check("and says what it says now", list(counted.values())[0]["output"], 5)
+
+    # Claude Code answering for itself - a refusal it composed, an error it
+    # wrote down - made no request and spent nothing.
+    session.write_text("\n".join([
+        claude_line("2026-09-18T08:00:00Z", model="<synthetic>", ident="msg_4",
+                    request="req_4", cwd=str(repo), output=99),
+        claude_line("2026-09-18T08:00:00Z", ident="msg_5", request="req_5",
+                    cwd=str(repo), output=1),
+    ]) + "\n")
+    counted = tally({"version": tokens.CACHE_VERSION, "files": {}})
+    check("a synthetic message is not usage",
+          [k[2] for k in counted], ["claude-opus-5"])
+
+    # Codex says which model and which directory once, at the top; the usage
+    # events themselves say neither.
+    (sessions / "rollout.jsonl").write_text("\n".join([
+        json.dumps({"timestamp": "2026-09-18T09:00:00Z", "type": "session_meta",
+                    "payload": {"model": "gpt-5-codex", "cwd": str(repo)}}),
+        codex_line("2026-09-18T09:30:00Z",
+                   last={"input_tokens": 1000, "cached_input_tokens": 900,
+                         "output_tokens": 50, "reasoning_output_tokens": 20}),
+    ]) + "\n")
+    counted = tally({"version": tokens.CACHE_VERSION, "files": {}})
+    codex = {k: v for k, v in counted.items() if k[1] == "codex"}
+    check("a rollout is read as codex", len(codex), 1)
+    ckey = next(iter(codex))
+    check("named by the model at the top of it", ckey[2], "gpt-5-codex")
+    check("and the directory at the top of it", ckey[3], str(repo))
+    # Cached input is part of the input Codex reports. Added as it stands, the
+    # same tokens would be counted twice - once as fresh input, once as cache.
+    check("cached input is taken out of the input",
+          {k: codex[ckey][k] for k in tokens.KINDS},
+          {"input": 100, "output": 70, "cache_read": 900, "cache_write": 0})
+
+    # An older rollout carries only the running total for the session, so a turn
+    # is the difference from the total before it.
+    (sessions / "rollout.jsonl").write_text("\n".join([
+        json.dumps({"timestamp": "2026-09-18T09:00:00Z", "type": "session_meta",
+                    "payload": {"model": "gpt-5-codex", "cwd": str(repo)}}),
+        codex_line("2026-09-18T09:30:00Z",
+                   total={"input_tokens": 100, "output_tokens": 10}),
+        codex_line("2026-09-18T09:40:00Z",
+                   total={"input_tokens": 400, "output_tokens": 30}),
+    ]) + "\n")
+    counted = tally({"version": tokens.CACHE_VERSION, "files": {}})
+    codex = {k: v for k, v in counted.items() if k[1] == "codex"}
+    check("a running total is read as its differences",
+          sum(v["input"] for v in codex.values()), 400)
+    check("and its output likewise",
+          sum(v["output"] for v in codex.values()), 30)
+
+# A Herdr worktree is deleted the moment its branch lands, so the path is what
+# has to say which repository last week's tokens were spent on - otherwise the
+# biggest project on the page comes apart into a column per merged branch.
+check("a worktree belongs to its repository",
+      tokens.project_name(tokens.repo_root(str(tokens.WORKTREES / "herdr-mobile" / "gone"))),
+      "herdr-mobile")
+check("and somewhere that is no repository at all is still somewhere",
+      tokens.project_name(tokens.repo_root("/nonexistent/elsewhere")), "elsewhere")
+
 # ---------------------------------------------------------------------------
 
 if failures:

@@ -39,7 +39,8 @@ node tools/test-diff.js                         # diff rendering, unified + spli
 node tools/test-drafts.js                       # per-project drafts
 node tools/test-flock.js                        # the overview: grouping, order, rows
 node tools/test-queue.js                        # the queue above the composer
-python3 tools/test-gateway.py                   # bincode, framing, git, notifications
+node tools/test-usage.js                        # the tokens page: buckets, stack, legend
+python3 tools/test-gateway.py                   # bincode, framing, git, notifications, token logs
 
 tools/sheepit-queue list | add | rm | quota     # the prompt queue from a terminal
 tools/sheepit-queue wall --pane wM:p1           # what the wall would do, without doing it
@@ -51,7 +52,7 @@ python3 tools/make-bleat.py                     # regenerate web/bleat.wav
 
 There is no runner, no lint and no formatter: each suite is a standalone script
 that prints failures and exits non-zero, so "run one test" means run one of the
-six suites. Restart `server.py` after changing the gateway; changing `web/` only
+seven suites. Restart `server.py` after changing the gateway; changing `web/` only
 needs a reload.
 
 Environment: `SHEEPIT_PORT` (or `PORT`, default 3009), `HOST` (default
@@ -161,6 +162,21 @@ the overview is open. Both are bucketed before they reach the list signature: a
 field that moved a third of a percent must not redraw the row and restart every
 sheep mid-chew. `docs/design.md` is the detail.
 
+**Where the windows went is its own page.** A percentage cannot say what last
+week cost, so `gateway/tokens.py` reads the agents' own session logs -- Claude
+Code's `~/.claude/projects/*.jsonl`, Codex's rollouts -- and `/api/usage`
+answers with a row per hour, agent, model and project. **Nothing is recorded for
+it**, which is what gives the page a month of history on the day it ships; what
+it costs instead is three quirks of somebody else's format, each of which
+silently doubles or halves a week if missed: Claude Code writes the same message
+three times as it streams (deduplicated on request and message id), a log is
+appended to between passes (cached per file against the offset it was read to,
+and re-read whole if it ever got *shorter*), and Codex counts cached input
+inside its input (taken back out). The page buckets those UTC hours into *local*
+hours and days, draws the empty ones, and colours by model in name order rather
+than by size -- rank changes with the range, and a legend that repaints when you
+tap "24h" is one nobody can learn. `docs/design.md` is the detail.
+
 **The machine is the other wall.** Under the usage windows the strip draws the
 host — cpu, ram, swap, disk, network and load average, two to a line, read by
 `gateway/machine.py` (`/proc` on Linux, `sysctl`/`vm_stat`/`netstat` on macOS,
@@ -198,7 +214,9 @@ refuses paths that escape the pane's directory.
   suites even though the app still works: `const RE_RULE_GLYPH` →
   `function renderTranscript(text)` (transcript), `function statusLabel(file)` →
   `elBtnChanges.addEventListener` (diff), `const DRAFTS_KEY` →
-  `/* Stamp anything whose sequence moved` (drafts). Check the anchors in
+  `/* Stamp anything whose sequence moved` (drafts), `/* ---- Tokens over time --`
+  → `/* The page itself:` (the tokens page, whose half above that anchor
+  deliberately touches no DOM). Check the anchors in
   `tools/test-*.js` after refactoring `app.js`. `test-flock.js` slices three
   times: `/* ---- The flock ---` → `// Opening a project is activity too`
   (the order), `function agentRowHtml(` → `async function createWorkspace() {`

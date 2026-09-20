@@ -192,6 +192,8 @@ Two consequences worth knowing:
 | `POST /api/worktrees` | Another worktree off a project: `git worktree add` and a workspace opened on it, the way a right-click on a space does it on the desktop. |
 | `POST /api/worktrees/{id}/remove` | The checkout as well as the workspace. `force` is only sent after Herdr has refused a checkout with uncommitted work in it and the phone has asked a second time. Answers with the branch it left behind. |
 | `POST /api/branches/delete` | That branch, once it has been offered and accepted. `git branch -d` unless forced, and the `repo_root` is checked to be the top of a working tree rather than trusted. |
+| `GET /api/queue/quota` | What each subscription has left, and what the machine has left. |
+| `GET /api/usage?days=` | What was spent: a row per hour, agent, model and project, read out of the agents' own session logs. `days` is capped at a month. |
 | `GET|POST /api/push/*` | Notification keys, subscriptions and the last finisher. |
 
 Everything under `/api/` and the WebSocket refuse a cross-origin request:

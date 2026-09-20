@@ -515,3 +515,72 @@ mirrors the other's horizontal scroll, so a line and its replacement stay
 opposite each other. A run of removals pairs one-to-one with the run of
 additions that replaced it, and the shorter side is padded - which is what
 keeps everything after a lopsided edit level.
+
+## Where it went: the tokens page
+
+The strip on the flock answers "can I start something now". It cannot answer
+"where did the week go", because a percentage of a window that resets every
+five hours has no memory. That is the page behind the chart icon in the flock's
+header: tokens over time, by hour or by day, stacked by model.
+
+**Nothing is recorded for it.** Both agents already write every turn down —
+Claude Code keeps a JSONL per session under `~/.claude/projects/`, with
+`message.usage` on each assistant entry; Codex keeps a rollout under
+`~/.codex/sessions/` with `token_count` events — so `gateway/tokens.py` reads
+those and the page has a month of history the day it ships rather than starting
+from zero. It is the same argument as `quota.py` reading what the agent noted:
+the cheapest source is the one already on disk.
+
+Reading it is the part that needs care, and three quirks of somebody else's
+file format can silently double or halve a week:
+
+- **Claude Code writes the same assistant message three times** as it streams.
+  A message is counted once, keyed on its request and message id, with the last
+  few hundred ids per file remembered — bounded, unlike a set of every id ever
+  seen, so a session running all week costs the same as a fresh one.
+- **A log is appended to between one reading and the next.** Each file's totals
+  are cached against the offset they were read to, so a pass reads only what
+  arrived. A file that got *shorter* is not the file we were reading: it is
+  re-read from the top and what was tallied from it is thrown away, or the new
+  session's tokens land on top of the old one's.
+- **Codex reports cached input inside the input it was part of**, so the cached
+  part is taken back out; added as it stands, the same tokens would be counted
+  once as fresh input and once as a cache read. Where a rollout carries only a
+  running total for the session, a turn is the difference from the total before
+  it.
+
+A cold scan of ~130MB of logs is about two seconds; every pass after it is a
+handful of new lines, and the result is memoised for a minute because the page
+polls while somebody is looking at it.
+
+**The projects are the flock's projects.** A log entry carries only its `cwd`,
+so the repository is found the way the list groups: up to the checkout, and
+through a linked worktree's `.git` file to the repository it was cut from. A
+Herdr worktree is read off its path as well (`~/.herdr/worktrees/<repo>/…`),
+because the checkout is deleted the moment its branch lands — without that, the
+biggest project on the page comes apart into a column per merged branch.
+
+### What the page draws
+
+Local hours and local days. The gateway counts in UTC because it cannot know
+which day that was for whoever is looking; the phone is what turns 23:30 UTC
+into this morning. Every bucket in the range is drawn, including the empty
+ones: a chart that plots only the days that happened puts Friday next to Monday
+and calls it a week.
+
+Colour follows the model, in name order, never its rank. Which model is biggest
+changes with the range, and a legend that repainted itself when you tapped
+"24h" is one nobody can learn. Past five models there is no sixth hue — the
+smallest fold into one grey "other", counted once. The legend under the chart
+is also the reading: every model in the range is always listed, dimmed rather
+than dropped when the bucket you are touching did not use it.
+
+There is no tooltip. A tooltip on a phone is a tooltip under a finger, so the
+reading is parked in a fixed line under the chart, and the hit target is the
+whole column's slot rather than the bar in it — an empty hour is worth picking
+too, because "nothing, at 14:00" is an answer.
+
+The number the page leads with is **every token sent to a model, cache reads
+included**: that is what the window is priced on, and it is nine tenths cache
+on a working day. The four tiles under the chart are what it was made of, which
+is where anybody who wanted the other number finds it.

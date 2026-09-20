@@ -1969,6 +1969,253 @@ html, body {
   .change-row { transition: background 0.12s ease; }
 }
 
+/* ------------------------------------------------------------- Tokens ------
+ *
+ * Where the windows went. The strip on the flock is four numbers wide because
+ * it has to share a screen with the herd; this page has the screen to itself,
+ * so it can afford a chart, a legend and two rankings - and it spends that
+ * room on one column per hour or per day rather than on decoration.
+ *
+ * The marks are the only loud thing here: gridlines are a hairline off the
+ * surface, axis text is muted, and no label wears a series colour - identity
+ * comes from the swatch beside the text, never from the text itself.
+ * --------------------------------------------------------------------------- */
+
+.usage-ranges {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+}
+
+.usage-ranges .view-action {
+  padding: 6px 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 12px calc(24px + var(--safe-bottom));
+}
+
+/* The one number the page leads with, in proportional figures: tabular ones
+   give every digit the width of a zero, which at this size reads as loose. */
+.usage-hero {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.usage-hero-value {
+  font-size: 48px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.usage-hero-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.usage-chart {
+  /* The SVG is built at the width this measured, so nothing here may scale it:
+     a stretched viewBox takes the axis labels with it. */
+  overflow: hidden;
+  touch-action: pan-y;
+}
+
+.usage-svg { display: block; }
+
+.usage-grid {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.usage-tick {
+  fill: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-anchor: end;
+}
+
+/* The column under the finger. A wash rather than an outline: the bars are the
+   ink on this page and a box around one of them competes with them. */
+.usage-pick { fill: rgba(255, 255, 255, 0.06); }
+
+.usage-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.usage-readout-head {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-readout-total {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+ /* The legend, which is also the reading: every model in the range, in the
+    same order whatever is picked, carrying what it spent in whatever is
+    picked. A model that spent nothing in this bucket is dimmed rather than
+    dropped - a legend that comes and goes as a finger moves is one more thing
+    moving on a page about numbers holding still. */
+.usage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-chip.muted {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.usage-chip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* The four kinds of token, which is what the one big number is made of. Two to
+   a line on a phone, four across once there is room. */
+.usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.usage-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+.usage-tile-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.usage-tile-value {
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.usage-tile-share {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-heading {
+  margin: 18px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.usage-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* A ranking, so it is a list: name, how it compares, how much. The bar is
+   sized against the biggest row rather than the total - the question is which
+   project is the big one, not what share of everything it was. */
+.usage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px 3.4rem;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.usage-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-row-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.usage-row-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-primary);
+}
+
+.usage-row-value {
+  text-align: right;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Where the numbers came from, once, at the foot of the page. */
+.usage-note {
+  margin-top: 18px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+@media (min-width: 560px) {
+  .usage-tiles { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* A week of columns stretched across a monitor is a chart made of gaps, and
+   the rankings under it would be a name, a metre of bar and a number. */
+@media (min-width: 900px) {
+  .usage-body {
+    max-width: 820px;
+    margin: 0 auto;
+    width: 100%;
+  }
+}
+
 /* ---------------------------------------------------------- On a desktop ---
  *
  * The phone stacks: the flock is the page and a chat covers it, one screen at
