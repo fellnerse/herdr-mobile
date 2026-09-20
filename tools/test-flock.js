@@ -39,18 +39,46 @@ function loadRows() {
     const sheepMarks = (seed) => ({ breed: { id: "test", fleece: "#abcdef", face: "#123456" },
                                     horn: "curl", coat: "woolly", muzzle: false });
     const agoLabel = () => "";
-    const wantsInput = (a) => a.status === "blocked";
+    const wantsInput = (a) => a.status === "blocked" || a.status === "done";
   `;
-  // What a tab is called is tested on its own further down; a row is asked
-  // here with the real thing rather than a stub that could agree with nothing.
-  const { tabName, tabNumber } = loadFlock();
+  /* What a tab is called, and how a project's panes collapse into one row per
+     worktree, are tested on their own further down; a row is asked here with
+     the real things rather than stubs that could agree with nothing. */
+  const { tabName, tabNumber, tabCount, penSeed } = loadFlock();
   return new Function(
     "tabName",
     "tabNumber",
+    "tabCount",
+    "penSeed",
     `${PRELUDE}${src.slice(from, to)}
      return { state, elAgentList, agentRowHtml, renderAgentList, agentListSignature,
-              queuedByPane, queuedLabel };`
-  )(tabName, tabNumber);
+              queuedByPane, penQueue, queuedLabel };`
+  )(tabName, tabNumber, tabCount, penSeed);
+}
+
+/* The strip above the transcript, which is where a tab is switched, named and
+   closed now that the overview lists worktrees. Sliced on its own because the
+   rule that matters is a negative one: there is no x on the last tab, since
+   Herdr closes the workspace along with it. */
+function loadStrip() {
+  const src = fs.readFileSync(SRC, "utf8");
+  const from = src.indexOf("  // In the order the laptop's tab bar has them");
+  const to = src.indexOf("  // Render Metadata (lives in the settings sheet)");
+  if (from < 0 || to < 0) throw new Error(`strip anchors moved in ${SRC}`);
+  const { tabName, tabNumber, bornAt } = loadFlock();
+  const PRELUDE = `
+    const state = { agents: [], activePaneId: null };
+    const elTabStrip = { innerHTML: "", classList: { toggle() {} } };
+    const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const knownStatus = (s) => s || "unknown";
+  `;
+  return new Function(
+    "tabName",
+    "tabNumber",
+    "bornAt",
+    `${PRELUDE}${src.slice(from, to)}
+     return { state, tabsOfActive, tabChipLabel, tabStripHtml };`
+  )(tabName, tabNumber, bornAt);
 }
 
 /* The markings that tell two sheep on one project apart. Sliced on its own so
@@ -98,7 +126,8 @@ function loadFlock(busy = false) {
   return new Function(
     `${PRELUDE}${src.slice(from, to)}
      return { state, store, orderAgents, groupByProject, bornAt, wantsInput, listBusy,
-              projectKey, tabName, tabNumber, reorder, insertIndexFor, loadOrder, saveOrder };`
+              projectKey, tabName, tabNumber, reorder, insertIndexFor, loadOrder, saveOrder,
+              urgency, byWorkspace, tabCount, penSeed, collapseTabs };`
   )();
 }
 
@@ -124,6 +153,15 @@ function row(pane, ws, project, status, extra = {}) {
     has_agent: true,
     ...extra,
   };
+}
+
+/* A row is a workspace now - a pen, with the panes of its tabs inside it and
+   whichever of them leads it. Built with the real collapse, so a row is asked
+   about the same shape the app hands it. */
+const { byWorkspace } = loadFlock();
+
+function pen(...rows) {
+  return byWorkspace(rows)[0];
 }
 
 function order(agents, busy = false, held = [], custom = []) {
@@ -209,8 +247,8 @@ function order(agents, busy = false, held = [], custom = []) {
 {
   const f = order([
     row("wC:p1", 3, "/p/api", "working"),
-    row("wA:p1", 1, "/p/api", "done"),
-    row("wB:p1", 2, "/p/api", "idle"),
+    row("wA:p1", 1, "/p/api", "idle"),
+    row("wB:p1", 2, "/p/api", "working"),
   ]);
   check("creation order, whatever the agents are doing",
         f.state.groups[0].agents.map((a) => a.pane_id), ["wA:p1", "wB:p1", "wC:p1"]);
@@ -218,11 +256,36 @@ function order(agents, busy = false, held = [], custom = []) {
 
 {
   const f = order([
-    row("wA:p1", 1, "/p/api", "done"),
+    row("wA:p1", 1, "/p/api", "idle"),
     row("wB:p1", 2, "/p/api", "working"),
     row("wC:p1", 3, "/p/api", "blocked"),
   ]);
   check("a question comes first",
+        f.state.groups[0].agents.map((a) => a.pane_id), ["wC:p1", "wA:p1", "wB:p1"]);
+}
+
+/* The other way of waiting: a turn that ended and nobody has read. Herdr keeps
+   the pane in `done` until something happens in it, which is the closest thing
+   it has to unread - and a finished agent left at the bottom of its project is
+   an answer nobody goes back for. */
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "idle"),
+    row("wB:p1", 2, "/p/api", "working"),
+    row("wC:p1", 3, "/p/api", "done"),
+  ]);
+  check("a finished turn rises too",
+        f.state.groups[0].agents.map((a) => a.pane_id), ["wC:p1", "wA:p1", "wB:p1"]);
+}
+
+// A question is still the louder of the two: it has work stopped mid-air.
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "done"),
+    row("wB:p1", 2, "/p/api", "working"),
+    row("wC:p1", 3, "/p/api", "blocked"),
+  ]);
+  check("a question outranks a finished turn",
         f.state.groups[0].agents.map((a) => a.pane_id), ["wC:p1", "wA:p1", "wB:p1"]);
 }
 
@@ -262,10 +325,22 @@ function order(agents, busy = false, held = [], custom = []) {
   const f = order([
     row("wA:p1", 1, "/p/api", "working"),
     row("wB:p1", 2, "/p/web", "blocked"),
-    row("wC:p1", 3, "/p/cli", "done"),
+    row("wC:p1", 3, "/p/cli", "idle"),
   ]);
   check("a project with a question floats",
         f.state.groups.map((g) => g.key), ["/p/web", "/p/api", "/p/cli"]);
+}
+
+/* A project carries its loudest sheep: the question first, then the project
+   holding a finished turn, then the ones getting on with it. */
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working"),
+    row("wB:p1", 2, "/p/web", "done"),
+    row("wC:p1", 3, "/p/cli", "blocked"),
+  ]);
+  check("a finished turn floats its project, under a question",
+        f.state.groups.map((g) => g.key), ["/p/cli", "/p/web", "/p/api"]);
 }
 
 // Two waiting projects do not fight: creation order breaks the tie.
@@ -340,6 +415,81 @@ function order(agents, busy = false, held = [], custom = []) {
   check("and the held order is that list", f.state.order, ["wB:p1", "wA:p1"]);
 }
 
+// -- one row per worktree ----------------------------------------------------
+
+/* The overview used to draw a row per tab while every action on that row acted
+   on the workspace, so closing what looked like one tab took the branch and
+   its neighbours with it. A row is the pen now: one per workspace, the tabs
+   inside it reached from the strip above the transcript. */
+{
+  const f = order([
+    row("wA:p1", 1, "/p/api", "working", { tab_id: "wA:t1" }),
+    row("wA:p2", 1, "/p/api", "idle", { tab_id: "wA:t2" }),
+    row("wS:p1", 7, "/p/api", "idle", { tab_id: "wS:t1" }),
+  ]);
+  check("two tabs of one worktree are one row",
+        f.state.groups[0].rows.map((p) => p.key), ["wA", "wS"]);
+  check("and the row knows how many tabs it stands for",
+        f.state.groups[0].rows.map((p) => f.tabCount(p)), [2, 1]);
+  check("while the flat list still has every pane in it",
+        f.state.agents.map((a) => a.pane_id), ["wA:p1", "wA:p2", "wS:p1"]);
+}
+
+// A split tab is two panes and one tab: the strip can switch between them, but
+// the row is not standing in front of two tabs.
+{
+  const f = loadFlock();
+  const split = f.byWorkspace([
+    row("wA:p1", 1, "/p/api", "working", { tab_id: "wA:t1", split: true }),
+    row("wA:p2", 1, "/p/api", "working", { tab_id: "wA:t1", split: true }),
+  ])[0];
+  check("a split tab counts once", f.tabCount(split), 1);
+  check("though both its panes are reachable", split.tabs.length, 2);
+}
+
+/* Which tab speaks for the pen: the one that needs you most, since that is
+   what the row is for. A question first, then a turn that finished and is
+   sitting there, then work in progress, and a plain shell last. */
+{
+  const f = loadFlock();
+  const leads = (...rows) => f.byWorkspace(rows)[0].lead.pane_id;
+  check("a question leads its worktree",
+        leads(row("wA:p1", 1, "/p/api", "working", { tab_id: "wA:t1" }),
+              row("wA:p2", 1, "/p/api", "blocked", { tab_id: "wA:t2" })),
+        "wA:p2");
+  check("a finished turn leads over one still running",
+        leads(row("wA:p1", 1, "/p/api", "working", { tab_id: "wA:t1" }),
+              row("wA:p2", 1, "/p/api", "done", { tab_id: "wA:t2" })),
+        "wA:p2");
+  check("and work in progress over a prompt sitting idle",
+        leads(row("wA:p1", 1, "/p/api", "idle", { tab_id: "wA:t1" }),
+              row("wA:p2", 1, "/p/api", "working", { tab_id: "wA:t2" })),
+        "wA:p2");
+  check("a shell only leads a worktree with nothing else in it",
+        leads(row("wA:p1", 1, "/p/api", "unknown", { tab_id: "wA:t1", has_agent: false }),
+              row("wA:p2", 1, "/p/api", "idle", { tab_id: "wA:t2" })),
+        "wA:p2");
+  // Nothing to choose between: the order the project was already in stands.
+  check("tabs doing the same thing keep their order",
+        leads(row("wA:p1", 1, "/p/api", "working", { tab_id: "wA:t1" }),
+              row("wA:p2", 1, "/p/api", "working", { tab_id: "wA:t2" })),
+        "wA:p1");
+}
+
+/* The sheep is the pen's, not the leading tab's: hashing the pane would hand
+   the worktree a new face every time another of its tabs started asking
+   something. */
+{
+  const f = loadFlock();
+  const seed = (...rows) => f.penSeed(f.byWorkspace(rows)[0]);
+  check("the worktree is what the sheep is hashed from",
+        seed(row("wA:p2", 1, "/p/api", "working", { tab_id: "wA:t2" })), "wA");
+  check("and it does not change when another tab takes the lead",
+        seed(row("wA:p1", 1, "/p/api", "working", { tab_id: "wA:t1" }),
+             row("wA:p2", 1, "/p/api", "blocked", { tab_id: "wA:t2" })),
+        "wA");
+}
+
 // -- what a row says --------------------------------------------------------
 
 /* The heading names the project, so the row must not spend its headline
@@ -353,7 +503,7 @@ function order(agents, busy = false, held = [], custom = []) {
   };
 
   const plain = agentRowHtml(
-    { ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite the importer" },
+    pen({ ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite the importer" }),
     "api");
   check("the headline is what the agent is doing", text(plain, "agent-row-name"),
         "Rewrite the importer");
@@ -361,14 +511,14 @@ function order(agents, busy = false, held = [], custom = []) {
 
   // A worktree's label is the one thing the heading did not say.
   const sheep = agentRowHtml(
-    { ...row("wS:p1", 7, "/p/api", "working"), name: "sheep #4", title: "Fix the flaky test" },
+    pen({ ...row("wS:p1", 7, "/p/api", "working"), name: "sheep #4", title: "Fix the flaky test" }),
     "api");
   check("a workspace named something else keeps its name",
         text(sheep, "agent-row-title"), "sheep #4");
 
   // A pane Herdr has no title for yet: fall back to the label, and say where.
   const fresh = agentRowHtml(
-    { ...row("wN:p1", 9, "/p/api", "unknown"), name: "api", title: "", cwd: "/p/api" },
+    pen({ ...row("wN:p1", 9, "/p/api", "unknown"), name: "api", title: "", cwd: "/p/api" }),
     "api");
   check("a titleless pane falls back to its name", text(fresh, "agent-row-name"), "api");
   check("and says where it is", text(fresh, "agent-row-title"), "/p/api");
@@ -499,31 +649,32 @@ function order(agents, busy = false, held = [], custom = []) {
     ...extra,
   });
 
-  const shell = agentRowHtml(tab({ tab_label: "2", tab_number: 2, cwd: "/p/api" }), "api");
+  const shell = agentRowHtml(pen(tab({ tab_label: "2", tab_number: 2, cwd: "/p/api" })), "api");
   check("a tab with no agent is called what the laptop calls it",
         text(shell, "agent-row-name"), "tab 2");
   check("and says so instead of a status it does not have",
         /<span class="agent-row-ago">shell<\/span>/.test(shell), true);
   check("with no status badge on it", /status-badge/.test(shell), false);
 
-  const named = agentRowHtml(tab({ tab_label: "dev server", tab_number: 2 }), "api");
+  const named = agentRowHtml(pen(tab({ tab_label: "dev server", tab_number: 2 })), "api");
   check("a tab somebody named is called that", text(named, "agent-row-name"), "dev server");
 
   const busy = agentRowHtml(
-    tab({ tab_label: "dev server", tab_number: 2, has_agent: true, status: "working",
-          title: "Rewrite the importer" }),
+    pen(tab({ tab_label: "dev server", tab_number: 2, has_agent: true, status: "working",
+              title: "Rewrite the importer" })),
     "api");
   check("an agent's own headline still leads", text(busy, "agent-row-name"),
         "Rewrite the importer");
   check("and the tab's name is the small line", text(busy, "agent-row-title"), "dev server");
   check("a tab with an agent says what it is doing", /status-working/.test(busy), true);
 
-  // Each row draws its own sheep, so two tabs of one project are two animals.
+  /* Each row draws its own sheep, so two worktrees of one project are two
+     animals - and each wears what its own pen is doing. */
   const other = agentRowHtml(
-    tab({ pane_id: "wA:p3", tab_label: "3", tab_number: 3, has_agent: true, status: "blocked",
-          title: "Which of these three?" }),
+    pen(tab({ pane_id: "wS:p1", workspace_id: "wS", tab_label: "3", tab_number: 3,
+              has_agent: true, status: "blocked", title: "Which of these three?" })),
     "api");
-  check("and each row wears the status of its own tab",
+  check("and each row wears the status of its own worktree",
         [/sheep-wrap working/.test(busy), /sheep-wrap blocked/.test(other)], [true, true]);
 }
 
@@ -533,11 +684,11 @@ function order(agents, busy = false, held = [], custom = []) {
    where "another one of these" has to live. */
 {
   const r = loadRows();
-  const group = (extra) => ({
-    key: "/p/api", name: "api", from: "wA",
-    agents: [{ ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite it" }],
-    ...extra,
-  });
+  const group = (extra) => {
+    const agents = [{ ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite it" }];
+    return { key: "/p/api", name: "api", from: "wA", agents,
+             rows: byWorkspace(agents), ...extra };
+  };
   const draw = (g) => {
     r.state.groups = [g];
     r.state.listSignature = null;
@@ -573,8 +724,8 @@ function order(agents, busy = false, held = [], custom = []) {
   const actions = (html) =>
     [...html.matchAll(/data-action="([a-z]+)"/g)].map((m) => m[1]);
   const of = (extra) =>
-    agentRowHtml({ ...row("wA:p1", 1, "/p/api", "working"), name: "api",
-                   title: "Rewrite it", ...extra }, "api");
+    agentRowHtml(pen({ ...row("wA:p1", 1, "/p/api", "working"), name: "api",
+                       title: "Rewrite it", ...extra }), "api");
 
   check("a worktree can be renamed, closed and removed",
         actions(of({ repo: true, main_checkout: false })),
@@ -587,6 +738,100 @@ function order(agents, busy = false, held = [], custom = []) {
   // Remove needs the workspace to name, the same one Close acts on.
   check("Remove names the workspace it would delete",
         /data-action="remove" data-workspace-id="wA"/.test(of({ repo: true })), true);
+
+  /* Every one of them acts on the workspace, and now says so: Rename used to
+     be handed a pane and rename the tab behind it, which on a two-tab worktree
+     renamed something the row was not showing. */
+  check("and so do the other two",
+        [...of({ repo: true }).matchAll(/data-action="[a-z]+" data-workspace-id="([^"]*)"/g)]
+          .map((m) => m[1]),
+        ["wA", "wA", "wA"]);
+}
+
+// -- a row standing in front of several tabs ---------------------------------
+
+/* The count is what makes Close honest: a row saying "3 tabs" is visibly not
+   one chat, so the button that stops all three does not come as a surprise. */
+{
+  const { agentRowHtml, state } = loadRows();
+  const tab = (id, extra) => ({
+    ...row(id, 1, "/p/api", "working", { tab_id: `wA:t${id.slice(-1)}` }),
+    name: "api", title: "Rewrite it", ...extra,
+  });
+
+  const one = agentRowHtml(pen(tab("wA:p1")), "api");
+  check("a worktree with one tab says nothing about tabs",
+        /row-tabs/.test(one), false);
+
+  const three = agentRowHtml(pen(tab("wA:p1"), tab("wA:p2"), tab("wA:p3")), "api");
+  check("and one with three says so", /<span class="row-tabs">3 tabs<\/span>/.test(three), true);
+
+  /* The open chat can be any tab in the pen, not just the one leading it -
+     and the row you came from has to be the row that looks open. */
+  state.activePaneId = "wA:p2";
+  const active = agentRowHtml(pen(tab("wA:p1"), tab("wA:p2")), "api");
+  check("a pen holding the open chat is the active row",
+        /agent-row st-working active/.test(active), true);
+  state.activePaneId = "wB:p1";
+  check("and one that does not is not",
+        /active/.test(agentRowHtml(pen(tab("wA:p1"), tab("wA:p2")), "api")), false);
+  state.activePaneId = null;
+}
+
+// -- the strip that switches tabs --------------------------------------------
+
+/* Where a tab is reached now that the overview lists worktrees. The rule worth
+   testing is the negative one: there is no x on the last tab, because Herdr
+   closes the workspace along with it - which is the confusion this whole
+   change exists to end. */
+{
+  const s = loadStrip();
+  const tab = (pane, tabId, extra = {}) => ({
+    ...row(pane, 1, "/p/api", "working", { tab_id: tabId }),
+    ...extra,
+  });
+  const draw = (agents, active) => {
+    s.state.agents = agents;
+    s.state.activePaneId = active;
+    return s.tabStripHtml();
+  };
+
+  const alone = draw([tab("wA:p1", "wA:t1", { tab_label: "1" })], "wA:p1");
+  check("the last tab cannot be closed from the strip",
+        /data-tab-close/.test(alone), false);
+  check("though another tab can always be opened beside it",
+        /data-tab-new="wA"/.test(alone), true);
+
+  const two = draw(
+    [tab("wA:p1", "wA:t1", { tab_label: "1" }), tab("wA:p2", "wA:t2", { tab_label: "dev server" })],
+    "wA:p2"
+  );
+  check("with a second tab the one you are in can be closed",
+        /data-tab-close="wA:t2"/.test(two), true);
+  check("and only the one you are in", (two.match(/data-tab-close/g) || []).length, 1);
+  check("a tab somebody named is called that",
+        />dev server</.test(two), true);
+  check("and one nobody did is called what the tab bar calls it",
+        />tab 1</.test(two), true);
+
+  // Another worktree's tabs are not this strip's business.
+  const other = draw(
+    [tab("wA:p1", "wA:t1", { tab_label: "1" }),
+     { ...tab("wS:p1", "wS:t1", { tab_label: "1" }), workspace_id: "wS" }],
+    "wA:p1"
+  );
+  check("the strip holds one worktree's tabs", (other.match(/tab-chip /g) || []).length, 1);
+
+  // A split tab is two panes under one number, so the pane is named too.
+  const split = draw(
+    [tab("wA:p1", "wA:t1", { tab_label: "1", split: true }),
+     tab("wA:p2", "wA:t1", { tab_label: "1", split: true })],
+    "wA:p1"
+  );
+  check("both halves of a split tab are reachable and told apart",
+        [/>tab 1 · p1</.test(split), />tab 1 · p2</.test(split)], [true, true]);
+  check("and closing it is not offered, since it is the only tab",
+        /data-tab-close/.test(split), false);
 }
 
 // -- a row with something waiting behind it ----------------------------------
@@ -601,7 +846,8 @@ function order(agents, busy = false, held = [], custom = []) {
                         title: "Rewrite the importer" });
   const drawn = (queue) => {
     rows.state.queue = queue;
-    return rows.agentRowHtml(busy(), "api", rows.queuedByPane().get("wA:p1"));
+    const one = pen(busy());
+    return rows.agentRowHtml(one, "api", rows.penQueue(one, rows.queuedByPane()));
   };
 
   check("a chat with nothing waiting says nothing",
@@ -637,9 +883,9 @@ function order(agents, busy = false, held = [], custom = []) {
      into that, and it is the state that must never be buried under a count. */
   const asking = (queue) => {
     rows.state.queue = queue;
-    return rows.agentRowHtml(
-      { ...row("wA:p1", 1, "/p/api", "blocked"), name: "api", title: "Which of these?" },
-      "api", rows.queuedByPane().get("wA:p1"));
+    const one = pen({ ...row("wA:p1", 1, "/p/api", "blocked"), name: "api",
+                      title: "Which of these?" });
+    return rows.agentRowHtml(one, "api", rows.penQueue(one, rows.queuedByPane()));
   };
   check("a question outranks the queue behind it",
         /status-blocked">blocked</.test(asking([{ id: 6, pane_id: "wA:p1", state: "waiting" }])),
@@ -939,7 +1185,7 @@ function order(agents, busy = false, held = [], custom = []) {
 {
   const rows = loadRows();
   const of = (status) => rows.agentRowHtml(
-    { ...row("wA:p1", 1, "/p/api", status), name: "api", title: "Rewrite it" }, "api");
+    pen({ ...row("wA:p1", 1, "/p/api", status), name: "api", title: "Rewrite it" }), "api");
 
   check("a working row is marked working", of("working").includes("agent-row st-working"), true);
   check("a blocked row is marked blocked", of("blocked").includes("agent-row st-blocked"), true);
@@ -972,18 +1218,34 @@ function order(agents, busy = false, held = [], custom = []) {
   check("a plain queue says one thing", rows.queuedLabel(counts.get("wB:p1")), "1 queued");
   check("nothing owed says nothing", rows.queuedLabel(undefined), "");
 
-  const html = rows.agentRowHtml(
-    { ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite it" },
-    "api", counts.get("wA:p1"));
+  const busy = pen({ ...row("wA:p1", 1, "/p/api", "working"), name: "api", title: "Rewrite it" });
+  const html = rows.agentRowHtml(busy, "api", rows.penQueue(busy, counts));
   check("the row wears the count", html.includes("2 queued · 1 failed"), true);
   check("in the place the status word had", html.includes("status-badge status-failed"), true);
   check("and the status word steps aside for it", /status-working/.test(html), false);
 
-  const quiet = rows.agentRowHtml(
-    { ...row("wC:p1", 2, "/p/api", "working"), name: "api", title: "Rewrite it" },
-    "api", counts.get("wC:p1"));
+  const idle = pen({ ...row("wC:p1", 2, "/p/api", "working"), name: "api", title: "Rewrite it" });
+  const quiet = rows.agentRowHtml(idle, "api", rows.penQueue(idle, counts));
   check("a sheep with an empty queue says nothing",
         quiet.includes("agent-row-queued"), false);
+
+  /* The row stands for every tab in the worktree, so it owes what all of them
+     owe: a prompt waiting on the second agent on a branch is still a prompt
+     that branch has not delivered, and the row is the only place it shows. */
+  const both = pen(
+    { ...row("wA:p1", 1, "/p/api", "working"), tab_id: "wA:t1" },
+    { ...row("wA:p2", 1, "/p/api", "idle"), tab_id: "wA:t2" }
+  );
+  rows.state.queue = [
+    { id: 1, pane_id: "wA:p1", state: "waiting" },
+    { id: 2, pane_id: "wA:p2", state: "waiting" },
+    { id: 3, pane_id: "wA:p2", state: "failed" },
+    { id: 4, pane_id: "wB:p1", state: "waiting" },
+  ];
+  check("a pen owes what its tabs owe between them",
+        rows.penQueue(both, rows.queuedByPane()), { waiting: 2, failed: 1 });
+  check("and a pen with nothing waiting owes nothing",
+        rows.penQueue(idle, rows.queuedByPane()), null);
 }
 
 // -- what is left to spend ---------------------------------------------------

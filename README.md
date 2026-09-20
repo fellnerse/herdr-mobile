@@ -42,12 +42,15 @@ project telling you at a glance who is working and who is waiting.
   is *doing* is the coloured spine down the row and the pose it stands in:
   grazing while it works, head up when idle, ear pricked when blocked, asleep
   when done. Grouped under the repository they work in — worktrees included —
-  in the order they were started, with whoever is asking you a question on top,
-  until you drag the projects into an order of your own.
-- **Every tab of a project**, not just the ones with an agent in them: shells
-  included, each with its own row and its own sheep, the way they sit in the
-  laptop's tab bar. The row you want at 11pm is often the one running the dev
-  server.
+  in the order they were started, with whoever is waiting on you on top — a
+  question first, then a turn that finished and nobody has read — until you
+  drag the projects into an order of your own.
+- **One sheep per worktree**, not per tab: the row says `3 tabs` when it is
+  standing in front of three, and wears whichever of them needs you most. The
+  tabs are in a strip above the transcript — tap to switch, `+` for another
+  agent on the same branch, `×` to close one without touching the rest. Shells
+  included, which is the row you want at 11pm when the thing you need is the
+  dev server.
 - **Rename from the phone.** Projects and tabs both, using Herdr's own labels
   — so a project named on the sofa is named on the laptop too.
 - **What is queued**, on the sheep it is stacked behind: prompts waiting for a
@@ -239,30 +242,47 @@ Tap the project name at the top for the full list. **New** starts a workspace.
 
 The list is one heading per project — the repository Herdr says the workspace
 belongs to, so the queue's `sheep/` worktrees sit under the project they were
-cut from rather than in a project each. Under a heading is every tab of it,
-shells included, each with its own sheep and its own status: the tabs of a
-workspace the way the laptop's tab bar has them.
+cut from rather than in a project each. Under a heading is one row per
+workspace — one sheep per worktree, whatever it has open inside it. A row
+holding more than one tab says so (`2 tabs`) and wears whichever of them needs
+you most: a question first, then a turn that has finished, then work still
+running. Tapping it opens that tab, and the strip above the transcript is where
+the others are.
 
-Sheep stay in the order they were started; the one exception is an agent
-stopped on a question, which rises to the top of its project and takes its
-project to the top of the list. Nothing else moves, and nothing moves at all
-while you are looking at it. Above the list is what is left of the usage
+Sheep stay in the order they were started; the exception is a sheep waiting on
+you — an agent stopped on a question, or one that finished a turn nobody has
+read yet — which rises to the top of its project and takes its project to the
+top of the list, the question ahead of the finished turn. Nothing else moves,
+and nothing moves at all while you are looking at it. Above the list is what is left of the usage
 window.
 
 **Order.** **Hold a row for a moment** and its project lifts off the list to be
 dragged somewhere else. The new order is kept on the phone, and pushed back to
 Herdr when the project is a single workspace, so the laptop's strip reorders to
 match. Let go near the top or bottom and the list scrolls itself. An order you
-made by hand stays made: after a drag, a question no longer pulls a project to
-the front.
+made by hand stays made: after a drag, nothing waiting pulls a project to the
+front.
 
-**Rename.** Swipe a row left for **Rename** and **Close**. Rename changes the
-tab's name, or the workspace's when the workspace has only that one tab. These
-are Herdr's own labels — the workspace strip and the tab bar on the laptop —
-not a nickname the phone keeps to itself.
+**Rename.** Swipe a row left for **Rename** and **Close**. A row is a
+worktree, so Rename changes the workspace's name; a single tab is renamed by
+holding its chip in the strip above the transcript. These are Herdr's own
+labels — the workspace strip and the tab bar on the laptop — not a nickname
+the phone keeps to itself.
 
 **Close** asks first: closing a workspace stops every agent in it, and a stray
-swipe on a phone is cheap to make and expensive to undo.
+swipe on a phone is cheap to make and expensive to undo. To close one tab and
+keep the branch, use the `×` on its chip in the strip instead — which is why
+the overview lists worktrees rather than tabs: a row that says Close and means
+"the whole checkout" has to look like the whole checkout.
+
+### Tabs
+
+Under the header is the strip of tabs of the worktree you are in. Tap a chip to
+switch, hold one to rename that tab, `+` to open another tab in the same
+checkout — a second agent on the same branch rather than a worktree of its own
+— and `×` on the chip you are reading to close that tab alone. The last tab
+has no `×`: Herdr closes the workspace along with it, so that is Close on the
+row.
 
 ### Scrollback, the plain view and the status bar
 

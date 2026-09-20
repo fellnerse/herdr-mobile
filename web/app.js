@@ -47,6 +47,7 @@
   const elAgentSelect = document.getElementById("agent-select");
   const elAgentSelectDot = document.getElementById("agent-select-dot");
   const elAgentSelectName = document.getElementById("agent-select-name");
+  const elTabStrip = document.getElementById("tab-strip");
   const elAgentPicker = document.getElementById("agent-picker");
   const elAgentList = document.getElementById("agent-list");
   const elBtnClosePicker = document.getElementById("btn-close-picker");
@@ -283,6 +284,49 @@
     return (+m[1] * 0.299 + +m[2] * 0.587 + +m[3] * 0.114) < 40;
   }
 
+  const RE_URL = /https?:\/\/[^\s<>"'`]+/g;
+
+  function linkifyHtml(html) {
+    return html.replace(RE_URL, (rawUrl) => {
+      let url = rawUrl;
+      let trail = "";
+      while (url.length > 0) {
+        if (url.endsWith("&quot;")) {
+          url = url.slice(0, -6);
+          trail = "&quot;" + trail;
+        } else if (url.endsWith("&gt;")) {
+          url = url.slice(0, -4);
+          trail = "&gt;" + trail;
+        } else if (url.endsWith("&lt;")) {
+          url = url.slice(0, -4);
+          trail = "&lt;" + trail;
+        } else if (url.endsWith("&#39;")) {
+          url = url.slice(0, -5);
+          trail = "&#39;" + trail;
+        } else if (url.endsWith("&amp;")) {
+          url = url.slice(0, -5);
+          trail = "&amp;" + trail;
+        } else if (/[.,:;!?'"\]]$/.test(url)) {
+          trail = url.slice(-1) + trail;
+          url = url.slice(0, -1);
+        } else if (url.endsWith(")")) {
+          const openCount = (url.match(/\(/g) || []).length;
+          const closeCount = (url.match(/\)/g) || []).length;
+          if (closeCount > openCount) {
+            trail = ")" + trail;
+            url = url.slice(0, -1);
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+      if (!url) return rawUrl;
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>${trail}`;
+    });
+  }
+
   function runsToHtml(runs) {
     return runs
       .map((r) => {
@@ -293,7 +337,7 @@
         if (r.bold) css.push("font-weight:600");
         if (r.italic) css.push("font-style:italic");
         if (r.underline) css.push("text-decoration:underline");
-        const text = escapeHtml(r.text);
+        const text = linkifyHtml(escapeHtml(r.text));
         return css.length ? `<span style="${css.join(";")}">${text}</span>` : text;
       })
       .join("");
@@ -737,6 +781,9 @@
           state.activePaneId = null;
           renderActiveAgentMeta();
           syncPickerChrome();
+          // Nothing open means nothing to switch between: the strip goes with
+          // the chat it belonged to rather than being left standing.
+          renderTabStrip();
           elHistoryContent.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
         }
       } else {
@@ -772,18 +819,11 @@
     });
   }
 
-  /* The project, and which of its tabs this is - but only when it has more
-     than one, because "sheepit \u00b7 1" on a project with a single tab is a
-     detail nobody needed and the header has no width to spare. */
+  /* The worktree, and nothing else: which of its tabs you are in is the strip
+     directly underneath, and the header has no width to spare saying it
+     twice. */
   function agentBarName(row) {
-    const name = row.workspace_label || row.name || row.pane_id;
-    const tabs = new Set(
-      state.agents
-        .filter((a) => a.workspace_id === row.workspace_id)
-        .map((a) => a.tab_id)
-    );
-    if (tabs.size < 2) return name;
-    return `${name} \u00b7 ${tabName(row) || "tab " + tabNumber(row)}`;
+    return row.workspace_label || row.name || row.pane_id;
   }
 
   // Header button showing the current project
@@ -796,6 +836,7 @@
       : "No agents";
     elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
 
+    renderTabStrip();
     if (pickerVisible()) renderAgentList();
   }
 
@@ -1238,20 +1279,24 @@
           group.key,
           group.name,
           group.from ? "+" : "",
-          ...group.agents.map((a) =>
+          ...group.rows.map((pen) =>
             [
-              a.pane_id,
-              a.workspace_id,
-              a.tab_id,
-              a.status,
-              a.has_agent ? "a" : "",
-              a.name,
-              tabName(a),
-              a.title || a.cwd,
-              agoLabel(a.pane_id),
-              queuedLabel(queued.get(a.pane_id)),
-              pastureMark(pastureOf(a.has_agent ? a.agent : "")),
-              a.pane_id === state.activePaneId ? "1" : "",
+              pen.lead.pane_id,
+              pen.workspace_id,
+              // A tab opened or closed changes the row even when the pane
+              // leading it did not move.
+              tabCount(pen),
+              pen.lead.status,
+              pen.lead.has_agent ? "a" : "",
+              pen.lead.name,
+              tabName(pen.lead),
+              pen.lead.title || pen.lead.cwd,
+              agoLabel(pen.lead.pane_id),
+              queuedLabel(penQueue(pen, queued)),
+              pastureMark(pastureOf(pen.lead.has_agent ? pen.lead.agent : "")),
+              // Any of its tabs being the open one lights the row up: the
+              // chat you came from is in this pen even when another tab leads.
+              pen.tabs.some((a) => a.pane_id === state.activePaneId) ? "1" : "",
             ].join("\u001f")
           ),
         ].join("\u001e")
@@ -1261,15 +1306,15 @@
 
   /* A row under a heading that already names the project should not spend its
      biggest line saying the project again. What you are looking for is which
-     of this project's tabs this one is - so the terminal title leads, since it
-     is whatever you asked it to do, and the rest drops to the small line, and
-     only when it says something the heading did not: the tab's name, "sheep
-     #5", or a name you set by hand.
+     of this project's worktrees this one is - so the terminal title of the tab
+     leading it goes on top, since it is whatever you asked it to do, and the
+     rest drops to the small line, and only when it says something the heading
+     did not: the tab's name, "sheep #5", or a name you set by hand.
 
-     A tab with no agent in it has no title to lead with. It is called what the
-     laptop's tab bar calls it, which is a name if anybody typed one and a
-     number otherwise - and that is the whole point of listing it: the row you
-     want at 11pm is often the one running the dev server. */
+     A worktree with no agent in it has no title to lead with. It is called
+     what the laptop's tab bar calls it, which is a name if anybody typed one
+     and a number otherwise - and that is the whole point of listing it: the
+     row you want at 11pm is often the one running the dev server. */
   /* What is still owed to each pane: prompts holding for a window or a busy
      chat, and anything that failed on the way in. Both are things you queued
      and neither has happened yet, so the overview says so rather than making
@@ -1283,6 +1328,20 @@
       counts.set(p.pane_id, at);
     }
     return counts;
+  }
+
+  /* And what is owed to a whole pen, since the row stands for every tab in
+     one: a prompt waiting on a worktree's second agent is still a prompt this
+     worktree has not delivered. */
+  function penQueue(pen, counts) {
+    const total = { waiting: 0, failed: 0 };
+    for (const a of pen.tabs) {
+      const at = counts.get(a.pane_id);
+      if (!at) continue;
+      total.waiting += at.waiting;
+      total.failed += at.failed;
+    }
+    return total.waiting || total.failed ? total : null;
   }
 
   function queuedLabel(count) {
@@ -1308,8 +1367,12 @@
     return `<span class="status-badge status-${queued.failed ? "failed" : "queued"}">${escapeHtml(word)}</span>`;
   }
 
-  function agentRowHtml(agent, groupName, queued) {
-    const isActive = agent.pane_id === state.activePaneId;
+  function agentRowHtml(pen, groupName, queued) {
+    // The tab that speaks for the pen: whichever of them needs you most.
+    const agent = pen.lead;
+    // The open chat being anywhere in this pen lights the row up - it is the
+    // pen you came from, whichever of its tabs is leading it now.
+    const isActive = pen.tabs.some((a) => a.pane_id === state.activePaneId);
     const status = knownStatus(agent.status);
     const label = agent.name || agent.pane_id;
     const named = tabName(agent);
@@ -1317,12 +1380,13 @@
     // could not place has nothing but the project's name to fall back on.
     const numbered = tabNumber(agent) ? `tab ${tabNumber(agent)}` : "";
     const headline = agent.title || named || numbered || label;
-    /* The fleece is whose sheep it is. An empty pasture has no sheep and so no
-       breed - it keeps the muted colour the stylesheet gives it, which an
-       inline one would quietly win against. */
+    /* The fleece is whose sheep it is - and whose is the worktree, not the
+       tab. Hashing the workspace keeps one animal per pen however its tabs
+       come and go; hashing the leading pane would change the face every time
+       another tab started asking something. */
     const fleece = status === "unknown"
       ? ""
-      : `color:${sheepMarks(agent.pane_id).breed.fleece}`;
+      : `color:${sheepMarks(penSeed(pen)).breed.fleece}`;
     /* What this pane's subscription has left, and how fast it is going: the
        first is the height of the grass, the second is how quickly the sheep
        chews it. A shell has no subscription and so no field. */
@@ -1339,23 +1403,29 @@
        one for a branch that was finished with last week. The project's own
        checkout is not something the phone may delete at all. */
     const removable = agent.repo && !agent.main_checkout;
+    /* How many tabs this row is standing in front of, said only when it is
+       more than the one you would assume. It is the count that makes Close
+       honest: a row saying "3 tabs" is visibly not a single chat, and the
+       strip above the transcript is where one of the three is closed. */
+    const tabs = tabCount(pen);
     return `
       <div class="agent-row-wrap">
         <div class="agent-row-actions">
-          <button class="agent-row-action rename" data-action="rename" data-pane-id="${escapeHtml(agent.pane_id)}">Rename</button>
-          <button class="agent-row-action close" data-action="close" data-workspace-id="${escapeHtml(agent.workspace_id)}">Close</button>
+          <button class="agent-row-action rename" data-action="rename" data-workspace-id="${escapeHtml(pen.workspace_id)}">Rename</button>
+          <button class="agent-row-action close" data-action="close" data-workspace-id="${escapeHtml(pen.workspace_id)}">Close</button>
           ${removable
-            ? `<button class="agent-row-action remove" data-action="remove" data-workspace-id="${escapeHtml(agent.workspace_id)}">Remove</button>`
+            ? `<button class="agent-row-action remove" data-action="remove" data-workspace-id="${escapeHtml(pen.workspace_id)}">Remove</button>`
             : ""}
         </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${status}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(status, agent.pane_id, pasture)}</span>
+          <span class="sheep-wrap ${status}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(status, penSeed(pen), pasture)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             <span class="agent-row-meta">
               ${agent.has_agent && agent.agent
                 ? `<span class="row-agent">${escapeHtml(agent.agent)}</span>`
                 : ""}
+              ${tabs > 1 ? `<span class="row-tabs">${tabs} tabs</span>` : ""}
               ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
             </span>
           </span>
@@ -1392,9 +1462,12 @@
         const owed = group.agents.reduce(
           (sum, a) => sum + ((queued.get(a.pane_id) || {}).waiting || 0), 0
         );
+        /* Waiting counts questions, since each of them is a separate thing
+           you have to go and answer; the plain tally counts rows, because it
+           is how many sheep are underneath the heading. */
         const tally = waiting
           ? `<span class="agent-group-waiting">${waiting} waiting</span>`
-          : `<span class="agent-group-count">${group.agents.length}</span>`;
+          : `<span class="agent-group-count">${group.rows.length}</span>`;
         /* The heading is sticky, so a project's total stays on screen while
            you scroll its sheep - which is the number you want when the queue
            is long enough to scroll. */
@@ -1418,8 +1491,8 @@
               ${tally}
               ${add}
             </h2>
-            ${group.agents
-                .map((a) => agentRowHtml(a, group.name, queued.get(a.pane_id)))
+            ${group.rows
+                .map((pen) => agentRowHtml(pen, group.name, penQueue(pen, queued)))
                 .join("")}
           </section>`;
       })
@@ -1431,19 +1504,13 @@
      project named here is named there a moment later, and the phone is not
      keeping a private nickname the machine under the desk knows nothing of.
 
-     A row is a tab, so Rename is tab.rename - except on a workspace that has
-     only the one tab, where the name the row is showing is the workspace's own
-     and renaming the tab would leave the row saying what it said before. */
-  async function renameRow(paneId) {
-    const row = state.agents.find((a) => a.pane_id === paneId);
-    if (!row) return;
-    const tabs = new Set(
-      state.agents
-        .filter((a) => a.workspace_id === row.workspace_id)
-        .map((a) => a.tab_id)
-    );
-    if (tabs.size > 1) await renameTab(row);
-    else await renameWorkspace(row);
+     A row is a worktree, so Rename is workspace.rename - the label in the
+     desktop's workspace strip. A single tab inside it is renamed from the
+     strip above the transcript, which is the only place the tabs are far
+     enough apart to tell which one you meant. */
+  async function renameRow(workspaceId) {
+    const row = state.agents.find((a) => a.workspace_id === workspaceId);
+    if (row) await renameWorkspace(row);
   }
 
   async function renameWorkspace(row) {
@@ -1746,6 +1813,138 @@
     renderActiveAgentMeta();
     renderChatQueue();
     fetchHistory(true);
+  }
+
+  /* ------------------------------------------------------------ The tabs ---
+   *
+   * The overview lists worktrees, one sheep per pen, so this is the only place
+   * the tabs inside one are individually reachable - and the only place a
+   * single tab is closed. That was the whole confusion it is here to end:
+   * every action the overview offered acted on the workspace, so closing what
+   * looked like a tab took the branch and its neighbours with it.
+   *
+   * Tap a chip to switch, hold one to rename it, + for another tab in the same
+   * checkout, and the x on the one you are in to close it. The x is absent on
+   * the last tab, because Herdr takes the workspace with it - closing the
+   * worktree is the row's own Close, where it says what it does.
+   * ------------------------------------------------------------------------ */
+
+  // In the order the laptop's tab bar has them, so the phone agrees with it.
+  function tabsOfActive() {
+    const active = state.agents.find((a) => a.pane_id === state.activePaneId);
+    if (!active) return [];
+    return state.agents
+      .filter((a) => a.workspace_id === active.workspace_id)
+      .sort(
+        (a, b) =>
+          (Number(tabNumber(a)) || 0) - (Number(tabNumber(b)) || 0) ||
+          bornAt(a) - bornAt(b)
+      );
+  }
+
+  /* What a chip is called: the tab's name if it has one, its number if not.
+     A split tab is two panes under one number, so the pane is named too -
+     otherwise both halves of it are called "tab 2". */
+  function tabChipLabel(row) {
+    const base = tabName(row) || `tab ${tabNumber(row) || "?"}`;
+    if (!row.split) return base;
+    return `${base} · p${(row.pane_id || "").split(":p")[1] || "?"}`;
+  }
+
+  function tabStripHtml() {
+    const tabs = tabsOfActive();
+    if (!tabs.length) return "";
+    const workspaceId = tabs[0].workspace_id || "";
+    const closable = new Set(tabs.map((a) => a.tab_id)).size > 1;
+    const chips = tabs.map((row) => {
+      const on = row.pane_id === state.activePaneId;
+      const status = knownStatus(row.has_agent ? row.status : "unknown");
+      return `
+        <button type="button" class="tab-chip ${on ? "on" : ""}" data-pane-id="${escapeHtml(row.pane_id)}">
+          <span class="agent-dot ${status}"></span>
+          <span class="tab-chip-name">${escapeHtml(tabChipLabel(row))}</span>
+          ${on && closable
+            ? `<span class="tab-chip-x" data-tab-close="${escapeHtml(row.tab_id)}" role="button" aria-label="Close this tab">×</span>`
+            : ""}
+        </button>`;
+    });
+    /* The chips scroll and the plus does not: Herdr's own tab labels are whole
+       sentences, and two of them are wider than a phone - a plus that scrolls
+       away with them is a plus nobody knows is there. */
+    return `
+      <div class="tab-chips">${chips.join("")}</div>
+      <button type="button" class="tab-chip-new" data-tab-new="${escapeHtml(workspaceId)}"
+              aria-label="New tab in this worktree">+</button>`;
+  }
+
+  // Redrawn from the poll, so it is compared before it is replaced: a strip
+  // rebuilt under the thumb loses the tap that was landing on it.
+  let tabStripDrawn = null;
+
+  function renderTabStrip() {
+    const html = tabStripHtml();
+    if (html === tabStripDrawn) return;
+    tabStripDrawn = html;
+    elTabStrip.innerHTML = html;
+    elTabStrip.classList.toggle("hidden", !html);
+    /* Herdr's tab labels are whole sentences, so the chip you are on is often
+       off the end of the strip - along with the x that closes it. `nearest`
+       everywhere, or this scrolls the transcript as well. */
+    const on = elTabStrip.querySelector(".tab-chip.on");
+    if (on && on.scrollIntoView) {
+      on.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
+  async function renameTabByPane(paneId) {
+    const row = state.agents.find((a) => a.pane_id === paneId);
+    if (row) await renameTab(row);
+  }
+
+  async function closeTab(tabId) {
+    const panes = state.agents.filter((a) => a.tab_id === tabId);
+    const row = panes[0];
+    if (!row) return;
+    const name = tabName(row) || `tab ${tabNumber(row)}`;
+    // A stray tap is cheap to make and expensive to undo, the same as Close on
+    // a row - and this one stops an agent mid-turn.
+    if (!confirm(`Close ${name}? Anything running in it will be stopped.`)) return;
+    triggerHaptic("warning");
+    // Where to land afterwards, decided while the tabs are all still here.
+    const left = tabsOfActive().find((a) => a.tab_id !== tabId);
+    try {
+      const res = await fetch(`/api/tabs/${encodeURIComponent(tabId)}/close`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error("close failed");
+      if (left && panes.some((a) => a.pane_id === state.activePaneId)) {
+        selectAgent(left.pane_id);
+      }
+      await fetchAgents();
+    } catch (err) {
+      alert("Could not close tab: " + err.message);
+    }
+  }
+
+  /* Another tab beside this one: a second agent on the same branch, in the
+     same checkout, rather than a worktree of its own. It opens where the tab
+     it was asked from is sitting. */
+  async function createTab(workspaceId) {
+    const row = state.agents.find((a) => a.pane_id === state.activePaneId);
+    if (!workspaceId || !row) return;
+    triggerHaptic();
+    try {
+      const data = await postAction("/api/tabs", {
+        workspace_id: workspaceId,
+        cwd: row.cwd || "",
+      });
+      if (data.refusal) throw new Error(data.refusal);
+      await fetchAgents();
+      if (data.pane_id) selectAgent(data.pane_id);
+      else renderTabStrip();
+    } catch (err) {
+      alert("Could not open a tab: " + err.message);
+    }
   }
 
   // Render Metadata (lives in the settings sheet)
@@ -3019,11 +3218,11 @@
    * project's sheep stay where you last saw them, and a new one joins the end
    * of its own project rather than jumping to the front of everything.
    *
-   * The single exception is an agent stopped on a question. It is the only
-   * state that goes nowhere at all without you, so it rises to the top of its
-   * project and carries its project to the top of the list - until a finger
-   * says otherwise, because an order somebody made by hand is a promise that
-   * the project stays where it was put.
+   * The exception is a sheep that is waiting on you, and there are two ways to
+   * be: stopped on a question, and finished a turn nobody has read yet. Both
+   * rise to the top of their project and carry their project to the top of the
+   * list - until a finger says otherwise, because an order somebody made by
+   * hand is a promise that the project stays where it was put.
    * ------------------------------------------------------------------------ */
 
   /* When a row was created, as a number that only ever grows. Herdr numbers
@@ -3035,9 +3234,32 @@
     return (Number.isFinite(ws) ? ws : Number.MAX_SAFE_INTEGER) * 1000 + pane;
   }
 
-  // The one thing nothing moves off without you: an agent asking a question.
+  /* How badly a row wants you, as a number to sort on. Herdr has no separate
+     "you have not looked at this yet" flag - what it has is `done`, which is
+     the state it puts a pane in when the turn ended, and which the agent
+     leaves the moment anything happens in it. That is near enough to unread:
+     a finished agent is owed an answer exactly as much as a blocked one is,
+     and leaving it at the bottom of its project is how a turn that ended an
+     hour ago goes unnoticed. It is the same pair the badge counts and the
+     same pair a push fires for, so the list now agrees with both.
+
+     A question still outranks a finished turn. An agent on a prompt has its
+     work sitting half-done on screen; a finished one has already put its work
+     down, and can wait the length of a scroll.
+
+     `URGENCY` further down ranks the same two states the same way round, for a
+     different question: which tab a pen's row speaks for. Both agreeing is
+     what makes a row that floats open on the tab that floated it - keep them
+     that way if either changes. */
+  const ATTENTION = { blocked: 2, done: 1 };
+
+  function attentionOf(agent) {
+    return (agent.has_agent && ATTENTION[agent.status]) || 0;
+  }
+
+  // Nothing here moves on without you.
   function wantsInput(agent) {
-    return agent.has_agent && agent.status === "blocked";
+    return attentionOf(agent) > 0;
   }
 
   /* Which project a row belongs under. The gateway reads it off Herdr's
@@ -3069,6 +3291,70 @@
       }
     }
     return [...groups.values()];
+  }
+
+  /* ------------------------------------------------------- One row, one pen
+   *
+   * A row used to be a tab, which read as a lie the moment you swiped one
+   * aside: what the actions underneath it could do was close the workspace and
+   * delete the checkout, because that is all a phone was ever offered. Two
+   * tabs on one branch meant two rows, and closing either of them took the
+   * branch and the other tab with it.
+   *
+   * So the overview lists the pen rather than the animals in it: one row per
+   * workspace, which for everything the scheduler cuts is one row per
+   * worktree. The tabs inside are reached where they can be told apart - the
+   * strip above the transcript, which is also the only place a single tab can
+   * be closed. All the row says about them is how many there are.
+   * ---------------------------------------------------------------------- */
+
+  /* Which of a workspace's tabs speaks for it. The point of the row is what it
+     needs from you, so the tab that needs the most leads: a question first,
+     then a turn that finished and is sitting there, then work in progress, and
+     a plain shell last. Ties keep the order the project was already in, which
+     is creation order. */
+  const URGENCY = { blocked: 0, done: 1, working: 2, idle: 3, unknown: 4 };
+
+  function urgency(agent) {
+    if (!agent.has_agent) return 5;
+    const rank = URGENCY[agent.status];
+    return rank === undefined ? 4 : rank;
+  }
+
+  /* Collapse a project's panes into one entry per workspace, in the order the
+     panes were given. `tabs` keeps every pane, splits included, because that
+     is what the strip lists and what the row counts. */
+  function byWorkspace(agents) {
+    const pens = new Map();
+    for (const agent of agents) {
+      const key = agent.workspace_id || agent.pane_id;
+      let pen = pens.get(key);
+      if (!pen) {
+        pen = { key, workspace_id: agent.workspace_id || "", lead: agent, tabs: [] };
+        pens.set(key, pen);
+      }
+      pen.tabs.push(agent);
+      if (urgency(agent) < urgency(pen.lead)) pen.lead = agent;
+    }
+    return [...pens.values()];
+  }
+
+  // How many tabs a row stands for. A split tab is two panes and one tab, and
+  // the number beside a row is a count of things the strip can switch between.
+  function tabCount(pen) {
+    return new Set(pen.tabs.map((a) => a.tab_id || a.pane_id)).size;
+  }
+
+  /* What the row's sheep is hashed from. The workspace, so the animal is the
+     pen: a worktree keeps the same face for as long as it is open, and the
+     tabs inside it are not five different sheep. */
+  function penSeed(pen) {
+    return pen.workspace_id || pen.lead.pane_id;
+  }
+
+  function collapseTabs(groups) {
+    for (const group of groups) group.rows = byWorkspace(group.agents);
+    return groups;
   }
 
   /* Herdr numbers a tab before anybody names it, and "2" is not a name worth
@@ -3134,7 +3420,7 @@
 
   /* A hand-made order wins over both rules above it: a project put third stays
      third even when one of its agents starts asking something. Inside a
-     project the question still rises - that costs nothing, since a project
+     project the waiting sheep still rise - that costs nothing, since a project
      stays where the finger left it either way. */
   function sortGroups(groups) {
     const rank = new Map(state.customOrder.map((key, i) => [key, i]));
@@ -3143,7 +3429,7 @@
       groups.sort((a, b) => at(a.key) - at(b.key) || a.born - b.born);
       return;
     }
-    groups.sort((a, b) => Number(b.wants) - Number(a.wants) || a.born - b.born);
+    groups.sort((a, b) => b.wants - a.wants || a.born - b.born);
   }
 
   /* Never reshuffle a list under a hand: an agent changing state would slide a
@@ -3171,19 +3457,22 @@
       state.agents.sort((a, b) => at(a.pane_id) - at(b.pane_id));
       // A pane that appeared while you were reading joins its own project at
       // the end, rather than being stranded below every group.
-      state.groups = groupByProject(state.agents);
+      state.groups = collapseTabs(groupByProject(state.agents));
       return;
     }
 
     const groups = groupByProject(state.agents);
     for (const group of groups) {
       group.agents.sort(
-        (a, b) => Number(wantsInput(b)) - Number(wantsInput(a)) || bornAt(a) - bornAt(b)
+        (a, b) => attentionOf(b) - attentionOf(a) || bornAt(a) - bornAt(b)
       );
-      group.wants = group.agents.some(wantsInput);
+      // A project is as loud as its loudest sheep: a question ahead of a
+      // finished turn, both ahead of a project that wants nothing.
+      group.wants = Math.max(0, ...group.agents.map(attentionOf));
       group.born = Math.min(...group.agents.map(bornAt));
     }
     sortGroups(groups);
+    collapseTabs(groups);
 
     state.groups = groups;
     state.agents = groups.flatMap((g) => g.agents);
@@ -3228,11 +3517,69 @@
   elAgentSelect.addEventListener("click", openPicker);
   elBtnClosePicker.addEventListener("click", closePicker);
 
+  /* The strip: a tap switches tabs, and the two things a chip can do to itself
+     are the x it draws and a hold. Rename is a hold rather than a button
+     because a chip is the width of its own name and a second glyph on it would
+     be most of the chip - and it is the same gesture the rows answer to. */
+  const CHIP_HOLD_MS = 500;
+  let chipTimer = null;
+  let chipHeld = false;
+
+  function cancelChipHold() {
+    if (chipTimer) clearTimeout(chipTimer);
+    chipTimer = null;
+  }
+
+  elTabStrip.addEventListener("click", (e) => {
+    const shut = e.target.closest("[data-tab-close]");
+    if (shut) {
+      closeTab(shut.dataset.tabClose);
+      return;
+    }
+    const add = e.target.closest("[data-tab-new]");
+    if (add) {
+      createTab(add.dataset.tabNew);
+      return;
+    }
+    const chip = e.target.closest(".tab-chip");
+    if (!chip) return;
+    // The hold already did something with this chip; the lift is not a tap.
+    if (chipHeld) {
+      chipHeld = false;
+      return;
+    }
+    selectAgent(chip.dataset.paneId);
+  });
+
+  elTabStrip.addEventListener("touchstart", (e) => {
+    const chip = e.target.closest(".tab-chip");
+    chipHeld = false;
+    cancelChipHold();
+    if (!chip || e.target.closest("[data-tab-close]")) return;
+    chipTimer = setTimeout(() => {
+      chipHeld = true;
+      triggerHaptic();
+      renameTabByPane(chip.dataset.paneId);
+    }, CHIP_HOLD_MS);
+  }, { passive: true });
+
+  ["touchmove", "touchend", "touchcancel"].forEach((name) =>
+    elTabStrip.addEventListener(name, cancelChipHold, { passive: true })
+  );
+
+  // A mouse has no hold, and the menu it would get instead is no use here.
+  elTabStrip.addEventListener("contextmenu", (e) => {
+    const chip = e.target.closest(".tab-chip");
+    if (!chip) return;
+    e.preventDefault();
+    renameTabByPane(chip.dataset.paneId);
+  });
+
   elAgentList.addEventListener("click", (e) => {
     const action = e.target.closest("[data-action]");
     if (action) {
       if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
-      else if (action.dataset.action === "rename") renameRow(action.dataset.paneId);
+      else if (action.dataset.action === "rename") renameRow(action.dataset.workspaceId);
       else if (action.dataset.action === "remove") removeWorktree(action.dataset.workspaceId);
       else if (action.dataset.action === "worktree") createWorktree(action.dataset.project);
       return;
