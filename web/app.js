@@ -36,6 +36,9 @@
     editingId: null,
     listTouchedAt: 0,
     chatVisited: false,
+    // The tokens page, which is only ever read while it is open: `rows` stays
+    // null until it has been, so opening it knows to say it is reading.
+    usage: { days: 7, rows: null, columns: null, picked: -1, scrubbing: false, error: "" },
   };
 
   // DOM Elements
@@ -99,6 +102,12 @@
   const elChangesCount = document.getElementById("changes-count");
   const elBtnCloseChanges = document.getElementById("btn-close-changes");
   const elBtnDiffLayout = document.getElementById("btn-diff-layout");
+  const elBtnUsage = document.getElementById("btn-usage");
+  const elUsageView = document.getElementById("usage-view");
+  const elUsageBody = document.getElementById("usage-body");
+  const elUsageSub = document.getElementById("usage-sub");
+  const elUsageRanges = document.getElementById("usage-ranges");
+  const elBtnCloseUsage = document.getElementById("btn-close-usage");
 
   /* A phone stacks: the flock is the page, a chat covers it. A desktop window
      has room for both, so past this width the flock is a column on the left
@@ -4860,6 +4869,491 @@
   elChangesList.addEventListener("click", (e) => {
     const row = e.target.closest(".change-row");
     if (row) toggleDiff(row);
+  });
+
+  /* ---- Tokens over time ---------------------------------------------------
+   *
+   * The strip above the flock says what is *left* of a window. This page says
+   * where it went: tokens per hour and per day, which is the question a
+   * percentage cannot answer - "am I spending more than last week", "which
+   * project ate Tuesday", "was that one afternoon or all of it".
+   *
+   * Nothing new is recorded for it. Both agents write every turn down in their
+   * own session logs and the gateway reads those, so the history is as old as
+   * the logs on the day this ships rather than starting from now.
+   *
+   * The counting is deliberately total tokens, cache reads included: that is
+   * what was sent to a model and what a window is priced on. The split - how
+   * much of it was cache, how much was written back - is under the chart,
+   * because a bar that hid the cache would be a smaller number than the one the
+   * subscription is actually spending.
+   */
+
+  // One fixed hue per model, assigned in name order and never cycled: the same
+  // model is the same colour whichever range is showing, so switching from a
+  // week to a day does not repaint what is left on screen. Past five, the
+  // smallest fold into one grey "other" rather than inventing a sixth hue.
+  const SERIES_COLOURS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181"];
+  const OTHER_COLOUR = "#5e6678";
+  const SERIES_MAX = SERIES_COLOURS.length;
+  const OTHER = "other";
+
+  const KINDS = [
+    ["output", "output"],
+    ["input", "input"],
+    ["cache_write", "cache write"],
+    ["cache_read", "cache read"],
+  ];
+
+  const HOUR_MS = 3600000;
+
+  /* Big numbers, short enough to sit on a phone. Tokens run to the hundreds of
+     millions in a week, so this goes up to billions and never spends more than
+     three characters of digits: 1.2M, 125K, 12K. A round one keeps no decimal,
+     because the axis it labels is round on purpose - "1.0K" on a gridline reads
+     as a measurement rather than as the scale. */
+  function fmtTokens(n) {
+    const v = Math.max(0, Math.round(n || 0));
+    const scale = (unit, by) => `${trimZero((v / by).toFixed(v / by >= 10 ? 0 : 1))}${unit}`;
+    if (v >= 1e9) return scale("B", 1e9);
+    if (v >= 1e6) return scale("M", 1e6);
+    if (v >= 1e3) return scale("K", 1e3);
+    return String(v);
+  }
+
+  function trimZero(text) {
+    return text.endsWith(".0") ? text.slice(0, -2) : text;
+  }
+
+  function fmtCount(n) {
+    return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  function rowTotal(row) {
+    return (row.input || 0) + (row.output || 0) +
+      (row.cache_read || 0) + (row.cache_write || 0);
+  }
+
+  /* "claude-opus-5" is the id; "opus 5" is what a legend on a 360px screen can
+     afford. The vendor is already the agent's own line, and a dated id
+     ("-20250514") says nothing anybody is asking here. */
+  function modelLabel(model) {
+    return String(model || "")
+      .replace(/^(claude|anthropic)-/, "")
+      .replace(/-\d{8}$/, "")
+      .replace(/-latest$/, "")
+      .replace(/-/g, " ");
+  }
+
+  /* The columns the chart draws, every one of them, including the empty ones.
+     A day nothing was spent is a fact about the week and has to take up its
+     own width - a chart that only plots the days that happened compresses a
+     quiet Sunday out of existence and makes Monday look adjacent to Friday.
+
+     Buckets are local: the gateway counts in UTC hours because it cannot know
+     which day that was for you, and this is where it becomes Tuesday. */
+  function usageColumns(rows, days, now = new Date()) {
+    const byHour = days <= 1;
+    const count = byHour ? 24 : days;
+    const columns = [];
+    const index = new Map();
+    for (let i = count - 1; i >= 0; i--) {
+      const at = new Date(now);
+      if (byHour) {
+        at.setMinutes(0, 0, 0);
+        at.setTime(at.getTime() - i * HOUR_MS);
+      } else {
+        at.setHours(0, 0, 0, 0);
+        // Days are stepped rather than subtracted in milliseconds, so the one
+        // the clocks change on is still a day.
+        at.setDate(at.getDate() - i);
+      }
+      const column = {
+        at,
+        key: slotKey(at, byHour),
+        label: slotLabel(at, byHour),
+        total: 0,
+        turns: 0,
+        parts: {},
+        kinds: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+      };
+      index.set(column.key, column);
+      columns.push(column);
+    }
+
+    for (const row of rows || []) {
+      const at = new Date(row.hour);
+      if (isNaN(at)) continue;
+      const column = index.get(slotKey(at, byHour));
+      if (!column) continue;  // older than the range, or a clock skewed ahead
+      const total = rowTotal(row);
+      column.total += total;
+      column.turns += row.messages || 0;
+      column.parts[row.model] = (column.parts[row.model] || 0) + total;
+      for (const [kind] of KINDS) column.kinds[kind] += row[kind] || 0;
+    }
+    return columns;
+  }
+
+  function slotKey(at, byHour) {
+    const day = `${at.getFullYear()}-${at.getMonth() + 1}-${at.getDate()}`;
+    return byHour ? `${day}T${at.getHours()}` : day;
+  }
+
+  function slotLabel(at, byHour) {
+    if (byHour) return `${String(at.getHours()).padStart(2, "0")}:00`;
+    return at.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+  }
+
+  /* Which models get a colour, and which are folded away. The order is by name
+     rather than by size on purpose: rank changes with the range, and a legend
+     that repaints itself when you tap "24h" is one nobody can learn. */
+  function usageSeries(rows) {
+    const totals = new Map();
+    for (const row of rows || []) {
+      totals.set(row.model, (totals.get(row.model) || 0) + rowTotal(row));
+    }
+    const named = [...totals.keys()].sort();
+    const kept = named.length <= SERIES_MAX
+      ? named
+      : [...named].sort((a, b) => totals.get(b) - totals.get(a))
+          .slice(0, SERIES_MAX).sort();
+    const series = kept.map((model, i) => ({
+      model,
+      label: modelLabel(model),
+      colour: SERIES_COLOURS[i],
+      total: totals.get(model) || 0,
+    }));
+    const folded = named.filter((model) => !kept.includes(model));
+    if (folded.length) {
+      series.push({
+        model: OTHER,
+        label: `other (${folded.length})`,
+        colour: OTHER_COLOUR,
+        total: folded.reduce((sum, model) => sum + totals.get(model), 0),
+        folds: folded,
+      });
+    }
+    return series;
+  }
+
+  // What a column is worth in a series, with the folded models counted once.
+  function partOf(column, series) {
+    if (!series.folds) return column.parts[series.model] || 0;
+    return series.folds.reduce((sum, model) => sum + (column.parts[model] || 0), 0);
+  }
+
+  /* A top gridline on a number somebody can hold in their head: 1, 2 or 5 with
+     zeroes after it. The bars are read against this line, so it being round is
+     most of what makes the chart readable at a glance. */
+  function niceMax(value) {
+    if (!(value > 0)) return 0;
+    const power = Math.pow(10, Math.floor(Math.log10(value)));
+    const scaled = value / power;
+    const step = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+    return step * power;
+  }
+
+  /* Geometry, in the pixels the chart is actually drawn at. The SVG is built
+     to the width it was measured at rather than scaled to fit: a viewBox
+     stretched across a desktop window takes the axis labels with it, and 11px
+     type at 2.4× is not a label any more. */
+  const PLOT_H = 132;
+  const PAD_TOP = 8;
+  const PAD_BOTTOM = 16;   // the row of x labels
+  const PAD_LEFT = 34;     // the y labels, right-aligned against the plot
+  const PAD_RIGHT = 4;
+  const BAR_MAX = 24;      // a mark is never thicker than this, however few
+  const SEGMENT_GAP = 2;   // surface showing between two stacked segments
+  const BAR_CAP = 4;       // the rounded data-end, square at the baseline
+
+  function usageChart(columns, series, width, picked = -1) {
+    const w = Math.max(200, Math.round(width || 320));
+    const h = PAD_TOP + PLOT_H + PAD_BOTTOM;
+    const plotW = w - PAD_LEFT - PAD_RIGHT;
+    const base = PAD_TOP + PLOT_H;
+    const top = niceMax(Math.max(...columns.map((c) => c.total), 0));
+    const slot = plotW / Math.max(1, columns.length);
+    const barW = Math.max(2, Math.min(BAR_MAX, slot - 2));
+
+    const parts = [];
+    // Gridlines first, so every mark is drawn over them: nothing but the data
+    // is allowed to sit on top.
+    for (const share of [0, 0.5, 1]) {
+      const y = Math.round(base - share * PLOT_H) + 0.5;
+      parts.push(`<line class="usage-grid" x1="${PAD_LEFT}" y1="${y}" x2="${w - PAD_RIGHT}" y2="${y}"/>`);
+      if (top && share) {
+        parts.push(`<text class="usage-tick" x="${PAD_LEFT - 5}" y="${y + 3.5}">${
+          fmtTokens(top * share)}</text>`);
+      }
+    }
+
+    columns.forEach((column, i) => {
+      const x = PAD_LEFT + i * slot + (slot - barW) / 2;
+      if (i === picked) {
+        parts.push(`<rect class="usage-pick" x="${(PAD_LEFT + i * slot).toFixed(1)}" y="${
+          PAD_TOP}" width="${slot.toFixed(1)}" height="${PLOT_H}"/>`);
+      }
+      if (!top || !column.total) return;
+      let cursor = base;
+      const drawn = series
+        .map((s) => ({ s, value: partOf(column, s) }))
+        .filter(({ value }) => value > 0);
+      drawn.forEach(({ s, value }, depth) => {
+        const full = (value / top) * PLOT_H;
+        const isTop = depth === drawn.length - 1;
+        // The gap is taken off the top of every segment but the last, so the
+        // stack still adds up to its own height at the baseline.
+        const height = Math.max(1, full - (isTop ? 0 : SEGMENT_GAP));
+        const y = cursor - full;
+        cursor -= full;
+        parts.push(isTop
+          ? `<path d="${capPath(x, y, barW, height)}" fill="${s.colour}"/>`
+          : `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${
+              height.toFixed(1)}" fill="${s.colour}"/>`);
+      });
+    });
+
+    // Every label would be a smear at 24 columns on a phone, so they are
+    // thinned to the ones worth reading: the quarter hours, or every few days.
+    const every = columns.length > 20 ? 6 : columns.length > 10 ? 5 : 1;
+    columns.forEach((column, i) => {
+      if (i % every || (columns.length - i) <= every / 2) return;
+      const x = PAD_LEFT + i * slot + slot / 2;
+      parts.push(`<text class="usage-tick" x="${x.toFixed(1)}" y="${h - 4}" text-anchor="middle">${
+        escapeHtml(shortSlot(column))}</text>`);
+    });
+
+    return `<svg class="usage-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" ` +
+      `role="img" aria-label="Tokens per ${columns.length > 24 ? "day" : "bucket"}">${
+        parts.join("")}</svg>`;
+  }
+
+  // A bar with its data-end rounded and its baseline square.
+  function capPath(x, y, w, h) {
+    const r = Math.min(BAR_CAP, h, w / 2);
+    return `M${x.toFixed(1)} ${(y + h).toFixed(1)}V${(y + r).toFixed(1)}` +
+      `a${r} ${r} 0 0 1 ${r} ${-r}h${(w - 2 * r).toFixed(1)}` +
+      `a${r} ${r} 0 0 1 ${r} ${r}V${(y + h).toFixed(1)}z`;
+  }
+
+  // The axis version of a column's name: an hour, or a day and its month.
+  function shortSlot(column) {
+    const at = column.at;
+    return column.key.includes("T")
+      ? `${String(at.getHours()).padStart(2, "0")}`
+      : `${at.getDate()}.${at.getMonth() + 1}.`;
+  }
+
+  /* One line under the chart: the bucket you are touching, or the whole range
+     when you are touching nothing. A tooltip that follows a finger is a
+     tooltip under a finger on a phone, so the reading is parked somewhere it
+     can always be seen instead.
+
+     Under it, the legend - which is also the reading, per model. Every model in
+     the range is always listed, in its own fixed order, whether or not this
+     bucket used it: a legend that appeared and disappeared as you dragged
+     across the chart would be one more thing moving, and a model showing
+     nothing in the hour you are looking at is worth knowing. */
+  function usageReadout(columns, series, picked) {
+    const column = columns[picked];
+    const scope = column ? [column] : columns;
+    const sum = (of) => scope.reduce((total, c) => total + of(c), 0);
+    const turns = sum((c) => c.turns);
+    const keys = series
+      .map((s) => ({ s, value: sum((c) => partOf(c, s)) }))
+      .map(({ s, value }) => `<span class="usage-chip${value ? "" : " muted"}"><i style="background:${
+        s.colour}"></i>${escapeHtml(s.label)} ${fmtTokens(value)}</span>`)
+      .join("");
+    return `
+      <div class="usage-readout">
+        <span class="usage-readout-head">${escapeHtml(column ? column.label : "everything shown")}${
+          turns ? ` · ${fmtCount(turns)} turns` : ""}</span>
+        <span class="usage-readout-total">${fmtTokens(sum((c) => c.total))}</span>
+      </div>
+      <div class="usage-chips">${
+        keys || '<span class="usage-chip muted">nothing spent</span>'}</div>`;
+  }
+
+  /* What the range was made of: the four kinds of token, then the projects it
+     was spent on. Both are tables rather than more charts - they are a ranking
+     of a handful of things, and a ranking is a list. */
+  function usageKinds(columns) {
+    const totals = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+    for (const column of columns) {
+      for (const [kind] of KINDS) totals[kind] += column.kinds[kind];
+    }
+    const sum = Object.values(totals).reduce((a, b) => a + b, 0) || 1;
+    return `<div class="usage-tiles">${KINDS.map(([kind, label]) => `
+      <div class="usage-tile">
+        <span class="usage-tile-label">${label}</span>
+        <span class="usage-tile-value">${fmtTokens(totals[kind])}</span>
+        <span class="usage-tile-share">${Math.round((totals[kind] / sum) * 100)}%</span>
+      </div>`).join("")}</div>`;
+  }
+
+  // The projects the range was spent on, biggest first. Ranked, so this one is
+  // ordered by size - unlike the series, whose colours have to stay put.
+  const PROJECTS_SHOWN = 8;
+
+  function usageProjects(rows, since) {
+    const totals = new Map();
+    for (const row of rows || []) {
+      if (since && new Date(row.hour) < since) continue;
+      totals.set(row.project, (totals.get(row.project) || 0) + rowTotal(row));
+    }
+    const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+    if (!ranked.length) return "";
+    const top = ranked[0][1] || 1;
+    const shown = ranked.slice(0, PROJECTS_SHOWN);
+    const rest = ranked.slice(PROJECTS_SHOWN);
+    if (rest.length) {
+      shown.push([`${rest.length} more`, rest.reduce((sum, [, v]) => sum + v, 0)]);
+    }
+    return `
+      <h2 class="usage-heading">Projects</h2>
+      <div class="usage-rows">${shown.map(([name, value]) => `
+        <div class="usage-row">
+          <span class="usage-row-name">${escapeHtml(name)}</span>
+          <span class="usage-row-bar"><i style="width:${
+            Math.max(2, (value / top) * 100)}%"></i></span>
+          <span class="usage-row-value">${fmtTokens(value)}</span>
+        </div>`).join("")}</div>`;
+  }
+
+  /* Where the numbers came from, at the foot of the page. It is the one thing
+     about this page somebody has to be told once: nothing here was recorded for
+     it, so it goes as far back as the agents' own logs do - and it counts what
+     they were asked, which is not the same as what a subscription was billed
+     for. */
+  function usageNote() {
+    return '<p class="usage-note">Counted from the agents\' own session logs, ' +
+      'which is every token sent to a model — cache reads included.</p>';
+  }
+
+  /* The page itself: what is fetched, what is drawn, and what a finger on the
+     chart does. Everything above this line is arithmetic on rows and takes no
+     part in the DOM, which is what `tools/test-usage.js` drives. */
+  const USAGE_RANGES = { 1: "the last 24 hours", 7: "the last 7 days", 30: "the last 30 days" };
+
+  async function openUsage() {
+    triggerHaptic();
+    elUsageView.classList.remove("hidden");
+    if (!state.usage.rows) {
+      elUsageBody.innerHTML = '<div class="history-empty">Reading the agents\' logs…</div>';
+    }
+    await fetchUsage();
+  }
+
+  function closeUsage() {
+    elUsageView.classList.add("hidden");
+  }
+
+  async function fetchUsage() {
+    const days = state.usage.days;
+    try {
+      const res = await fetch(`/api/usage?days=${days}`);
+      const data = await res.json();
+      if (days !== state.usage.days) return;  // the range moved while we asked
+      if (!data.ok) throw new Error(data.error || "could not read the logs");
+      state.usage.rows = data.rows || [];
+      state.usage.error = "";
+    } catch (err) {
+      state.usage.error = err.message;
+    }
+    state.usage.picked = -1;
+    renderUsage();
+  }
+
+  function renderUsage() {
+    if (elUsageView.classList.contains("hidden")) return;
+    const { rows, days, error } = state.usage;
+    if (error && !rows) {
+      elUsageSub.textContent = "";
+      elUsageBody.innerHTML = `<div class="history-empty">${escapeHtml(error)}</div>`;
+      return;
+    }
+    const columns = usageColumns(rows || [], days);
+    const series = usageSeries(rows || []);
+    const total = columns.reduce((sum, c) => sum + c.total, 0);
+    // The chart is built at the width it has, so it has to be measured first -
+    // and the body is the only thing on the page that knows it.
+    const width = Math.max(240, elUsageBody.clientWidth - 24);
+
+    // The head has a title and three range buttons on it already, so what is
+    // left of a phone's width is a few words: the turns, counted over what is
+    // actually drawn rather than over every row that came back.
+    elUsageSub.textContent = error
+      ? error
+      : `${fmtCount(columns.reduce((sum, c) => sum + c.turns, 0))} turns`;
+    elUsageBody.innerHTML = `
+      <div class="usage-hero">
+        <span class="usage-hero-value">${fmtTokens(total)}</span>
+        <span class="usage-hero-label">tokens in ${USAGE_RANGES[days] || `${days} days`}</span>
+      </div>
+      <div id="usage-chart" class="usage-chart">${
+        usageChart(columns, series, width, state.usage.picked)}</div>
+      ${usageReadout(columns, series, state.usage.picked)}
+      ${usageKinds(columns)}
+      ${usageProjects(rows || [], columns.length ? columns[0].at : null)}
+      ${usageNote()}`;
+    state.usage.columns = columns;
+  }
+
+  /* Touching the chart picks a column. The hit area is the whole slot rather
+     than the bar in it: a 6px bar on a 24 hour range is not something a finger
+     can be asked to find, and an empty hour is worth picking too - "nothing,
+     at 14:00" is an answer. */
+  function pickColumn(e) {
+    const chart = document.getElementById("usage-chart");
+    if (!chart || !state.usage.columns) return;
+    const box = chart.getBoundingClientRect();
+    const plotLeft = box.left + PAD_LEFT;
+    const slot = (box.width - PAD_LEFT - PAD_RIGHT) / state.usage.columns.length;
+    const index = Math.floor((e.clientX - plotLeft) / slot);
+    const picked = index >= 0 && index < state.usage.columns.length ? index : -1;
+    if (picked === state.usage.picked) return;
+    state.usage.picked = picked;
+    renderUsage();
+  }
+
+  elBtnUsage.addEventListener("click", openUsage);
+  elBtnCloseUsage.addEventListener("click", closeUsage);
+
+  elUsageRanges.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-days]");
+    if (!btn) return;
+    state.usage.days = Number(btn.dataset.days);
+    state.usage.picked = -1;
+    [...elUsageRanges.querySelectorAll("button")].forEach((b) => {
+      b.setAttribute("aria-pressed", b === btn ? "true" : "false");
+    });
+    renderUsage();   // redraw at the new range while the rows are on their way
+    fetchUsage();
+  });
+
+  elUsageBody.addEventListener("pointerdown", (e) => {
+    if (!e.target.closest("#usage-chart")) return;
+    state.usage.scrubbing = true;
+    pickColumn(e);
+  });
+
+  /* Dragging across the chart reads a column at a time. Whether a finger is
+     down is tracked here rather than taken from `pressure`, which is 0 on a
+     phone without a force-sensitive screen - the whole gesture would be
+     ignored on exactly the device this is for. */
+  elUsageBody.addEventListener("pointermove", (e) => {
+    if (!state.usage.scrubbing && e.pointerType !== "mouse") return;
+    if (e.target.closest("#usage-chart")) pickColumn(e);
+  });
+
+  for (const done of ["pointerup", "pointercancel", "pointerleave"]) {
+    elUsageBody.addEventListener(done, () => { state.usage.scrubbing = false; });
+  }
+
+  // A rotated phone is a different width, and the chart was built in pixels.
+  window.addEventListener("resize", () => {
+    if (!elUsageView.classList.contains("hidden")) renderUsage();
   });
 
   // Init

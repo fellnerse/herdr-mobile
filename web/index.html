@@ -167,6 +167,14 @@
   <section id="agent-picker" class="agent-picker" aria-label="Projects">
     <header class="picker-head">
       <span class="picker-title">Projects</span>
+      <!-- Where the windows above went: the same numbers, over days -->
+      <button id="btn-usage" class="icon-btn" aria-label="Token usage" title="Token usage">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" y1="20" x2="6" y2="13"></line>
+          <line x1="12" y1="20" x2="12" y2="5"></line>
+          <line x1="18" y1="20" x2="18" y2="9"></line>
+        </svg>
+      </button>
       <button id="btn-new-workspace" class="picker-new" aria-label="New workspace">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -234,6 +242,29 @@
       </button>
     </header>
     <div id="changes-list" class="changes-list"></div>
+  </section>
+
+  <!-- Tokens: what the windows on the flock were spent on, over days rather
+       than as a percentage of now -->
+  <section id="usage-view" class="full-view hidden" role="dialog" aria-label="Token usage">
+    <header class="view-head">
+      <div class="view-head-text">
+        <span class="view-title">Tokens</span>
+        <span id="usage-sub" class="view-sub">reading the logs…</span>
+      </div>
+      <div id="usage-ranges" class="usage-ranges" role="group" aria-label="How far back">
+        <button type="button" class="view-action" data-days="1">24h</button>
+        <button type="button" class="view-action" data-days="7" aria-pressed="true">7d</button>
+        <button type="button" class="view-action" data-days="30">30d</button>
+      </div>
+      <button id="btn-close-usage" class="icon-btn" aria-label="Close token usage">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </header>
+    <div id="usage-body" class="usage-body"></div>
   </section>
 
   <!-- Settings sheet -->

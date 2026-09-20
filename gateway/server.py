@@ -22,6 +22,7 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import push
+import tokens
 import gitdiff
 import machine
 import wsproto
@@ -702,6 +703,19 @@ class HerdrHandler(BaseHTTPRequestHandler):
         # uses for its own limits and costs no tokens.
         if path == "/api/queue/quota":
             self.send_json({"ok": True, **quota_payload()})
+            return
+
+        # API: what has been spent, hour by hour, out of the agents' own logs.
+        # The windows above say what is left; this says where it went.
+        if path == "/api/usage":
+            days = clamp_int(qs.get("days", [None])[0], 1, tokens.HORIZON_DAYS, 7)
+            try:
+                self.send_json(tokens.history(days))
+            except OSError as e:
+                # Reading somebody else's logs is allowed to fail - a home
+                # directory that moved, a permission - without taking the page
+                # that asked down with it.
+                self.send_json({"ok": False, "error": str(e), "rows": []}, 200)
             return
 
         # API: queued prompts, for every chat or just one
