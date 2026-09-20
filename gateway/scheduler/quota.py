@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -48,7 +49,12 @@ CODEX_DAYS = 4
 # The last of a rollout worth reading to find the newest rate limit line.
 CODEX_TAIL = 256 * 1024
 
-AGENTS = ("claude", "codex")
+OMP_DIR = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".omp" / "agent")
+OMP_DB = OMP_DIR / "agent.db"
+OMP_CONFIG = Path.home() / ".omp" / "config.yml"
+AGY_SETTINGS = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+
+AGENTS = ("claude", "codex", "omp", "agy")
 from . import STATE_DIR
 
 CACHE = STATE_DIR / "quota-cache.json"
@@ -582,6 +588,193 @@ def _rollout_or_none() -> Quota | None:
     except QuotaError:
         return None
 
+def _antigravity_report(db_path: Path | None = None) -> dict:
+    """The latest Google Antigravity usage report cached by OMP in agent.db."""
+    path = db_path or OMP_DB
+    if not path.is_file():
+        raise QuotaError(f"no OMP database at {path}")
+
+    try:
+        uri = f"file:{path.resolve()}?mode=ro"
+        con = sqlite3.connect(uri, uri=True)
+        cur = con.cursor()
+        rows = cur.execute(
+            "SELECT value, expires_at FROM cache WHERE key LIKE 'usage_cache:report:%google-antigravity%'"
+        ).fetchall()
+        con.close()
+    except sqlite3.Error as e:
+        raise QuotaError(f"unreadable OMP database at {path}: {e}") from e
+
+    if not rows:
+        raise QuotaError("no Antigravity usage cached in OMP yet")
+
+    best = None
+    best_fetched = -1
+    for val_str, _ in rows:
+        try:
+            data = json.loads(val_str)
+            val = data.get("value", {})
+            fetched = val.get("fetchedAt", 0)
+            if fetched > best_fetched:
+                best_fetched = fetched
+                best = val
+        except Exception:
+            continue
+
+    if not best:
+        raise QuotaError("malformed Antigravity usage in OMP database")
+    return best
+
+
+def _model_is_3p(model_name: str | None) -> bool:
+    if not model_name:
+        return False
+    m = model_name.lower()
+    return any(k in m for k in ("claude", "opus", "sonnet", "haiku", "gpt", "o1", "o3", "3p"))
+
+
+def _omp_group(omp_dir: Path | None = None, config_path: Path | None = None) -> str:
+    """Which quota group OMP is using ('gemini' or '3p')."""
+    base = omp_dir or OMP_DIR
+    sessions_dir = base / "sessions"
+    if sessions_dir.is_dir():
+        try:
+            recent = sorted(sessions_dir.glob("*/*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]
+            for s in recent:
+                try:
+                    with s.open("r", encoding="utf-8", errors="replace") as f:
+                        for _ in range(15):
+                            line = f.readline()
+                            if not line:
+                                break
+                            if '"model_change"' in line or '"model"' in line:
+                                data = json.loads(line)
+                                model = data.get("model")
+                                if model:
+                                    return "3p" if _model_is_3p(model) else "gemini"
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    cfg = config_path or OMP_CONFIG
+    if cfg.is_file():
+        try:
+            for line in cfg.read_text(encoding="utf-8").splitlines():
+                if "default:" in line:
+                    model = line.split("default:", 1)[1].strip()
+                    return "3p" if _model_is_3p(model) else "gemini"
+        except Exception:
+            pass
+    return "gemini"
+
+
+def _agy_group(settings_path: Path | None = None) -> str:
+    """Which quota group Antigravity CLI is using ('gemini' or '3p')."""
+    path = settings_path or AGY_SETTINGS
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            model = data.get("model")
+            if model:
+                return "3p" if _model_is_3p(model) else "gemini"
+        except Exception:
+            pass
+    return "3p"
+
+
+def _antigravity_buckets(report: dict, group: str = "gemini") -> tuple[Bucket, ...]:
+    """Pull the 5h and weekly window buckets for the specified group."""
+    buckets = []
+    raw_groups = report.get("raw", {}).get("groups", [])
+    target_group = None
+    for g in raw_groups:
+        name = (g.get("displayName") or "").lower()
+        if group == "gemini" and "gemini" in name:
+            target_group = g
+            break
+        elif group == "3p" and any(k in name for k in ("claude", "gpt", "3p")):
+            target_group = g
+            break
+
+    if target_group:
+        for b in target_group.get("buckets", []):
+            win = (b.get("window") or "").lower()
+            win_name = "five_hour" if win == "5h" else ("seven_day" if win == "weekly" else win)
+            rem = b.get("remainingFraction")
+            if rem is None:
+                continue
+            util = max(0.0, min(100.0, round((1.0 - float(rem)) * 100.0, 1)))
+            buckets.append(Bucket(
+                name=win_name,
+                utilization=util,
+                resets_at=_parse_ts(b.get("resetTime")),
+                locked_reason=None,
+            ))
+    else:
+        seen_windows = set()
+        for lim in report.get("limits", []):
+            lim_id = lim.get("id", "")
+            if group == "gemini" and "gemini" not in lim_id:
+                continue
+            if group == "3p" and "3p" not in lim_id:
+                continue
+            win_info = lim.get("window", {})
+            win_id = (win_info.get("id") or "").lower()
+            win_name = "five_hour" if win_id == "5h" else ("seven_day" if win_id in ("weekly", "7d") else win_id)
+            if win_name in seen_windows:
+                continue
+            seen_windows.add(win_name)
+
+            amt = lim.get("amount", {})
+            rem = amt.get("remainingFraction")
+            if rem is None and "usedFraction" in amt:
+                rem = 1.0 - float(amt["usedFraction"])
+            if rem is None:
+                continue
+            util = max(0.0, min(100.0, round((1.0 - float(rem)) * 100.0, 1)))
+            resets_ms = win_info.get("resetsAt")
+            resets_at = (datetime.fromtimestamp(resets_ms / 1000, timezone.utc)
+                         if isinstance(resets_ms, (int, float)) else None)
+            buckets.append(Bucket(
+                name=win_name,
+                utilization=util,
+                resets_at=resets_at,
+                locked_reason=None,
+            ))
+
+    def _sort_key(b):
+        if b.name == "five_hour":
+            return 0
+        if b.name == "seven_day":
+            return 1
+        return 2
+
+    buckets.sort(key=_sort_key)
+    return tuple(buckets)
+
+
+def antigravity(agent: str = "omp", group: str | None = None,
+                db_path: Path | None = None, settings_path: Path | None = None,
+                omp_dir: Path | None = None, config_path: Path | None = None) -> Quota:
+    """Read Google Antigravity usage cached by OMP in agent.db."""
+    report = _antigravity_report(db_path)
+    if not group:
+        group = _agy_group(settings_path) if agent == "agy" else _omp_group(omp_dir, config_path)
+    buckets = _antigravity_buckets(report, group=group)
+    ms = report.get("fetchedAt")
+    fetched = (datetime.fromtimestamp(ms / 1000, timezone.utc)
+               if isinstance(ms, (int, float)) else _now())
+    account = report.get("metadata", {}).get("email")
+    return Quota(buckets, fetched, stale=True, agent=agent, source="observed", account=account)
+
+
+def omp(db_path: Path | None = None) -> Quota:
+    return antigravity("omp", db_path=db_path)
+
+
+def agy(db_path: Path | None = None) -> Quota:
+    return antigravity("agy", db_path=db_path)
+
 
 # Readings somebody else obtained - parsed off a pane, which the gateway can
 # reach and this module cannot.
@@ -599,7 +792,7 @@ def noted(agent: str) -> Quota | None:
     return _noted.get(agent)
 
 
-SOURCES = {"claude": claude, "codex": codex}
+SOURCES = {"claude": claude, "codex": codex, "omp": omp, "agy": agy}
 
 _memo: dict[str, tuple[float, Quota]] = {}
 _memo_lock = threading.Lock()
@@ -614,7 +807,8 @@ def current(agent: str = "claude", ttl: float = MEMO_TTL) -> Quota:
     every delivery, so without a memo an active queue would hammer both.
     Utilization does not move fast enough for 30s to matter.
     """
-    source = SOURCES.get(agent)
+    canonical = "agy" if agent in ("antigravity", "google-antigravity") else agent
+    source = SOURCES.get(canonical)
     if source is None:
         raise QuotaError(f"no usage to read for {agent or 'this agent'}")
     with _memo_lock:
