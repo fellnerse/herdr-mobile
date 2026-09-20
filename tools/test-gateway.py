@@ -16,8 +16,10 @@ Standard library only, like everything else here.
 """
 
 import os
+import json
 import re
 import struct
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -892,6 +894,88 @@ check("a time later today stays today",
 check("a time already past is tomorrow's",
       quota._status_reset("06:00", None, None, noon).astimezone().day,
       (noon + timedelta(days=1)).day)
+
+# -- reading Antigravity / OMP / Agy off agent.db ---------------------------
+
+with tempfile.TemporaryDirectory() as tmp:
+    db_dir = Path(tmp)
+    db_file = db_dir / "agent.db"
+    con = sqlite3.connect(db_file)
+    con.execute("""
+        CREATE TABLE cache (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            expires_at INTEGER NOT NULL
+        )
+    """)
+    report_data = {
+        "value": {
+            "provider": "google-antigravity",
+            "fetchedAt": 1789726634001,
+            "metadata": {"email": "test@example.com"},
+            "raw": {
+                "groups": [
+                    {
+                        "displayName": "Gemini Models",
+                        "buckets": [
+                            {
+                                "bucketId": "gemini-5h",
+                                "window": "5h",
+                                "remainingFraction": 0.90,
+                                "resetTime": "2026-09-18T22:30:00Z",
+                            },
+                            {
+                                "bucketId": "gemini-weekly",
+                                "window": "weekly",
+                                "remainingFraction": 0.85,
+                                "resetTime": "2026-09-23T06:00:00Z",
+                            },
+                        ],
+                    },
+                    {
+                        "displayName": "Claude and GPT models",
+                        "buckets": [
+                            {
+                                "bucketId": "3p-5h",
+                                "window": "5h",
+                                "remainingFraction": 1.0,
+                                "resetTime": "2026-09-18T23:30:00Z",
+                            },
+                            {
+                                "bucketId": "3p-weekly",
+                                "window": "weekly",
+                                "remainingFraction": 0.70,
+                                "resetTime": "2026-09-19T06:00:00Z",
+                            },
+                        ],
+                    },
+                ]
+            },
+        }
+    }
+    con.execute(
+        "INSERT INTO cache (key, value, expires_at) VALUES (?, ?, ?)",
+        ("usage_cache:report:2:google-antigravity:test", json.dumps(report_data), 1789842583),
+    )
+    con.commit()
+    con.close()
+
+    q_omp = quota.antigravity("omp", group="gemini", db_path=db_file)
+    check("OMP gets five_hour and seven_day", [b.name for b in q_omp.buckets], ["five_hour", "seven_day"])
+    check("OMP computes Gemini utilization correctly", [b.utilization for b in q_omp.buckets], [10.0, 15.0])
+    check("OMP carries account email", q_omp.account, "test@example.com")
+
+    q_agy = quota.antigravity("agy", group="3p", db_path=db_file)
+    check("Agy gets five_hour and seven_day", [b.name for b in q_agy.buckets], ["five_hour", "seven_day"])
+    check("Agy computes 3p utilization correctly", [b.utilization for b in q_agy.buckets], [0.0, 30.0])
+
+    check("missing OMP DB raises QuotaError",
+          "no OMP database" in error_of(lambda: quota.antigravity("omp", db_path=db_dir / "nonexistent.db")), True)
+
+check("gemini model is not 3p", quota._model_is_3p("google-antigravity/gemini-3.8-flash"), False)
+check("claude opus is 3p", quota._model_is_3p("Claude Opus 4.6 (Thinking)"), True)
+check("gpt model is 3p", quota._model_is_3p("gpt-5.2"), True)
+check("current('antigravity') maps to agy", quota.current("antigravity", ttl=0).agent, "agy")
 
 # -- typing into somebody's session -----------------------------------------
 

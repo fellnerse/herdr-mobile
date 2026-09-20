@@ -16,6 +16,7 @@ import threading
 import mimetypes
 import contextlib
 import subprocess
+import shutil
 from pathlib import Path
 from urllib.parse import urlparse, urlsplit, parse_qs, unquote
 from http import HTTPStatus
@@ -1509,6 +1510,32 @@ def refresh_codex_usage() -> None:
         call_herdr_rpc("agent.prompt", {"target": pane_id, "text": "/status"})
         return  # one pane is enough; the account is the same either way
 
+_ANTIGRAVITY_REFRESH_AFTER = 900.0  # 15 minutes
+_LAST_ANTIGRAVITY_REFRESH = 0.0
+_ANTIGRAVITY_LOCK = threading.Lock()
+
+
+def refresh_antigravity_usage() -> None:
+    """Trigger background refresh of Google Antigravity usage if older than 15m."""
+    global _LAST_ANTIGRAVITY_REFRESH
+    now = time.monotonic()
+    with _ANTIGRAVITY_LOCK:
+        if now - _LAST_ANTIGRAVITY_REFRESH < _ANTIGRAVITY_REFRESH_AFTER:
+            return
+        _LAST_ANTIGRAVITY_REFRESH = now
+
+    def _run():
+        omp_bin = shutil.which("omp") or (Path.home() / ".local" / "bin" / "omp")
+        if not omp_bin or not Path(omp_bin).exists():
+            return
+        try:
+            subprocess.run([str(omp_bin), "usage", "-p", "google-antigravity"],
+                           capture_output=True, timeout=10.0)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
 
 def agents_running() -> list:
     """Which kinds of agent are on this machine right now.
@@ -1579,6 +1606,11 @@ def quota_payload() -> dict:
         try:
             refresh_codex_usage()
         except Exception as e:  # a usage reading is never worth a failed page
+            log_usage_problem(e)
+    if "omp" in agents or "agy" in agents:
+        try:
+            refresh_antigravity_usage()
+        except Exception as e:
             log_usage_problem(e)
     readings = [agent_quota(agent) for agent in agents]
     return {
