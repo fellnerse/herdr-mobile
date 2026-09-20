@@ -512,7 +512,7 @@ html, body {
    wanting something before you have looked at anything in it. */
 .agent-row.st-blocked {
   box-shadow: inset 5px 0 0 var(--status-blocked);
-  background: rgba(248, 81, 73, 0.09);
+  background: linear-gradient(rgba(248, 81, 73, 0.09), rgba(248, 81, 73, 0.09)) var(--bg-card);
   border-color: rgba(248, 81, 73, 0.35);
 }
 
