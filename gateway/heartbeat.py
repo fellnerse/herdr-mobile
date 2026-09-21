@@ -375,6 +375,21 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
     return None
 
 
+def send_agent_prompt(herdr: Herdr, pane_id: str, text: str) -> None:
+    """Send a prompt or command to an agent pane.
+
+    Tries Herdr's `agent.prompt` first. If the target is not recognized by
+    Herdr's agent RPC (e.g. omp, which raises agent_not_ready or agent_not_found),
+    falls back to typing it into the pane with enter (`send_line`).
+    """
+    try:
+        herdr.agent_prompt(pane_id, text)
+    except HerdrError as e:
+        if e.code in ("agent_not_found", "agent_not_ready", "no_agent", "unknown_agent", "not_supported"):
+            herdr.send_line(pane_id, text)
+        else:
+            raise
+
 def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
                       heartbeat_id: str | None = None) -> dict:
     """Trigger a heartbeat check immediately."""
@@ -419,18 +434,19 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
 
     # Clear session before running to prevent context window bloat over time
     if target_hb.clear_session and status in ("idle", "done"):
+        clear_cmd = "/new" if target_hb.agent_kind == "omp" else "/clear"
         try:
-            herdr.agent_prompt(pane_id, "/clear")
-            time.sleep(0.8)
+            send_agent_prompt(herdr, pane_id, clear_cmd)
+            time.sleep(1.0)
         except Exception as e:
             log.warning("failed to clear session in %s: %s", pane_id, e)
+
     prompt = (target_hb.prompt or DEFAULT_PROMPT).strip()
     sentinel = (target_hb.ok_sentinel or DEFAULT_SENTINEL).strip()
 
-    herdr = Herdr()
     try:
         mark_heartbeat_started(pane_id, sentinel, target_hb.id, target_hb.name)
-        herdr.agent_prompt(pane_id, prompt)
+        send_agent_prompt(herdr, pane_id, prompt)
     except HerdrError as e:
         pop_heartbeat(pane_id)
         return {"ok": False, "error": f"Failed to send prompt to {pane_id}: {e}"}
