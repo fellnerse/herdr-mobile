@@ -1228,8 +1228,8 @@ html, body {
 
 
 
-/* The paperclip sits where a thumb already is, at the same size as the send
-   button on the other side of the composer. */
+/* The paperclip sits where a thumb already is: in the cluster on the right,
+   between recall and send, at the size they all share. */
 .btn-attach {
   flex-shrink: 0;
   width: 36px;
@@ -1367,8 +1367,8 @@ html, body {
   font-size: 14px;
 }
 
-/* Same size and the same side as send, because it is the other thing you do
-   with an empty composer. Ghost rather than accent: recalling is not sending. */
+/* First of the three on the right, because it is the other thing you do with
+   an empty composer. Ghost rather than accent: recalling is not sending. */
 .btn-recall {
   flex-shrink: 0;
   width: 36px;
