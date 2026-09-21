@@ -86,6 +86,13 @@
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
+  const elToggleHeartbeat = document.getElementById("toggle-heartbeat");
+  const elHeartbeatOptions = document.getElementById("heartbeat-options");
+  const elHeartbeatInterval = document.getElementById("heartbeat-interval");
+  const elHeartbeatPrompt = document.getElementById("heartbeat-prompt");
+  const elHeartbeatLastRun = document.getElementById("heartbeat-last-run");
+  const elHeartbeatLastSummary = document.getElementById("heartbeat-last-summary");
+  const elBtnHeartbeatRun = document.getElementById("btn-heartbeat-run");
   const elPickerQuota = document.getElementById("picker-quota");
   const elChatQueue = document.getElementById("chat-queue");
   const elBtnConsole = document.getElementById("btn-console");
@@ -2028,6 +2035,7 @@
     triggerHaptic();
     elSheet.classList.remove("hidden");
     elSheetBackdrop.classList.remove("hidden");
+    refreshHeartbeatState();
   }
 
   function closeSheet() {
@@ -3952,12 +3960,9 @@
 
   elBtnSettings.addEventListener("click", openSheet);
   elBtnCloseSheet.addEventListener("click", closeSheet);
-  /* One backdrop serves both sheets, so it has to dismiss whichever is up -
-     closing only the settings sheet left the task sheet stranded on screen
-     with nothing behind it to tap. */
+  /* One backdrop dismisses any open sheet. */
   elSheetBackdrop.addEventListener("click", () => {
-    if (!elTaskSheet.classList.contains("hidden")) closeTaskSheet();
-    else closeSheet();
+    closeSheet();
   });
 
   elHistoryContainer.addEventListener("scroll", onHistoryScroll, { passive: true });
@@ -4211,6 +4216,98 @@
       setPushHint("failed: " + err.message);
     }
   });
+
+  async function refreshHeartbeatState() {
+    if (!elToggleHeartbeat) return;
+    try {
+      const res = await fetch("/api/heartbeat");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.ok || !data.config) return;
+      const cfg = data.config;
+      elToggleHeartbeat.checked = Boolean(cfg.enabled);
+      if (elHeartbeatOptions) {
+        elHeartbeatOptions.classList.toggle("hidden", !cfg.enabled);
+      }
+      if (elHeartbeatInterval) {
+        elHeartbeatInterval.value = String(Math.round(cfg.interval_hours || 24));
+      }
+      if (elHeartbeatPrompt && !elHeartbeatPrompt.value) {
+        elHeartbeatPrompt.value = cfg.prompt || "";
+      }
+      if (elHeartbeatLastRun) {
+        if (cfg.last_run_at) {
+          const d = new Date(cfg.last_run_at * 1000);
+          elHeartbeatLastRun.textContent = `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (${cfg.last_status || "done"})`;
+        } else {
+          elHeartbeatLastRun.textContent = "—";
+        }
+      }
+      if (elHeartbeatLastSummary) {
+        elHeartbeatLastSummary.textContent = cfg.last_summary || "";
+      }
+    } catch (err) {
+      /* gateway offline */
+    }
+  }
+
+  async function saveHeartbeatConfig(updates) {
+    try {
+      await fetch("/api/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      await refreshHeartbeatState();
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  if (elToggleHeartbeat) {
+    elToggleHeartbeat.addEventListener("change", async (e) => {
+      const enabled = e.target.checked;
+      if (elHeartbeatOptions) elHeartbeatOptions.classList.toggle("hidden", !enabled);
+      await saveHeartbeatConfig({ enabled });
+    });
+  }
+
+  if (elHeartbeatInterval) {
+    elHeartbeatInterval.addEventListener("change", async (e) => {
+      const interval_hours = parseFloat(e.target.value) || 24;
+      await saveHeartbeatConfig({ interval_hours });
+    });
+  }
+
+  if (elHeartbeatPrompt) {
+    elHeartbeatPrompt.addEventListener("blur", async (e) => {
+      const prompt = e.target.value.trim();
+      if (prompt) await saveHeartbeatConfig({ prompt });
+    });
+  }
+
+  if (elBtnHeartbeatRun) {
+    elBtnHeartbeatRun.addEventListener("click", async () => {
+      triggerHaptic();
+      elBtnHeartbeatRun.disabled = true;
+      elBtnHeartbeatRun.textContent = "Running…";
+      try {
+        await fetch("/api/heartbeat/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+      } catch (err) {
+        /* ignore */
+      } finally {
+        setTimeout(async () => {
+          elBtnHeartbeatRun.disabled = false;
+          elBtnHeartbeatRun.textContent = "Run now";
+          await refreshHeartbeatState();
+        }, 1000);
+      }
+    });
+  }
 
   if (pushSupported()) {
     navigator.serviceWorker

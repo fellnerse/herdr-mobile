@@ -1533,6 +1533,61 @@ html, body {
   font-weight: 600;
 }
 
+
+.sheet-section-header {
+  padding-top: 14px;
+  border-bottom: none;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sheet-row-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.sheet-textarea {
+  width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.sheet-textarea:focus {
+  border-color: var(--accent-primary);
+}
+
+.sheet-btn-small {
+  padding: 6px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sheet-btn-small:active {
+  background: var(--bg-hover);
+}
+
+.heartbeat-options {
+  display: flex;
+  flex-direction: column;
+}
 /* ---------------------------------------------------------------- Queue --- */
 
 /* Usage windows, above the list */

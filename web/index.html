@@ -320,6 +320,46 @@
       <input type="checkbox" id="toggle-push">
     </div>
 
+    <div class="sheet-row sheet-section-header">
+      <span>Heartbeat</span>
+    </div>
+
+    <div class="sheet-row">
+      <label for="toggle-heartbeat">
+        Daily health check
+        <span id="heartbeat-hint" class="sheet-hint">runs /live-web-stats-check; notifies only on anomalies</span>
+      </label>
+      <input type="checkbox" id="toggle-heartbeat">
+    </div>
+
+    <div id="heartbeat-options" class="heartbeat-options hidden">
+      <div class="sheet-row">
+        <label for="heartbeat-interval">Interval</label>
+        <select id="heartbeat-interval">
+          <option value="1">Every hour</option>
+          <option value="6">Every 6 hours</option>
+          <option value="12">Every 12 hours</option>
+          <option value="24" selected>Every 24 hours (daily)</option>
+        </select>
+      </div>
+
+      <div class="sheet-row sheet-row-stacked">
+        <label for="heartbeat-prompt">
+          Prompt
+          <span class="sheet-hint">sentinel HEARTBEAT_OK suppresses push</span>
+        </label>
+        <textarea id="heartbeat-prompt" class="sheet-textarea" rows="3" placeholder="Check prompt..."></textarea>
+      </div>
+
+      <div class="sheet-row">
+        <div class="sheet-agent-text">
+          <span class="sheet-hint">Last: <span id="heartbeat-last-run">—</span></span>
+          <span id="heartbeat-last-summary" class="sheet-hint"></span>
+        </div>
+        <button type="button" id="btn-heartbeat-run" class="sheet-btn-small">Run now</button>
+      </div>
+    </div>
+
     <div class="sheet-row">
       <label>Agent mode</label>
       <button id="btn-cycle-mode" class="mode-btn" title="Send shift+tab">

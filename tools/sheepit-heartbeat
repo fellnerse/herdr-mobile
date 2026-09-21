@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Terminal and cron access to SheepIt heartbeats.
+
+Triggers periodic health/status checks (e.g. /live-web-stats-check).
+Can be run manually, or invoked from cron / systemd.timer:
+
+    0 9 * * * /path/to/tools/sheepit-heartbeat run --wait --quiet
+
+Exits 0 on clean completion (HEARTBEAT_OK), 1 on anomaly or failure.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
+
+import heartbeat  # noqa: E402
+from herdr_rpc import Herdr, HerdrError, call_herdr_rpc  # noqa: E402
+
+DEFAULT_GATEWAY_URL = "http://127.0.0.1:3009"
+
+
+def _gateway_post(path: str, data: dict, base_url: str = DEFAULT_GATEWAY_URL) -> dict | None:
+    """Attempt to call the gateway API directly."""
+    url = f"{base_url}{path}"
+    req = Request(
+        url,
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Origin": base_url},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (URLError, HTTPError, OSError):
+        return None
+
+
+def cmd_status(args) -> int:
+    cfg = heartbeat.HeartbeatConfig.load()
+    status = "enabled" if cfg.enabled else "disabled"
+    print(f"Heartbeat: {status}")
+    print(f"Interval:  {cfg.interval_hours:g}h")
+    print(f"Target:    {cfg.target_pane or cfg.target_workspace or '(auto-detect)'}")
+    print(f"Sentinel:  {cfg.ok_sentinel}")
+    if cfg.last_run_at:
+        dt = datetime.fromtimestamp(cfg.last_run_at, timezone.utc)
+        print(f"Last run:  {dt:%Y-%m-%d %H:%M:%S} UTC ({cfg.last_status or 'unknown'})")
+        if cfg.last_summary:
+            print(f"Summary:   {cfg.last_summary}")
+    else:
+        print("Last run:  never")
+    return 0
+
+
+def cmd_config(args) -> int:
+    cfg = heartbeat.HeartbeatConfig.load()
+    changed = False
+
+    if args.enable:
+        cfg.enabled = True
+        changed = True
+    elif args.disable:
+        cfg.enabled = False
+        changed = True
+
+    if args.interval is not None:
+        if args.interval <= 0:
+            print("error: interval must be > 0", file=sys.stderr)
+            return 1
+        cfg.interval_hours = args.interval
+        changed = True
+
+    if args.pane is not None:
+        cfg.target_pane = args.pane.strip()
+        changed = True
+
+    if args.prompt is not None:
+        cfg.prompt = args.prompt.strip()
+        changed = True
+
+    if args.sentinel is not None:
+        cfg.ok_sentinel = args.sentinel.strip()
+        changed = True
+
+    if changed:
+        cfg.save()
+        print("Configuration updated.")
+
+    return cmd_status(args)
+
+
+def cmd_run(args) -> int:
+    cfg = heartbeat.HeartbeatConfig.load()
+    if args.pane:
+        cfg.target_pane = args.pane
+    if args.prompt:
+        cfg.prompt = args.prompt
+    if args.sentinel:
+        cfg.ok_sentinel = args.sentinel
+
+    # Try gateway API first if not forcing direct RPC
+    res = None
+    if not args.direct:
+        res = _gateway_post("/api/heartbeat/run", {})
+
+    if not res or not res.get("ok"):
+        res = heartbeat.trigger_heartbeat(cfg)
+
+    if not res.get("ok"):
+        print(f"error: {res.get('error', 'unknown error')}", file=sys.stderr)
+        return 1
+
+    pane_id = res["pane_id"]
+    if not args.quiet:
+        print(f"Heartbeat initiated in pane {pane_id} (sentinel: {res.get('sentinel', cfg.ok_sentinel)})")
+
+    if not args.wait:
+        return 0
+
+    # Wait for completion
+    if not args.quiet:
+        print("Waiting for turn to finish…", end="", flush=True)
+
+    herdr = Herdr()
+    deadline = time.monotonic() + args.timeout
+    last_status = "working"
+
+    while time.monotonic() < deadline:
+        time.sleep(2.0)
+        try:
+            status = herdr.status(pane_id)
+        except Exception:
+            continue
+
+        if status in ("done", "blocked", "idle"):
+            last_status = status
+            break
+
+        if not args.quiet:
+            print(".", end="", flush=True)
+
+    if not args.quiet:
+        print(f" {last_status}")
+
+    # Inspect output
+    try:
+        output = herdr.pane_read(pane_id, lines=40)
+    except Exception as e:
+        print(f"error reading pane output: {e}", file=sys.stderr)
+        return 1
+
+    sentinel = res.get("sentinel") or cfg.ok_sentinel
+    if sentinel in output and last_status != "blocked":
+        if not args.quiet:
+            print(f"OK: Found {sentinel} — all checks passed.")
+        return 0
+
+    summary = heartbeat.extract_summary(output)
+    if not args.quiet:
+        print(f"ALERT: {summary}")
+    else:
+        print(f"Heartbeat Alert: {summary}", file=sys.stderr)
+    return 1
+
+
+def cmd_eval(args) -> int:
+    """Evaluate pane output or a text file against a sentinel."""
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+    elif args.pane:
+        try:
+            text = Herdr().pane_read(args.pane, lines=args.lines)
+        except Exception as e:
+            print(f"error reading pane: {e}", file=sys.stderr)
+            return 1
+    else:
+        print("error: must specify --pane or --file", file=sys.stderr)
+        return 1
+
+    sentinel = args.sentinel or heartbeat.HeartbeatConfig.load().ok_sentinel
+    if sentinel in text:
+        print(f"Result: OK (found '{sentinel}')")
+        return 0
+
+    summary = heartbeat.extract_summary(text)
+    print(f"Result: ALERT (sentinel '{sentinel}' not found)")
+    print(f"Summary: {summary}")
+    return 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="SheepIt heartbeat runner and manager")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # status
+    sub.add_parser("status", help="Show current heartbeat status and config")
+
+    # config
+    p_cfg = sub.add_parser("config", help="View or update heartbeat settings")
+    p_cfg.add_argument("--enable", action="store_true", help="Enable scheduled heartbeats")
+    p_cfg.add_argument("--disable", action="store_true", help="Disable scheduled heartbeats")
+    p_cfg.add_argument("--interval", type=float, help="Interval in hours (e.g. 24, 12, 1)")
+    p_cfg.add_argument("--pane", type=str, help="Target pane ID (e.g. w1:p1)")
+    p_cfg.add_argument("--prompt", type=str, help="Custom prompt to send")
+    p_cfg.add_argument("--sentinel", type=str, help="Custom OK sentinel (default HEARTBEAT_OK)")
+
+    # run
+    p_run = sub.add_parser("run", help="Trigger a heartbeat check immediately")
+    p_run.add_argument("--pane", type=str, help="Override target pane ID")
+    p_run.add_argument("--prompt", type=str, help="Override prompt")
+    p_run.add_argument("--sentinel", type=str, help="Override OK sentinel")
+    p_run.add_argument("--wait", action="store_true", help="Wait for turn to finish and report verdict")
+    p_run.add_argument("--timeout", type=float, default=300.0, help="Wait timeout in seconds (default 300)")
+    p_run.add_argument("--quiet", action="store_true", help="Silent on success, prints only on alert/error")
+    p_run.add_argument("--direct", action="store_true", help="Bypass gateway API and use Herdr RPC directly")
+
+    # eval
+    p_eval = sub.add_parser("eval", help="Test sentinel evaluation on output")
+    p_eval.add_argument("--pane", type=str, help="Pane ID to read")
+    p_eval.add_argument("--file", type=str, help="File containing screen output")
+    p_eval.add_argument("--lines", type=int, default=40, help="Lines of scrollback (default 40)")
+    p_eval.add_argument("--sentinel", type=str, help="Sentinel to search for")
+
+    args = parser.parse_args()
+    cmds = {
+        "status": cmd_status,
+        "config": cmd_config,
+        "run": cmd_run,
+        "eval": cmd_eval,
+    }
+    return cmds[args.command](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

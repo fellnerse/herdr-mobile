@@ -1771,6 +1771,103 @@ check("a worktree belongs to its repository",
 check("and somewhere that is no repository at all is still somewhere",
       tokens.project_name(tokens.repo_root("/nonexistent/elsewhere")), "elsewhere")
 
+
+# -- heartbeat --------------------------------------------------------------
+
+import heartbeat
+
+# Config defaults and persistence
+with tempfile.TemporaryDirectory(prefix="sheepit-heartbeat-") as hb_dir:
+    cfg_path = Path(hb_dir) / "heartbeat.json"
+    cfg = heartbeat.HeartbeatConfig.load(cfg_path)
+    check("heartbeat default is disabled", cfg.enabled, False)
+    check("heartbeat default interval is 24h", cfg.interval_hours, 24.0)
+    check("heartbeat default sentinel is HEARTBEAT_OK", cfg.ok_sentinel, "HEARTBEAT_OK")
+    check("heartbeat default prompt mentions live-web-stats-check",
+          "/live-web-stats-check" in cfg.prompt, True)
+
+    cfg.enabled = True
+    cfg.interval_hours = 12.0
+    cfg.ok_sentinel = "ALL_GOOD"
+    cfg.save(cfg_path)
+
+    loaded = heartbeat.HeartbeatConfig.load(cfg_path)
+    check("heartbeat persistence: enabled", loaded.enabled, True)
+    check("heartbeat persistence: interval", loaded.interval_hours, 12.0)
+    check("heartbeat persistence: sentinel", loaded.ok_sentinel, "ALL_GOOD")
+
+# Summary extraction
+clean_summary = heartbeat.extract_summary("❯ /live-web-stats-check\nHEARTBEAT_OK\n")
+check("extract_summary on clean run", clean_summary, "HEARTBEAT_OK")
+
+anom_text = (
+    "❯ /live-web-stats-check\n"
+    "Found 3 critical Sentry crashes in prod checkout.\n"
+    "TypeError: Cannot read properties of undefined (reading 'cart') at checkout.js:142\n"
+    "GA4 event tracking is missing purchase events."
+)
+anom_summary = heartbeat.extract_summary(anom_text)
+check("extract_summary extracts real findings",
+      "3 critical Sentry crashes" in anom_summary, True)
+
+# Notification interception: suppressed when sentinel is present
+with tempfile.TemporaryDirectory(prefix="sheepit-hb-interceptor-") as hb_dir:
+    cfg_path = Path(hb_dir) / "heartbeat.json"
+    cfg = heartbeat.HeartbeatConfig(enabled=True, ok_sentinel="HEARTBEAT_OK")
+    cfg.save(cfg_path)
+
+    # Unregistered pane: let pass
+    should_notify, meta = heartbeat.heartbeat_notification_interceptor(
+        "w1:p1", {"pane_id": "w1:p1", "status": "done", "name": "web"}
+    )
+    check("untracked pane is not intercepted", (should_notify, meta), (True, None))
+
+    # Active heartbeat: output contains sentinel -> suppress!
+    heartbeat.mark_heartbeat_started("w1:p2", "HEARTBEAT_OK")
+    check("pane is marked active", heartbeat.is_heartbeat_active("w1:p2"), True)
+
+    # Mock pane_read on Herdr
+    orig_pane_read = heartbeat.Herdr.pane_read
+    try:
+        heartbeat.Herdr.pane_read = lambda self, p, lines=40: "Auditing stats...\nHEARTBEAT_OK\n"
+        should_notify, meta = heartbeat.heartbeat_notification_interceptor(
+            "w1:p2", {"pane_id": "w1:p2", "status": "done", "name": "web"}
+        )
+        check("sentinel present suppresses push notification", should_notify, False)
+        check("sentinel present returns no alert meta", meta, None)
+
+        # Active heartbeat: output does NOT contain sentinel -> alert!
+        heartbeat.mark_heartbeat_started("w1:p3", "HEARTBEAT_OK")
+        heartbeat.Herdr.pane_read = lambda self, p, lines=40: anom_text
+        should_notify, meta = heartbeat.heartbeat_notification_interceptor(
+            "w1:p3", {"pane_id": "w1:p3", "status": "done", "name": "web", "display_name": "web-prod"}
+        )
+        check("sentinel missing triggers push notification", should_notify, True)
+        check("alert title names agent", meta and meta.get("title"), "Heartbeat Alert: web-prod")
+        check("alert body contains summary",
+              meta and "3 critical Sentry crashes" in meta.get("body", ""), True)
+    finally:
+        heartbeat.Herdr.pane_read = orig_pane_read
+
+# Notification policy filtering and _LAST_FINISHED
+rows = {
+    "w1:p2": {"pane_id": "w1:p2", "name": "clean-agent"},
+    "w1:p3": {"pane_id": "w1:p3", "name": "alert-agent"},
+}
+
+server.register_notification_interceptor(
+    lambda pane_id, row: (False, None) if pane_id == "w1:p2" else (True, {"title": "Test Alert", "body": "Details"})
+)
+notify_rows, c_title, c_body = server.filter_stopped_agents(["w1:p2", "w1:p3"], rows)
+check("suppressed pane is excluded from notify_rows", [r["pane_id"] for r in notify_rows], ["w1:p3"])
+check("custom alert title is captured", c_title, "Test Alert")
+check("custom alert body is captured", c_body, "Details")
+
+server.record_finished(notify_rows, title=c_title, body=c_body)
+last = server.last_finished()
+check("last_finished captures title", last.get("title"), "Test Alert")
+check("last_finished captures body", last.get("body"), "Details")
+check("last_finished captures agents", [a["pane_id"] for a in last.get("agents", [])], ["w1:p3"])
 # ---------------------------------------------------------------------------
 
 if failures:
