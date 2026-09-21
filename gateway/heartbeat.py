@@ -404,7 +404,6 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
                 target_hb = hb
                 break
     elif cfg.heartbeats:
-        # Default to first enabled or first item
         for hb in cfg.heartbeats:
             if hb.enabled:
                 target_hb = hb
@@ -415,15 +414,112 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
     if not target_hb:
         return {"ok": False, "error": "No heartbeat configured"}
 
+    prompt = (target_hb.prompt or DEFAULT_PROMPT).strip()
+    sentinel = (target_hb.ok_sentinel or DEFAULT_SENTINEL).strip()
+    herdr = Herdr()
+
+    # Mode A: New dedicated agent in target_workspace (Inline harness start)
+    if target_hb.target_type != "existing_agent" and target_hb.target_workspace:
+        target_tab_label = f"hb-{target_hb.name[:10].lower().replace(' ', '-')}"
+
+        # Check if an existing dedicated tab exists for this check
+        try:
+            tab_res = call_herdr_rpc("tab.list", {"workspace_id": target_hb.target_workspace})
+            tabs = tab_res.get("result", {}).get("tabs", [])
+            for t in tabs:
+                label = t.get("label") or ""
+                if label == target_tab_label or label.startswith("hb-") or label == "heartbeat":
+                    if t.get("agent_status") == "working":
+                        msg = f"Heartbeat '{target_hb.name}' is already running in {t.get('tab_id')}"
+                        target_hb.last_status = "busy"
+                        target_hb.last_summary = msg
+                        cfg.save()
+                        return {"ok": False, "error": msg}
+                    try:
+                        call_herdr_rpc("tab.close", {"tab_id": t.get("tab_id")})
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.warning("failed to check existing tabs in %s: %s", target_hb.target_workspace, e)
+
+        cwd = ""
+        try:
+            agents = herdr.agent_list()
+            for a in agents:
+                if a.get("workspace_id") == target_hb.target_workspace:
+                    cwd = a.get("cwd") or a.get("foreground_cwd") or ""
+                    break
+        except Exception:
+            pass
+        if not cwd:
+            try:
+                ws_res = call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", [])
+                for w in ws_res:
+                    if w.get("workspace_id") == target_hb.target_workspace:
+                        cwd = w.get("cwd") or ""
+                        break
+            except Exception:
+                pass
+
+        if not cwd:
+            msg = f"Target workspace '{target_hb.target_workspace}' not found or has no cwd"
+            target_hb.last_status = "error"
+            target_hb.last_summary = msg
+            cfg.save()
+            return {"ok": False, "error": msg}
+
+        try:
+            pane_id = herdr.open_pane(cwd, workspace_id=target_hb.target_workspace, label=target_tab_label)
+        except Exception as e:
+            msg = f"Failed to create tab in {target_hb.target_workspace}: {e}"
+            target_hb.last_status = "error"
+            target_hb.last_summary = msg
+            cfg.save()
+            return {"ok": False, "error": msg}
+
+        args = []
+        if target_hb.model:
+            args.extend(["--model", target_hb.model])
+        clean_prompt = " ".join(line.strip() for line in prompt.splitlines() if line.strip())
+        args.append(clean_prompt)
+        mark_heartbeat_started(pane_id, sentinel, target_hb.id, target_hb.name)
+        try:
+            herdr.agent_start(f"hb-{target_hb.id[:8]}", pane_id, kind=target_hb.agent_kind or "claude", args=args)
+        except HerdrError as e:
+            pop_heartbeat(pane_id)
+            msg = f"Failed to start {target_hb.agent_kind} in {pane_id}: {e}"
+            target_hb.last_status = "error"
+            target_hb.last_summary = msg
+            cfg.save()
+            return {"ok": False, "error": msg}
+
+        target_hb.target_pane = pane_id
+        target_hb.last_run_at = time.time()
+        target_hb.last_status = "running"
+        target_hb.last_summary = "Check in progress…"
+        for i, hb in enumerate(cfg.heartbeats):
+            if hb.id == target_hb.id:
+                cfg.heartbeats[i] = target_hb
+                break
+        cfg.save()
+        return {
+            "ok": True,
+            "id": target_hb.id,
+            "name": target_hb.name,
+            "pane_id": pane_id,
+            "sentinel": sentinel,
+            "prompt": prompt,
+        }
+
+    # Mode B: Existing agent mode (fallback)
     pane_id = find_target_pane(target_hb)
     if not pane_id:
-        msg = f"No target agent configured or online for '{target_hb.name}'. Please select an agent in Settings."
+        msg = f"No target agent configured or online for '{target_hb.name}'. Please select a project in Settings."
         target_hb.last_status = "error"
         target_hb.last_summary = msg
         cfg.save()
         return {"ok": False, "error": msg}
 
-    herdr = Herdr()
     status = herdr.status(pane_id)
     if status == "working":
         msg = f"Target agent in {pane_id} is currently busy doing other work"
@@ -432,7 +528,6 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         cfg.save()
         return {"ok": False, "error": msg}
 
-    # Clear session before running to prevent context window bloat over time
     if target_hb.clear_session and status in ("idle", "done"):
         clear_cmd = "/new" if target_hb.agent_kind == "omp" else "/clear"
         try:
@@ -441,16 +536,12 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         except Exception as e:
             log.warning("failed to clear session in %s: %s", pane_id, e)
 
-    prompt = (target_hb.prompt or DEFAULT_PROMPT).strip()
-    sentinel = (target_hb.ok_sentinel or DEFAULT_SENTINEL).strip()
-
     try:
         mark_heartbeat_started(pane_id, sentinel, target_hb.id, target_hb.name)
         send_agent_prompt(herdr, pane_id, prompt)
     except HerdrError as e:
         pop_heartbeat(pane_id)
         return {"ok": False, "error": f"Failed to send prompt to {pane_id}: {e}"}
-
     target_hb.last_run_at = time.time()
     target_hb.last_status = "running"
     target_hb.last_summary = "Check in progress…"
