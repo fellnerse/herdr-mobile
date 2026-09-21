@@ -4308,12 +4308,22 @@
         }
 
         const isCodex = hb.agent_kind === "codex";
+        const isOmp = hb.agent_kind === "omp";
         const standardClaudeModels = ["", "claude-3-7-sonnet", "claude-3-5-haiku", "claude-3-opus"];
         const standardCodexModels = ["", "gpt-5-codex", "o3-mini", "o3"];
-        const standardModels = isCodex ? standardCodexModels : standardClaudeModels;
+        const standardOmpModels = ["", "google-antigravity/gemini-3.8-flash", "anthropic/claude-3-7-sonnet", "openai/gpt-4.5-preview"];
+        const standardModels = isOmp ? standardOmpModels : (isCodex ? standardCodexModels : standardClaudeModels);
         const isCustomModel = Boolean(hb.model && !standardModels.includes(hb.model));
 
-        const modelOptions = (isCodex
+        const modelList = isOmp
+          ? [
+              { val: "", label: "Default" },
+              { val: "google-antigravity/gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+              { val: "anthropic/claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
+              { val: "openai/gpt-4.5-preview", label: "GPT-4.5 Preview" },
+              { val: "custom", label: "Custom…" },
+            ]
+          : isCodex
           ? [
               { val: "", label: "Default" },
               { val: "gpt-5-codex", label: "GPT-5 Codex" },
@@ -4327,8 +4337,9 @@
               { val: "claude-3-5-haiku", label: "Claude 3.5 Haiku" },
               { val: "claude-3-opus", label: "Claude 3 Opus" },
               { val: "custom", label: "Custom…" },
-            ]
-        )
+            ];
+
+        const modelOptions = modelList
           .map((m) => {
             const isSel = isCustomModel ? m.val === "custom" : hb.model === m.val;
             return `<option value="${escapeHtml(m.val)}" ${isSel ? "selected" : ""}>${escapeHtml(m.label)}</option>`;
@@ -4376,8 +4387,9 @@
             <div class="heartbeat-card-row">
               <label>Harness</label>
               <select class="heartbeat-harness-select">
-                <option value="claude" ${hb.agent_kind !== "codex" ? "selected" : ""}>Claude Code</option>
+                <option value="claude" ${hb.agent_kind === "claude" || !hb.agent_kind ? "selected" : ""}>Claude Code</option>
                 <option value="codex" ${hb.agent_kind === "codex" ? "selected" : ""}>Codex</option>
+                <option value="omp" ${hb.agent_kind === "omp" ? "selected" : ""}>OMP (Oh My Pi)</option>
               </select>
             </div>
             <div class="heartbeat-card-row">
