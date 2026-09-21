@@ -2288,13 +2288,19 @@
   });
 
   // Auto-resize textarea
+  // A single line of the composer: padding, border and one `line-height`.
+  const ONE_LINE = 40;
+
   function autoResizeTextarea() {
     const focused = elPromptInput.classList.contains("expanded");
     const cap = focused
       ? Math.max(140, Math.round(window.innerHeight * 0.4))
       : 120;
     elPromptInput.style.height = "auto";
-    elPromptInput.style.height = `${Math.min(elPromptInput.scrollHeight, cap)}px`;
+    const height = Math.min(elPromptInput.scrollHeight, cap);
+    elPromptInput.style.height = `${height}px`;
+    // Past one line there is room beside the box for a column of buttons.
+    elPromptForm.classList.toggle("stacked", height > ONE_LINE);
     elBtnSend.disabled = elPromptInput.value.trim().length === 0;
     syncRecall();
   }

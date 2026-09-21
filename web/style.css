@@ -1224,6 +1224,22 @@ html, body {
   margin: 0;
 }
 
+/* The three buttons travel together. Beside a one-line box they sit in a row,
+   the way they always have; once the box has grown they turn into a column in
+   the height the box itself just made, rather than pushing the composer
+   wider. Bottom-up, so send stays where the thumb last left it. */
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.prompt-form.stacked .prompt-actions {
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+}
+
 
 
 
