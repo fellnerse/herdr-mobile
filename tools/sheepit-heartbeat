@@ -50,8 +50,8 @@ def cmd_list(args) -> int:
         print("No heartbeats configured.")
         return 0
 
-    print(f"{'ID':<14} {'NAME':<20} {'STATUS':<10} {'INTERVAL':<10} {'LAST RUN':<20} {'RESULT'}")
-    print("-" * 80)
+    print(f"{'ID':<14} {'NAME':<18} {'STATUS':<9} {'INTERVAL':<9} {'HARNESS':<8} {'MODEL':<14} {'LAST RUN':<16} {'RESULT'}")
+    print("-" * 95)
     for hb in cfg.heartbeats:
         st = "enabled" if hb.enabled else "disabled"
         last = "never"
@@ -59,8 +59,8 @@ def cmd_list(args) -> int:
             dt = datetime.fromtimestamp(hb.last_run_at, timezone.utc)
             last = f"{dt:%Y-%m-%d %H:%M}"
         result = hb.last_status or "—"
-        print(f"{hb.id:<14} {hb.name:<20} {st:<10} {hb.interval_hours:g}h{'':<7} {last:<20} {result}")
-    return 0
+        model_str = hb.model or "default"
+        print(f"{hb.id:<14} {hb.name:<18} {st:<9} {hb.interval_hours:g}h{'':<6} {hb.agent_kind:<8} {model_str:<14} {last:<16} {result}")
 
 
 def cmd_status(args) -> int:
@@ -82,6 +82,8 @@ def cmd_add(args) -> int:
         interval_hours=args.interval or 24.0,
         target_pane=args.pane or "",
         target_workspace=args.workspace or "",
+        agent_kind=args.harness or "claude",
+        model=args.model or "",
         prompt=args.prompt or heartbeat.DEFAULT_PROMPT,
         ok_sentinel=args.sentinel or heartbeat.DEFAULT_SENTINEL,
     )
@@ -226,6 +228,8 @@ def main() -> int:
     p_add.add_argument("--prompt", type=str, help="Prompt to send")
     p_add.add_argument("--sentinel", type=str, help="OK sentinel (default HEARTBEAT_OK)")
     p_add.add_argument("--disabled", action="store_true", help="Start as disabled")
+    p_add.add_argument("--harness", choices=["claude", "codex"], default="claude", help="Agent harness (claude or codex)")
+    p_add.add_argument("--model", type=str, help="Model name (e.g. claude-3-7-sonnet, gpt-5-codex)")
 
     # rm
     p_rm = sub.add_parser("rm", help="Remove a heartbeat by ID")

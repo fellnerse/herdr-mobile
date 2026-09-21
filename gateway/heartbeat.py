@@ -46,6 +46,8 @@ class HeartbeatItem:
     target_type: str = "new_agent"  # "new_agent" | "existing_agent"
     target_pane: str = ""
     target_workspace: str = ""
+    agent_kind: str = "claude"  # "claude" | "codex"
+    model: str = ""  # empty for default, or model name e.g. "claude-3-7-sonnet"
     clear_session: bool = True
     prompt: str = DEFAULT_PROMPT
     ok_sentinel: str = DEFAULT_SENTINEL
@@ -293,11 +295,12 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
                     tab_id = t.get("tab_id")
                     for a in agents:
                         if a.get("tab_id") == tab_id:
+                            if hb.agent_kind and a.get("agent") and a.get("agent") != hb.agent_kind:
+                                continue
                             hb.target_pane = a.get("pane_id", "")
                             return hb.target_pane
         except Exception as e:
             log.warning("failed to inspect tabs in %s: %s", hb.target_workspace, e)
-
         # No dedicated tab found; create one in this workspace
         cwd = ""
         for a in agents:
@@ -319,7 +322,8 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
                 tab_label = f"hb-{hb.name[:10].lower().replace(' ', '-')}"
                 new_pane = herdr.open_pane(cwd, workspace_id=hb.target_workspace, label=tab_label)
                 if new_pane:
-                    herdr.agent_start(f"hb-{hb.id[:8]}", new_pane, kind="claude")
+                    args = ["--model", hb.model] if hb.model else None
+                    herdr.agent_start(f"hb-{hb.id[:8]}", new_pane, kind=hb.agent_kind or "claude", args=args)
                     hb.target_pane = new_pane
                     return new_pane
             except Exception as e:
@@ -507,6 +511,10 @@ def handle_post_heartbeat(handler, body: dict) -> None:
             target_hb.target_type = str(item_data["target_type"]).strip()
         if "clear_session" in item_data:
             target_hb.clear_session = bool(item_data["clear_session"])
+        if "agent_kind" in item_data:
+            target_hb.agent_kind = str(item_data["agent_kind"]).strip() or "claude"
+        if "model" in item_data:
+            target_hb.model = str(item_data["model"]).strip()
 
     cfg.save()
     handler.send_json({

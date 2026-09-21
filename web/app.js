@@ -4302,11 +4302,38 @@
             return `<option value="${escapeHtml(p.workspace_id)}" ${isSel ? "selected" : ""}>New agent in ${escapeHtml(p.name)}</option>`;
           })
           .join("");
-
         let offlineOption = "";
         if (!hasSelected && hb.target_workspace) {
           offlineOption = `<option value="${escapeHtml(hb.target_workspace)}" selected>New agent in ${escapeHtml(hb.target_workspace)} (offline / not found)</option>`;
         }
+
+        const isCodex = hb.agent_kind === "codex";
+        const standardClaudeModels = ["", "claude-3-7-sonnet", "claude-3-5-haiku", "claude-3-opus"];
+        const standardCodexModels = ["", "gpt-5-codex", "o3-mini", "o3"];
+        const standardModels = isCodex ? standardCodexModels : standardClaudeModels;
+        const isCustomModel = Boolean(hb.model && !standardModels.includes(hb.model));
+
+        const modelOptions = (isCodex
+          ? [
+              { val: "", label: "Default" },
+              { val: "gpt-5-codex", label: "GPT-5 Codex" },
+              { val: "o3-mini", label: "o3-mini" },
+              { val: "o3", label: "o3" },
+              { val: "custom", label: "Custom…" },
+            ]
+          : [
+              { val: "", label: "Default" },
+              { val: "claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
+              { val: "claude-3-5-haiku", label: "Claude 3.5 Haiku" },
+              { val: "claude-3-opus", label: "Claude 3 Opus" },
+              { val: "custom", label: "Custom…" },
+            ]
+        )
+          .map((m) => {
+            const isSel = isCustomModel ? m.val === "custom" : hb.model === m.val;
+            return `<option value="${escapeHtml(m.val)}" ${isSel ? "selected" : ""}>${escapeHtml(m.label)}</option>`;
+          })
+          .join("");
 
         return `
           <div class="heartbeat-card" data-id="${escapeHtml(hb.id)}">
@@ -4346,6 +4373,22 @@
                 <option value="24" ${Math.round(hb.interval_hours) === 24 ? "selected" : ""}>Every 24 hours (daily)</option>
               </select>
             </div>
+            <div class="heartbeat-card-row">
+              <label>Harness</label>
+              <select class="heartbeat-harness-select">
+                <option value="claude" ${hb.agent_kind !== "codex" ? "selected" : ""}>Claude Code</option>
+                <option value="codex" ${hb.agent_kind === "codex" ? "selected" : ""}>Codex</option>
+              </select>
+            </div>
+            <div class="heartbeat-card-row">
+              <label>Model</label>
+              <div style="display: flex; gap: 6px; align-items: center;">
+                <select class="heartbeat-model-select">
+                  ${modelOptions}
+                </select>
+                <input type="text" class="heartbeat-custom-model ${isCustomModel ? "" : "hidden"}" value="${escapeHtml(hb.model || "")}" placeholder="Model name" style="width: 120px;">
+              </div>
+            </div>
             <div class="sheet-row-stacked">
               <label style="font-size: 13px; color: var(--text-secondary);">
                 Prompt
@@ -4374,18 +4417,49 @@
       const nameInput = card.querySelector(".heartbeat-name-input");
       const toggleInput = card.querySelector(".heartbeat-toggle");
       const targetSelect = card.querySelector(".heartbeat-target-select");
+      const harnessSelect = card.querySelector(".heartbeat-harness-select");
+      const modelSelect = card.querySelector(".heartbeat-model-select");
+      const customModelInput = card.querySelector(".heartbeat-custom-model");
       const intervalSelect = card.querySelector(".heartbeat-interval-select");
       const promptTextarea = card.querySelector(".heartbeat-prompt-input");
       const runBtn = card.querySelector(".heartbeat-run-btn");
       const deleteBtn = card.querySelector(".heartbeat-delete");
       const clearToggle = card.querySelector(".heartbeat-clear-toggle");
+
       if (targetSelect) {
+        targetSelect.addEventListener("change", () => {
           const ws_id = targetSelect.value;
           updateHeartbeat(id, {
             target_type: "new_agent",
             target_workspace: ws_id,
             target_pane: "",
           });
+        });
+      }
+      if (harnessSelect) {
+        harnessSelect.addEventListener("change", () => {
+          updateHeartbeat(id, { agent_kind: harnessSelect.value, model: "" });
+          refreshGlobalSettings();
+        });
+      }
+      if (modelSelect) {
+        modelSelect.addEventListener("change", () => {
+          if (modelSelect.value === "custom") {
+            if (customModelInput) {
+              customModelInput.classList.remove("hidden");
+              customModelInput.focus();
+            }
+          } else {
+            if (customModelInput) customModelInput.classList.add("hidden");
+            updateHeartbeat(id, { model: modelSelect.value });
+          }
+        });
+      }
+      if (customModelInput) {
+        customModelInput.addEventListener("blur", () => {
+          const model = customModelInput.value.trim();
+          updateHeartbeat(id, { model });
+        });
       }
       if (clearToggle) {
         clearToggle.addEventListener("change", () => {
