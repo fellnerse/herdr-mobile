@@ -86,13 +86,12 @@
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
-  const elToggleHeartbeat = document.getElementById("toggle-heartbeat");
-  const elHeartbeatOptions = document.getElementById("heartbeat-options");
-  const elHeartbeatInterval = document.getElementById("heartbeat-interval");
-  const elHeartbeatPrompt = document.getElementById("heartbeat-prompt");
-  const elHeartbeatLastRun = document.getElementById("heartbeat-last-run");
-  const elHeartbeatLastSummary = document.getElementById("heartbeat-last-summary");
-  const elBtnHeartbeatRun = document.getElementById("btn-heartbeat-run");
+  const elGlobalSettingsView = document.getElementById("global-settings-view");
+  const elBtnCloseGlobalSettings = document.getElementById("btn-close-global-settings");
+  const elBtnFlockSettings = document.getElementById("btn-flock-settings");
+  const elBtnOpenGlobalSettings = document.getElementById("btn-open-global-settings");
+  const elBtnAddHeartbeat = document.getElementById("btn-add-heartbeat");
+  const elHeartbeatsList = document.getElementById("heartbeats-list");
   const elPickerQuota = document.getElementById("picker-quota");
   const elChatQueue = document.getElementById("chat-queue");
   const elBtnConsole = document.getElementById("btn-console");
@@ -2035,12 +2034,26 @@
     triggerHaptic();
     elSheet.classList.remove("hidden");
     elSheetBackdrop.classList.remove("hidden");
-    refreshHeartbeatState();
   }
 
   function closeSheet() {
     elSheet.classList.add("hidden");
     elSheetBackdrop.classList.add("hidden");
+  }
+
+  function openGlobalSettings() {
+    triggerHaptic();
+    closeSheet();
+    if (elGlobalSettingsView) {
+      elGlobalSettingsView.classList.remove("hidden");
+      refreshGlobalSettings();
+    }
+  }
+
+  function closeGlobalSettings() {
+    if (elGlobalSettingsView) {
+      elGlobalSettingsView.classList.add("hidden");
+    }
   }
 
   /* Send a prompt - which means queue it. There is deliberately only one path:
@@ -4217,97 +4230,195 @@
     }
   });
 
-  async function refreshHeartbeatState() {
-    if (!elToggleHeartbeat) return;
+  async function refreshGlobalSettings() {
+    refreshPushState();
+    if (!elHeartbeatsList) return;
     try {
       const res = await fetch("/api/heartbeat");
       if (!res.ok) return;
       const data = await res.json();
-      if (!data.ok || !data.config) return;
-      const cfg = data.config;
-      elToggleHeartbeat.checked = Boolean(cfg.enabled);
-      if (elHeartbeatOptions) {
-        elHeartbeatOptions.classList.toggle("hidden", !cfg.enabled);
-      }
-      if (elHeartbeatInterval) {
-        elHeartbeatInterval.value = String(Math.round(cfg.interval_hours || 24));
-      }
-      if (elHeartbeatPrompt && !elHeartbeatPrompt.value) {
-        elHeartbeatPrompt.value = cfg.prompt || "";
-      }
-      if (elHeartbeatLastRun) {
-        if (cfg.last_run_at) {
-          const d = new Date(cfg.last_run_at * 1000);
-          elHeartbeatLastRun.textContent = `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (${cfg.last_status || "done"})`;
-        } else {
-          elHeartbeatLastRun.textContent = "—";
-        }
-      }
-      if (elHeartbeatLastSummary) {
-        elHeartbeatLastSummary.textContent = cfg.last_summary || "";
-      }
+      if (!data.ok) return;
+      const heartbeats = data.heartbeats || [];
+      renderHeartbeats(heartbeats);
     } catch (err) {
       /* gateway offline */
     }
   }
 
-  async function saveHeartbeatConfig(updates) {
+  function renderHeartbeats(heartbeats) {
+    if (!elHeartbeatsList) return;
+    if (!heartbeats.length) {
+      elHeartbeatsList.innerHTML = '<div class="sheet-hint" style="padding: 12px 0;">No heartbeats configured. Tap "+ Add" above to create one.</div>';
+      return;
+    }
+
+    elHeartbeatsList.innerHTML = heartbeats
+      .map((hb) => {
+        const lastTimeText = hb.last_run_at
+          ? new Date(hb.last_run_at * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" })
+          : "Never";
+        let statusBadge = "";
+        if (hb.last_status === "ok") {
+          statusBadge = '<span class="heartbeat-status-badge heartbeat-status-ok">OK</span>';
+        } else if (hb.last_status === "alert") {
+          statusBadge = '<span class="heartbeat-status-badge heartbeat-status-alert">ALERT</span>';
+        } else if (hb.last_status === "running") {
+          statusBadge = '<span class="heartbeat-status-badge heartbeat-status-running">RUNNING</span>';
+        }
+
+        return `
+          <div class="heartbeat-card" data-id="${escapeHtml(hb.id)}">
+            <div class="heartbeat-card-head">
+              <input type="text" class="heartbeat-name-input" value="${escapeHtml(hb.name)}" placeholder="Check Name">
+              <div class="heartbeat-card-controls">
+                <input type="checkbox" class="heartbeat-toggle" ${hb.enabled ? "checked" : ""}>
+                <button type="button" class="btn-icon-danger heartbeat-delete" title="Delete check">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="heartbeat-card-row">
+              <label>Interval</label>
+              <select class="heartbeat-interval-select">
+                <option value="1" ${Math.round(hb.interval_hours) === 1 ? "selected" : ""}>Every 1 hour</option>
+                <option value="6" ${Math.round(hb.interval_hours) === 6 ? "selected" : ""}>Every 6 hours</option>
+                <option value="12" ${Math.round(hb.interval_hours) === 12 ? "selected" : ""}>Every 12 hours</option>
+                <option value="24" ${Math.round(hb.interval_hours) === 24 ? "selected" : ""}>Every 24 hours (daily)</option>
+              </select>
+            </div>
+            <div class="sheet-row-stacked">
+              <label style="font-size: 13px; color: var(--text-secondary);">
+                Prompt
+                <span class="sheet-hint">sentinel ${escapeHtml(hb.ok_sentinel || "HEARTBEAT_OK")} suppresses push</span>
+              </label>
+              <textarea class="sheet-textarea heartbeat-prompt-input" rows="3">${escapeHtml(hb.prompt || "")}</textarea>
+            </div>
+            <div class="heartbeat-card-footer">
+              <div class="sheet-agent-text" style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span class="sheet-hint">Last: ${lastTimeText}</span>
+                  ${statusBadge}
+                </div>
+                <span class="sheet-hint" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(hb.last_summary || "")}</span>
+              </div>
+              <button type="button" class="sheet-btn-small heartbeat-run-btn">Run now</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    // Attach event listeners for each card
+    elHeartbeatsList.querySelectorAll(".heartbeat-card").forEach((card) => {
+      const id = card.dataset.id;
+      const nameInput = card.querySelector(".heartbeat-name-input");
+      const toggleInput = card.querySelector(".heartbeat-toggle");
+      const intervalSelect = card.querySelector(".heartbeat-interval-select");
+      const promptTextarea = card.querySelector(".heartbeat-prompt-input");
+      const runBtn = card.querySelector(".heartbeat-run-btn");
+      const deleteBtn = card.querySelector(".heartbeat-delete");
+
+      if (nameInput) {
+        nameInput.addEventListener("blur", () => {
+          const name = nameInput.value.trim();
+          if (name) updateHeartbeat(id, { name });
+        });
+      }
+      if (toggleInput) {
+        toggleInput.addEventListener("change", () => {
+          updateHeartbeat(id, { enabled: toggleInput.checked });
+        });
+      }
+      if (intervalSelect) {
+        intervalSelect.addEventListener("change", () => {
+          updateHeartbeat(id, { interval_hours: parseFloat(intervalSelect.value) });
+        });
+      }
+      if (promptTextarea) {
+        promptTextarea.addEventListener("blur", () => {
+          const prompt = promptTextarea.value.trim();
+          if (prompt) updateHeartbeat(id, { prompt });
+        });
+      }
+      if (runBtn) {
+        runBtn.addEventListener("click", async () => {
+          triggerHaptic();
+          runBtn.disabled = true;
+          runBtn.textContent = "Running…";
+          try {
+            await fetch("/api/heartbeat/run", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id }),
+            });
+          } catch (err) {
+            /* ignore */
+          } finally {
+            setTimeout(async () => {
+              runBtn.disabled = false;
+              runBtn.textContent = "Run now";
+              await refreshGlobalSettings();
+            }, 1000);
+          }
+        });
+      }
+      if (deleteBtn) {
+        deleteBtn.addEventListener("click", async () => {
+          triggerHaptic();
+          try {
+            await fetch("/api/heartbeat/delete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id }),
+            });
+            await refreshGlobalSettings();
+          } catch (err) {
+            /* ignore */
+          }
+        });
+      }
+    });
+  }
+
+  async function updateHeartbeat(id, updates) {
     try {
       await fetch("/api/heartbeat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updates),
+        body: JSON.stringify({ heartbeat: { id, ...updates } }),
       });
-      await refreshHeartbeatState();
     } catch (err) {
       /* ignore */
     }
   }
 
-  if (elToggleHeartbeat) {
-    elToggleHeartbeat.addEventListener("change", async (e) => {
-      const enabled = e.target.checked;
-      if (elHeartbeatOptions) elHeartbeatOptions.classList.toggle("hidden", !enabled);
-      await saveHeartbeatConfig({ enabled });
-    });
+  async function addHeartbeat() {
+    triggerHaptic();
+    try {
+      await fetch("/api/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          heartbeat: {
+            name: "New Check",
+            enabled: true,
+            interval_hours: 24,
+          },
+        }),
+      });
+      await refreshGlobalSettings();
+    } catch (err) {
+      /* ignore */
+    }
   }
 
-  if (elHeartbeatInterval) {
-    elHeartbeatInterval.addEventListener("change", async (e) => {
-      const interval_hours = parseFloat(e.target.value) || 24;
-      await saveHeartbeatConfig({ interval_hours });
-    });
-  }
-
-  if (elHeartbeatPrompt) {
-    elHeartbeatPrompt.addEventListener("blur", async (e) => {
-      const prompt = e.target.value.trim();
-      if (prompt) await saveHeartbeatConfig({ prompt });
-    });
-  }
-
-  if (elBtnHeartbeatRun) {
-    elBtnHeartbeatRun.addEventListener("click", async () => {
-      triggerHaptic();
-      elBtnHeartbeatRun.disabled = true;
-      elBtnHeartbeatRun.textContent = "Running…";
-      try {
-        await fetch("/api/heartbeat/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-      } catch (err) {
-        /* ignore */
-      } finally {
-        setTimeout(async () => {
-          elBtnHeartbeatRun.disabled = false;
-          elBtnHeartbeatRun.textContent = "Run now";
-          await refreshHeartbeatState();
-        }, 1000);
-      }
-    });
-  }
+  if (elBtnFlockSettings) elBtnFlockSettings.addEventListener("click", openGlobalSettings);
+  if (elBtnOpenGlobalSettings) elBtnOpenGlobalSettings.addEventListener("click", openGlobalSettings);
+  if (elBtnCloseGlobalSettings) elBtnCloseGlobalSettings.addEventListener("click", closeGlobalSettings);
+  if (elBtnAddHeartbeat) elBtnAddHeartbeat.addEventListener("click", addHeartbeat);
 
   if (pushSupported()) {
     navigator.serviceWorker

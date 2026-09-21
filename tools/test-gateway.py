@@ -1868,6 +1868,39 @@ last = server.last_finished()
 check("last_finished captures title", last.get("title"), "Test Alert")
 check("last_finished captures body", last.get("body"), "Details")
 check("last_finished captures agents", [a["pane_id"] for a in last.get("agents", [])], ["w1:p3"])
+
+# Multiple heartbeats support
+with tempfile.TemporaryDirectory(prefix="sheepit-multi-hb-") as hb_dir:
+    cfg_path = Path(hb_dir) / "heartbeat.json"
+    hb1 = heartbeat.HeartbeatItem(id="hb_web", name="Web Stats", interval_hours=24.0, enabled=True)
+    hb2 = heartbeat.HeartbeatItem(id="hb_tests", name="Flaky Tests", interval_hours=6.0, enabled=False)
+    cfg = heartbeat.HeartbeatConfig(heartbeats=[hb1, hb2])
+    cfg.save(cfg_path)
+
+    loaded = heartbeat.HeartbeatConfig.load(cfg_path)
+    check("multiple heartbeats count", len(loaded.heartbeats), 2)
+    check("first heartbeat name", loaded.heartbeats[0].name, "Web Stats")
+    check("second heartbeat interval", loaded.heartbeats[1].interval_hours, 6.0)
+
+    # Test delete handler
+    class DummyHandler:
+        def __init__(self):
+            self.response = None
+            self.status = None
+        def send_json(self, data, status=200):
+            self.response = data
+            self.status = status
+
+    orig_config_path = heartbeat.CONFIG_PATH
+    try:
+        heartbeat.CONFIG_PATH = cfg_path
+        dh = DummyHandler()
+        heartbeat.handle_post_heartbeat_delete(dh, {"id": "hb_web"})
+        check("delete handler ok", dh.response.get("ok"), True)
+        check("delete handler remaining heartbeats", len(dh.response.get("heartbeats", [])), 1)
+        check("remaining heartbeat is hb_tests", dh.response.get("heartbeats", [])[0]["id"], "hb_tests")
+    finally:
+        heartbeat.CONFIG_PATH = orig_config_path
 # ---------------------------------------------------------------------------
 
 if failures:

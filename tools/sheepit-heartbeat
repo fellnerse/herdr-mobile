@@ -2,9 +2,10 @@
 """Terminal and cron access to SheepIt heartbeats.
 
 Triggers periodic health/status checks (e.g. /live-web-stats-check).
-Can be run manually, or invoked from cron / systemd.timer:
+Supports multiple independent heartbeats. Can be run manually, or invoked
+from cron / systemd.timer:
 
-    0 9 * * * /path/to/tools/sheepit-heartbeat run --wait --quiet
+    0 9 * * * /path/to/tools/sheepit-heartbeat run hb_default --wait --quiet
 
 Exits 0 on clean completion (HEARTBEAT_OK), 1 on anomaly or failure.
 """
@@ -29,7 +30,6 @@ DEFAULT_GATEWAY_URL = "http://127.0.0.1:3009"
 
 
 def _gateway_post(path: str, data: dict, base_url: str = DEFAULT_GATEWAY_URL) -> dict | None:
-    """Attempt to call the gateway API directly."""
     url = f"{base_url}{path}"
     req = Request(
         url,
@@ -44,76 +44,91 @@ def _gateway_post(path: str, data: dict, base_url: str = DEFAULT_GATEWAY_URL) ->
         return None
 
 
-def cmd_status(args) -> int:
+def cmd_list(args) -> int:
     cfg = heartbeat.HeartbeatConfig.load()
-    status = "enabled" if cfg.enabled else "disabled"
-    print(f"Heartbeat: {status}")
-    print(f"Interval:  {cfg.interval_hours:g}h")
-    print(f"Target:    {cfg.target_pane or cfg.target_workspace or '(auto-detect)'}")
-    print(f"Sentinel:  {cfg.ok_sentinel}")
-    if cfg.last_run_at:
-        dt = datetime.fromtimestamp(cfg.last_run_at, timezone.utc)
-        print(f"Last run:  {dt:%Y-%m-%d %H:%M:%S} UTC ({cfg.last_status or 'unknown'})")
-        if cfg.last_summary:
-            print(f"Summary:   {cfg.last_summary}")
-    else:
-        print("Last run:  never")
+    if not cfg.heartbeats:
+        print("No heartbeats configured.")
+        return 0
+
+    print(f"{'ID':<14} {'NAME':<20} {'STATUS':<10} {'INTERVAL':<10} {'LAST RUN':<20} {'RESULT'}")
+    print("-" * 80)
+    for hb in cfg.heartbeats:
+        st = "enabled" if hb.enabled else "disabled"
+        last = "never"
+        if hb.last_run_at:
+            dt = datetime.fromtimestamp(hb.last_run_at, timezone.utc)
+            last = f"{dt:%Y-%m-%d %H:%M}"
+        result = hb.last_status or "—"
+        print(f"{hb.id:<14} {hb.name:<20} {st:<10} {hb.interval_hours:g}h{'':<7} {last:<20} {result}")
     return 0
 
 
-def cmd_config(args) -> int:
+def cmd_status(args) -> int:
+    return cmd_list(args)
+
+
+def cmd_add(args) -> int:
     cfg = heartbeat.HeartbeatConfig.load()
-    changed = False
+    name = args.name.strip()
+    if not name:
+        print("error: name cannot be empty", file=sys.stderr)
+        return 1
 
-    if args.enable:
-        cfg.enabled = True
-        changed = True
-    elif args.disable:
-        cfg.enabled = False
-        changed = True
+    hb_id = f"hb_{name.lower().replace(' ', '_')[:16]}_{int(time.time()) % 10000}"
+    hb = heartbeat.HeartbeatItem(
+        id=hb_id,
+        name=name,
+        enabled=not args.disabled,
+        interval_hours=args.interval or 24.0,
+        target_pane=args.pane or "",
+        target_workspace=args.workspace or "",
+        prompt=args.prompt or heartbeat.DEFAULT_PROMPT,
+        ok_sentinel=args.sentinel or heartbeat.DEFAULT_SENTINEL,
+    )
+    cfg.heartbeats.append(hb)
+    cfg.save()
+    print(f"Added heartbeat '{name}' ({hb_id}).")
+    return 0
 
-    if args.interval is not None:
-        if args.interval <= 0:
-            print("error: interval must be > 0", file=sys.stderr)
-            return 1
-        cfg.interval_hours = args.interval
-        changed = True
 
-    if args.pane is not None:
-        cfg.target_pane = args.pane.strip()
-        changed = True
-
-    if args.prompt is not None:
-        cfg.prompt = args.prompt.strip()
-        changed = True
-
-    if args.sentinel is not None:
-        cfg.ok_sentinel = args.sentinel.strip()
-        changed = True
-
-    if changed:
-        cfg.save()
-        print("Configuration updated.")
-
-    return cmd_status(args)
+def cmd_rm(args) -> int:
+    cfg = heartbeat.HeartbeatConfig.load()
+    before = len(cfg.heartbeats)
+    cfg.heartbeats = [hb for hb in cfg.heartbeats if hb.id != args.id]
+    if len(cfg.heartbeats) == before:
+        print(f"error: no heartbeat with id '{args.id}'", file=sys.stderr)
+        return 1
+    cfg.save()
+    print(f"Removed heartbeat '{args.id}'.")
+    return 0
 
 
 def cmd_run(args) -> int:
     cfg = heartbeat.HeartbeatConfig.load()
-    if args.pane:
-        cfg.target_pane = args.pane
-    if args.prompt:
-        cfg.prompt = args.prompt
-    if args.sentinel:
-        cfg.ok_sentinel = args.sentinel
+    target_hb = None
+
+    if args.id:
+        for hb in cfg.heartbeats:
+            if hb.id == args.id or hb.name.lower() == args.id.lower():
+                target_hb = hb
+                break
+        if not target_hb:
+            print(f"error: heartbeat '{args.id}' not found", file=sys.stderr)
+            return 1
+    elif cfg.heartbeats:
+        target_hb = cfg.heartbeats[0]
+
+    if not target_hb:
+        print("error: no heartbeat configured", file=sys.stderr)
+        return 1
 
     # Try gateway API first if not forcing direct RPC
     res = None
     if not args.direct:
-        res = _gateway_post("/api/heartbeat/run", {})
+        res = _gateway_post("/api/heartbeat/run", {"id": target_hb.id})
 
     if not res or not res.get("ok"):
-        res = heartbeat.trigger_heartbeat(cfg)
+        res = heartbeat.trigger_heartbeat(target_hb)
 
     if not res.get("ok"):
         print(f"error: {res.get('error', 'unknown error')}", file=sys.stderr)
@@ -121,12 +136,11 @@ def cmd_run(args) -> int:
 
     pane_id = res["pane_id"]
     if not args.quiet:
-        print(f"Heartbeat initiated in pane {pane_id} (sentinel: {res.get('sentinel', cfg.ok_sentinel)})")
+        print(f"Heartbeat '{res.get('name', target_hb.name)}' initiated in pane {pane_id} (sentinel: {res.get('sentinel', target_hb.ok_sentinel)})")
 
     if not args.wait:
         return 0
 
-    # Wait for completion
     if not args.quiet:
         print("Waiting for turn to finish…", end="", flush=True)
 
@@ -151,14 +165,13 @@ def cmd_run(args) -> int:
     if not args.quiet:
         print(f" {last_status}")
 
-    # Inspect output
     try:
         output = herdr.pane_read(pane_id, lines=40)
     except Exception as e:
         print(f"error reading pane output: {e}", file=sys.stderr)
         return 1
 
-    sentinel = res.get("sentinel") or cfg.ok_sentinel
+    sentinel = res.get("sentinel") or target_hb.ok_sentinel
     if sentinel in output and last_status != "blocked":
         if not args.quiet:
             print(f"OK: Found {sentinel} — all checks passed.")
@@ -173,7 +186,6 @@ def cmd_run(args) -> int:
 
 
 def cmd_eval(args) -> int:
-    """Evaluate pane output or a text file against a sentinel."""
     if args.file:
         text = Path(args.file).read_text(encoding="utf-8", errors="replace")
     elif args.pane:
@@ -186,7 +198,7 @@ def cmd_eval(args) -> int:
         print("error: must specify --pane or --file", file=sys.stderr)
         return 1
 
-    sentinel = args.sentinel or heartbeat.HeartbeatConfig.load().ok_sentinel
+    sentinel = args.sentinel or heartbeat.DEFAULT_SENTINEL
     if sentinel in text:
         print(f"Result: OK (found '{sentinel}')")
         return 0
@@ -201,23 +213,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="SheepIt heartbeat runner and manager")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # status
-    sub.add_parser("status", help="Show current heartbeat status and config")
+    # list / status
+    sub.add_parser("list", help="List all configured heartbeats")
+    sub.add_parser("status", help="Show heartbeat status")
 
-    # config
-    p_cfg = sub.add_parser("config", help="View or update heartbeat settings")
-    p_cfg.add_argument("--enable", action="store_true", help="Enable scheduled heartbeats")
-    p_cfg.add_argument("--disable", action="store_true", help="Disable scheduled heartbeats")
-    p_cfg.add_argument("--interval", type=float, help="Interval in hours (e.g. 24, 12, 1)")
-    p_cfg.add_argument("--pane", type=str, help="Target pane ID (e.g. w1:p1)")
-    p_cfg.add_argument("--prompt", type=str, help="Custom prompt to send")
-    p_cfg.add_argument("--sentinel", type=str, help="Custom OK sentinel (default HEARTBEAT_OK)")
+    # add
+    p_add = sub.add_parser("add", help="Add a new heartbeat")
+    p_add.add_argument("--name", required=True, help="Name of the heartbeat (e.g. 'Live Web Stats')")
+    p_add.add_argument("--interval", type=float, default=24.0, help="Interval in hours (default 24)")
+    p_add.add_argument("--pane", type=str, help="Target pane ID")
+    p_add.add_argument("--workspace", type=str, help="Target workspace ID")
+    p_add.add_argument("--prompt", type=str, help="Prompt to send")
+    p_add.add_argument("--sentinel", type=str, help="OK sentinel (default HEARTBEAT_OK)")
+    p_add.add_argument("--disabled", action="store_true", help="Start as disabled")
+
+    # rm
+    p_rm = sub.add_parser("rm", help="Remove a heartbeat by ID")
+    p_rm.add_argument("id", help="Heartbeat ID to remove")
 
     # run
     p_run = sub.add_parser("run", help="Trigger a heartbeat check immediately")
-    p_run.add_argument("--pane", type=str, help="Override target pane ID")
-    p_run.add_argument("--prompt", type=str, help="Override prompt")
-    p_run.add_argument("--sentinel", type=str, help="Override OK sentinel")
+    p_run.add_argument("id", nargs="?", help="Heartbeat ID to run (omit for default)")
     p_run.add_argument("--wait", action="store_true", help="Wait for turn to finish and report verdict")
     p_run.add_argument("--timeout", type=float, default=300.0, help="Wait timeout in seconds (default 300)")
     p_run.add_argument("--quiet", action="store_true", help="Silent on success, prints only on alert/error")
@@ -232,8 +248,10 @@ def main() -> int:
 
     args = parser.parse_args()
     cmds = {
+        "list": cmd_list,
         "status": cmd_status,
-        "config": cmd_config,
+        "add": cmd_add,
+        "rm": cmd_rm,
         "run": cmd_run,
         "eval": cmd_eval,
     }

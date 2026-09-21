@@ -1,9 +1,10 @@
 """Heartbeat runner and conditional notification for SheepIt.
 
-Periodically runs health/status checks (e.g. /live-web-stats-check) in an agent
-session. If the agent finishes with the OK sentinel (default HEARTBEAT_OK), the
-push notification is suppressed (silence is golden). If an anomaly or issue is
-reported, an alert push notification is sent to the phone.
+Periodically runs health/status checks (e.g. /live-web-stats-check) in agent
+sessions. Supports multiple independent heartbeats, each with its own schedule,
+target, and prompt. If an agent finishes with the OK sentinel (default
+HEARTBEAT_OK), the push notification is suppressed (silence is golden). If an
+anomaly or issue is reported, an alert push notification is sent to the phone.
 """
 
 from __future__ import annotations
@@ -37,24 +38,59 @@ DEFAULT_SENTINEL = "HEARTBEAT_OK"
 
 
 @dataclass
-class HeartbeatConfig:
-    enabled: bool = False
+class HeartbeatItem:
+    id: str = ""
+    name: str = "Live Web Stats"
+    enabled: bool = True
     interval_hours: float = 24.0
     target_pane: str = ""
     target_workspace: str = ""
     prompt: str = DEFAULT_PROMPT
     ok_sentinel: str = DEFAULT_SENTINEL
     last_run_at: float | None = None
-    last_status: str | None = None  # "ok", "alert", "error"
+    last_status: str | None = None  # "ok", "alert", "running", "error"
     last_summary: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict) -> HeartbeatItem:
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in data.items() if k in known}
+        if not filtered.get("id"):
+            filtered["id"] = f"hb_{int(time.time() * 1000)}"
+        return cls(**filtered)
+
+
+@dataclass
+class HeartbeatConfig:
+    heartbeats: list[HeartbeatItem]
+
+    def __init__(self, heartbeats: list[HeartbeatItem] | None = None, **kwargs):
+        if heartbeats is not None:
+            self.heartbeats = heartbeats
+        elif "heartbeats" in kwargs:
+            self.heartbeats = kwargs.pop("heartbeats")
+        elif kwargs:
+            self.heartbeats = [HeartbeatItem.from_dict({"id": "hb_default", "name": "Live Web Stats", **kwargs})]
+        else:
+            self.heartbeats = [HeartbeatItem(id="hb_default", name="Live Web Stats", enabled=False)]
+    def to_dict(self) -> dict:
+        data = {
+            "heartbeats": [hb.to_dict() for hb in self.heartbeats],
+        }
+        if self.heartbeats:
+            first = self.heartbeats[0].to_dict()
+            for k in ("enabled", "interval_hours", "target_pane", "target_workspace",
+                      "prompt", "ok_sentinel", "last_run_at", "last_status", "last_summary"):
+                data[k] = first.get(k)
+        return data
+
     def save(self, path: Path | None = None) -> None:
         path = path or CONFIG_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2) + "\n")
+        path.write_text(json.dumps({"heartbeats": [hb.to_dict() for hb in self.heartbeats]}, indent=2) + "\n")
 
     @classmethod
     def load(cls, path: Path | None = None) -> HeartbeatConfig:
@@ -62,21 +98,81 @@ class HeartbeatConfig:
         try:
             raw = json.loads(path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
-            return cls()
-        known = {f.name for f in cls.__dataclass_fields__.values()}
-        return cls(**{k: v for k, v in raw.items() if k in known})
+            return cls(heartbeats=[HeartbeatItem(id="hb_default", name="Live Web Stats", enabled=False)])
+
+        if isinstance(raw, dict) and "heartbeats" in raw and isinstance(raw["heartbeats"], list):
+            items = [HeartbeatItem.from_dict(item) for item in raw["heartbeats"] if isinstance(item, dict)]
+            return cls(heartbeats=items)
+
+        # Migration from legacy single-heartbeat format
+        if isinstance(raw, dict):
+            legacy_item = HeartbeatItem.from_dict({
+                "id": "hb_default",
+                "name": "Live Web Stats",
+                "enabled": raw.get("enabled", False),
+                "interval_hours": raw.get("interval_hours", 24.0),
+                "target_pane": raw.get("target_pane", ""),
+                "target_workspace": raw.get("target_workspace", ""),
+                "prompt": raw.get("prompt", DEFAULT_PROMPT),
+                "ok_sentinel": raw.get("ok_sentinel", DEFAULT_SENTINEL),
+                "last_run_at": raw.get("last_run_at"),
+                "last_status": raw.get("last_status"),
+                "last_summary": raw.get("last_summary"),
+            })
+            return cls(heartbeats=[legacy_item])
+
+        return cls(heartbeats=[HeartbeatItem(id="hb_default", name="Live Web Stats", enabled=False)])
+
+    # Compatibility properties for single-heartbeat callers
+    @property
+    def enabled(self) -> bool:
+        return any(hb.enabled for hb in self.heartbeats) if self.heartbeats else False
+
+    @enabled.setter
+    def enabled(self, val: bool) -> None:
+        if self.heartbeats:
+            self.heartbeats[0].enabled = val
+
+    @property
+    def interval_hours(self) -> float:
+        return self.heartbeats[0].interval_hours if self.heartbeats else 24.0
+
+    @interval_hours.setter
+    def interval_hours(self, val: float) -> None:
+        if self.heartbeats:
+            self.heartbeats[0].interval_hours = val
+
+    @property
+    def ok_sentinel(self) -> str:
+        return self.heartbeats[0].ok_sentinel if self.heartbeats else DEFAULT_SENTINEL
+
+    @ok_sentinel.setter
+    def ok_sentinel(self, val: str) -> None:
+        if self.heartbeats:
+            self.heartbeats[0].ok_sentinel = val
+
+    @property
+    def prompt(self) -> str:
+        return self.heartbeats[0].prompt if self.heartbeats else DEFAULT_PROMPT
+
+    @prompt.setter
+    def prompt(self, val: str) -> None:
+        if self.heartbeats:
+            self.heartbeats[0].prompt = val
 
 
-# In-memory tracking of active heartbeat turns: pane_id -> {started_at, sentinel}
+# In-memory tracking of active heartbeat turns: pane_id -> {started_at, sentinel, heartbeat_id, heartbeat_name}
 _ACTIVE_HEARTBEATS: dict[str, dict] = {}
 _ACTIVE_LOCK = threading.Lock()
 
 
-def mark_heartbeat_started(pane_id: str, sentinel: str) -> None:
+def mark_heartbeat_started(pane_id: str, sentinel: str, heartbeat_id: str = "", heartbeat_name: str = "") -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_HEARTBEATS[pane_id] = {
             "started_at": time.time(),
             "sentinel": sentinel,
+            "heartbeat_id": heartbeat_id,
+            "heartbeat_name": heartbeat_name,
         }
 
 
@@ -93,7 +189,6 @@ def is_heartbeat_active(pane_id: str) -> bool:
 def extract_summary(text: str, max_length: int = 140) -> str:
     """Extract a concise alert summary from pane output."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    # Filter out common agent banner / prompt noise
     meaningful = []
     for line in lines:
         if line.startswith(("> ", "❯ ", "$ ", "#", "╭", "╰", "│")):
@@ -101,7 +196,6 @@ def extract_summary(text: str, max_length: int = 140) -> str:
         meaningful.append(line)
     if not meaningful:
         return "Anomalies detected in heartbeat check"
-    # Take the first 1-2 sentences or up to max_length
     summary = " ".join(meaningful[:3])
     if len(summary) > max_length:
         summary = summary[: max_length - 1].rstrip() + "…"
@@ -112,10 +206,12 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
     """Intercept stopped panes to suppress clean heartbeats or format alerts."""
     info = pop_heartbeat(pane_id)
     if not info:
-        # Not a tracked heartbeat turn, let default notification policy proceed
         return True, None
 
     sentinel = info.get("sentinel", DEFAULT_SENTINEL)
+    hb_id = info.get("heartbeat_id")
+    hb_name = info.get("heartbeat_name") or row.get("display_name") or row.get("name") or "Agent"
+
     herdr = Herdr()
     try:
         output = herdr.pane_read(pane_id, lines=40)
@@ -124,26 +220,33 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
         output = ""
 
     cfg = HeartbeatConfig.load()
+    target_hb = None
+    if hb_id:
+        for hb in cfg.heartbeats:
+            if hb.id == hb_id:
+                target_hb = hb
+                break
+    if not target_hb and cfg.heartbeats:
+        target_hb = cfg.heartbeats[0]
+
     status = row.get("status")
 
-    # If the output ends with or clearly contains the OK sentinel, and is done:
     if sentinel in output and status != "blocked":
-        cfg.last_status = "ok"
-        cfg.last_summary = f"All checks passed ({sentinel})"
-        cfg.save()
-        log.info("heartbeat on pane %s finished clean (%s); suppressing push", pane_id, sentinel)
-        # Suppress push notification!
+        if target_hb:
+            target_hb.last_status = "ok"
+            target_hb.last_summary = f"All checks passed ({sentinel})"
+            cfg.save()
+        log.info("heartbeat [%s] on pane %s finished clean (%s); suppressing push", hb_name, pane_id, sentinel)
         return False, None
 
-    # Anomaly, failure, or blocked on a question
     summary = extract_summary(output)
-    cfg.last_status = "alert"
-    cfg.last_summary = summary
-    cfg.save()
+    if target_hb:
+        target_hb.last_status = "alert"
+        target_hb.last_summary = summary
+        cfg.save()
 
-    display_name = row.get("display_name") or row.get("name") or "Agent"
-    alert_title = f"Heartbeat Alert: {display_name}"
-    log.warning("heartbeat alert on pane %s: %s", pane_id, summary)
+    alert_title = f"Heartbeat Alert: {hb_name}"
+    log.warning("heartbeat alert [%s] on pane %s: %s", hb_name, pane_id, summary)
 
     return True, {
         "title": alert_title,
@@ -151,7 +254,7 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
     }
 
 
-def find_target_pane(cfg: HeartbeatConfig) -> str | None:
+def find_target_pane(hb: HeartbeatItem) -> str | None:
     """Resolve a target pane to run the heartbeat in."""
     herdr = Herdr()
     try:
@@ -163,53 +266,78 @@ def find_target_pane(cfg: HeartbeatConfig) -> str | None:
     if not agents:
         return None
 
-    # 1. Explicit pane_id if active
-    if cfg.target_pane:
+    if hb.target_pane:
         for a in agents:
-            if a.get("pane_id") == cfg.target_pane:
-                return cfg.target_pane
+            if a.get("pane_id") == hb.target_pane:
+                return hb.target_pane
 
-    # 2. Match target workspace if specified
-    if cfg.target_workspace:
+    if hb.target_workspace:
         for a in agents:
-            if a.get("workspace_id") == cfg.target_workspace:
+            if a.get("workspace_id") == hb.target_workspace:
                 return a.get("pane_id")
 
-    # 3. Default to first idle or done agent
     for a in agents:
         if a.get("agent_status") in ("idle", "done"):
             return a.get("pane_id")
 
-    # Fallback to any agent pane
     return agents[0].get("pane_id")
 
 
-def trigger_heartbeat(cfg: HeartbeatConfig | None = None) -> dict:
+def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
+                      heartbeat_id: str | None = None) -> dict:
     """Trigger a heartbeat check immediately."""
-    cfg = cfg or HeartbeatConfig.load()
-    pane_id = find_target_pane(cfg)
-    if not pane_id:
-        return {"ok": False, "error": "No suitable agent pane found to run heartbeat"}
+    cfg = HeartbeatConfig.load()
+    target_hb = None
 
-    prompt = (cfg.prompt or DEFAULT_PROMPT).strip()
-    sentinel = (cfg.ok_sentinel or DEFAULT_SENTINEL).strip()
+    if isinstance(hb_or_cfg, HeartbeatItem):
+        target_hb = hb_or_cfg
+    elif heartbeat_id:
+        for hb in cfg.heartbeats:
+            if hb.id == heartbeat_id:
+                target_hb = hb
+                break
+    elif cfg.heartbeats:
+        # Default to first enabled or first item
+        for hb in cfg.heartbeats:
+            if hb.enabled:
+                target_hb = hb
+                break
+        if not target_hb:
+            target_hb = cfg.heartbeats[0]
+
+    if not target_hb:
+        return {"ok": False, "error": "No heartbeat configured"}
+
+    pane_id = find_target_pane(target_hb)
+    if not pane_id:
+        return {"ok": False, "error": f"No suitable agent pane found for heartbeat '{target_hb.name}'"}
+
+    prompt = (target_hb.prompt or DEFAULT_PROMPT).strip()
+    sentinel = (target_hb.ok_sentinel or DEFAULT_SENTINEL).strip()
 
     herdr = Herdr()
     try:
-        # Mark active before prompting so the interceptor catches it
-        mark_heartbeat_started(pane_id, sentinel)
+        mark_heartbeat_started(pane_id, sentinel, target_hb.id, target_hb.name)
         herdr.agent_prompt(pane_id, prompt)
     except HerdrError as e:
         pop_heartbeat(pane_id)
         return {"ok": False, "error": f"Failed to send prompt to {pane_id}: {e}"}
 
-    cfg.last_run_at = time.time()
-    cfg.last_status = "running"
-    cfg.last_summary = "Check in progress…"
+    target_hb.last_run_at = time.time()
+    target_hb.last_status = "running"
+    target_hb.last_summary = "Check in progress…"
+
+    # Sync back to config and save
+    for i, hb in enumerate(cfg.heartbeats):
+        if hb.id == target_hb.id:
+            cfg.heartbeats[i] = target_hb
+            break
     cfg.save()
 
     return {
         "ok": True,
+        "id": target_hb.id,
+        "name": target_hb.name,
         "pane_id": pane_id,
         "sentinel": sentinel,
         "prompt": prompt,
@@ -217,7 +345,7 @@ def trigger_heartbeat(cfg: HeartbeatConfig | None = None) -> dict:
 
 
 class HeartbeatRunner(threading.Thread):
-    """Background daemon checking if a scheduled heartbeat should run."""
+    """Background daemon checking if any scheduled heartbeats should run."""
 
     def __init__(self, check_interval_sec: int = 60):
         super().__init__(daemon=True, name="heartbeat-runner")
@@ -225,18 +353,19 @@ class HeartbeatRunner(threading.Thread):
         self.running = True
 
     def run(self) -> None:
-        # Give the server a few seconds to start up before checking
         time.sleep(5)
         while self.running:
             try:
                 cfg = HeartbeatConfig.load()
-                if cfg.enabled and cfg.interval_hours > 0:
-                    now = time.time()
-                    interval_sec = cfg.interval_hours * 3600.0
-                    last_run = cfg.last_run_at or 0.0
-                    if (now - last_run) >= interval_sec:
-                        log.info("triggering scheduled heartbeat (interval: %.1fh)", cfg.interval_hours)
-                        trigger_heartbeat(cfg)
+                now = time.time()
+                for hb in cfg.heartbeats:
+                    if hb.enabled and hb.interval_hours > 0:
+                        interval_sec = hb.interval_hours * 3600.0
+                        last_run = hb.last_run_at or 0.0
+                        if (now - last_run) >= interval_sec:
+                            log.info("triggering scheduled heartbeat '%s' (interval: %.1fh)",
+                                     hb.name, hb.interval_hours)
+                            trigger_heartbeat(hb)
             except Exception as e:
                 log.exception("heartbeat runner error: %s", e)
 
@@ -250,44 +379,82 @@ def handle_get_heartbeat(handler, qs: dict) -> None:
     cfg = HeartbeatConfig.load()
     handler.send_json({
         "ok": True,
+        "heartbeats": [hb.to_dict() for hb in cfg.heartbeats],
         "config": cfg.to_dict(),
     })
 
 
 def handle_post_heartbeat(handler, body: dict) -> None:
     cfg = HeartbeatConfig.load()
-    if "enabled" in body:
-        cfg.enabled = bool(body["enabled"])
-    if "interval_hours" in body:
-        try:
-            val = float(body["interval_hours"])
-            if val > 0:
-                cfg.interval_hours = val
-        except (ValueError, TypeError):
-            pass
-    if "target_pane" in body:
-        cfg.target_pane = str(body["target_pane"]).strip()
-    if "target_workspace" in body:
-        cfg.target_workspace = str(body["target_workspace"]).strip()
-    if "prompt" in body:
-        prompt_val = str(body["prompt"]).strip()
-        if prompt_val:
-            cfg.prompt = prompt_val
-    if "ok_sentinel" in body:
-        sentinel_val = str(body["ok_sentinel"]).strip()
-        if sentinel_val:
-            cfg.ok_sentinel = sentinel_val
+
+    # Full list update
+    if "heartbeats" in body and isinstance(body["heartbeats"], list):
+        cfg.heartbeats = [HeartbeatItem.from_dict(item) for item in body["heartbeats"] if isinstance(item, dict)]
+        cfg.save()
+        handler.send_json({"ok": True, "heartbeats": [hb.to_dict() for hb in cfg.heartbeats], "config": cfg.to_dict()})
+        return
+
+    # Single heartbeat update or create
+    item_data = body.get("heartbeat") or body
+    hb_id = item_data.get("id")
+
+    target_hb = None
+    if hb_id:
+        for hb in cfg.heartbeats:
+            if hb.id == hb_id:
+                target_hb = hb
+                break
+
+    if not target_hb:
+        target_hb = HeartbeatItem.from_dict(item_data)
+        cfg.heartbeats.append(target_hb)
+    else:
+        if "name" in item_data:
+            target_hb.name = str(item_data["name"]).strip() or target_hb.name
+        if "enabled" in item_data:
+            target_hb.enabled = bool(item_data["enabled"])
+        if "interval_hours" in item_data:
+            try:
+                val = float(item_data["interval_hours"])
+                if val > 0:
+                    target_hb.interval_hours = val
+            except (ValueError, TypeError):
+                pass
+        if "target_pane" in item_data:
+            target_hb.target_pane = str(item_data["target_pane"]).strip()
+        if "target_workspace" in item_data:
+            target_hb.target_workspace = str(item_data["target_workspace"]).strip()
+        if "prompt" in item_data:
+            val = str(item_data["prompt"]).strip()
+            if val:
+                target_hb.prompt = val
+        if "ok_sentinel" in item_data:
+            val = str(item_data["ok_sentinel"]).strip()
+            if val:
+                target_hb.ok_sentinel = val
 
     cfg.save()
     handler.send_json({
         "ok": True,
+        "heartbeats": [hb.to_dict() for hb in cfg.heartbeats],
         "config": cfg.to_dict(),
     })
 
 
-def handle_post_heartbeat_run(handler, body: dict) -> None:
+def handle_post_heartbeat_delete(handler, body: dict) -> None:
+    hb_id = body.get("id")
+    if not hb_id:
+        handler.send_json({"ok": False, "error": "Missing heartbeat id"}, 400)
+        return
     cfg = HeartbeatConfig.load()
-    res = trigger_heartbeat(cfg)
+    cfg.heartbeats = [hb for hb in cfg.heartbeats if hb.id != hb_id]
+    cfg.save()
+    handler.send_json({"ok": True, "heartbeats": [hb.to_dict() for hb in cfg.heartbeats]})
+
+
+def handle_post_heartbeat_run(handler, body: dict) -> None:
+    hb_id = body.get("id")
+    res = trigger_heartbeat(heartbeat_id=hb_id)
     status_code = 200 if res.get("ok") else 400
     handler.send_json(res, status_code)
 
@@ -296,6 +463,7 @@ def init_heartbeat_routes(register_route_fn, register_interceptor_fn) -> None:
     """Register heartbeat routes and notification interceptor."""
     register_route_fn("GET", "/api/heartbeat", handle_get_heartbeat)
     register_route_fn("POST", "/api/heartbeat", handle_post_heartbeat)
+    register_route_fn("POST", "/api/heartbeat/delete", handle_post_heartbeat_delete)
     register_route_fn("POST", "/api/heartbeat/run", handle_post_heartbeat_run)
     register_interceptor_fn(heartbeat_notification_interceptor)
 
