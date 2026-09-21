@@ -57,6 +57,114 @@ function type(text, caret) {
   d.rememberDraft();
 }
 
+/* The recall arrow is the composer's other memory - what was sent rather than
+   what is half-written - so it lives in this suite, sliced on its own. */
+const RECALL_FROM = "  /* ---------------------------------------------------------- Recall ---";
+const RECALL_TO = "  /* -------------------------------------------------------- Attachments ---";
+
+function loadRecall() {
+  const src = fs.readFileSync(SRC, "utf8");
+  const from = src.indexOf(RECALL_FROM);
+  const to = src.indexOf(RECALL_TO);
+  if (from < 0 || to < 0) throw new Error(`recall anchors moved in ${SRC}`);
+  const RECALL_PRELUDE = `
+    const store = {};
+    function readPref(name) { return store["sheepit." + name] ?? null; }
+    function savePref(key, value) { store[key] = value; }
+    const shown = { hidden: true };
+    const elBtnRecall = { classList: { toggle(name, on) { shown.hidden = on; } } };
+    const elPromptInput = {
+      value: "", selectionStart: 0,
+      setSelectionRange(a) { this.selectionStart = a; },
+    };
+    function autoResizeTextarea() { syncRecall(); }
+    function rememberDraft() {}
+    function renderAttachments() {}
+    function triggerHaptic() {}
+    const state = { activePaneId: "w1:p1", history: {}, recall: { at: -1, text: null } };
+  `;
+  return new Function(
+    `${RECALL_PRELUDE}${src.slice(from, to)}
+     return { rememberSent, recallPrev, syncRecall, resetRecall, historyFor,
+              loadHistory, state, store, shown, elPromptInput, MAX_HISTORY };`
+  )();
+}
+
+// -- walking back through what was sent -------------------------------------
+
+{
+  const r = loadRecall();
+  r.rememberSent("w1:p1", "first");
+  r.rememberSent("w1:p1", "second");
+  r.syncRecall();
+  check("an empty box with something behind it offers the arrow", r.shown.hidden, false);
+
+  r.recallPrev();
+  check("which brings back the last thing sent", r.elPromptInput.value, "second");
+  check("with the caret at the end", r.elPromptInput.selectionStart, 6);
+  check("and the arrow stays, to walk further", r.shown.hidden, false);
+
+  r.recallPrev();
+  check("tapping again goes further back", r.elPromptInput.value, "first");
+  r.recallPrev();
+  check("and stops at the oldest rather than wrapping", r.elPromptInput.value, "first");
+}
+
+/* Typing ends the walk: from that keystroke the text is yours, and an arrow
+   that would throw it away has no business still being on screen. */
+{
+  const r = loadRecall();
+  r.rememberSent("w1:p1", "first");
+  r.recallPrev();
+  r.elPromptInput.value = "first, but edited";
+  r.syncRecall();
+  check("an edited recall hides the arrow", r.shown.hidden, true);
+  r.recallPrev();
+  check("and the next tap starts from the newest again",
+        r.elPromptInput.value, "first");
+}
+
+// A chat with nothing behind it has nothing to offer.
+{
+  const r = loadRecall();
+  r.syncRecall();
+  check("no history, no arrow", r.shown.hidden, true);
+  r.recallPrev();
+  check("and tapping it anyway changes nothing", r.elPromptInput.value, "");
+}
+
+/* The same prompt sent twice running is one entry - a run of identical lines
+   is the one thing walking back never helps you find. */
+{
+  const r = loadRecall();
+  r.rememberSent("w1:p1", "again");
+  r.rememberSent("w1:p1", "again");
+  check("repeats collapse", r.historyFor("w1:p1"), ["again"]);
+  r.rememberSent("w1:p1", "  ");
+  check("and blank is not history", r.historyFor("w1:p1"), ["again"]);
+}
+
+// Each chat remembers its own, and remembers it across a reload.
+{
+  const r = loadRecall();
+  r.rememberSent("w1:p1", "for one");
+  r.rememberSent("w9:p2", "for another");
+  check("one chat's history is its own", r.historyFor("w1:p1"), ["for one"]);
+  check("and so is the other's", r.historyFor("w9:p2"), ["for another"]);
+  r.state.history = {};
+  r.state.history = r.loadHistory();
+  check("both survive a reload", r.historyFor("w9:p2"), ["for another"]);
+}
+
+// Twenty deep, oldest dropped: a phone is not where anybody scrolls back forty.
+{
+  const r = loadRecall();
+  for (let i = 0; i < r.MAX_HISTORY + 5; i++) r.rememberSent("w1:p1", `prompt ${i}`);
+  const list = r.historyFor("w1:p1");
+  check("the list is capped", list.length, r.MAX_HISTORY);
+  check("and it is the oldest that went", list[0], "prompt 5");
+}
+
 // -- one pane, one draft ----------------------------------------------------
 
 d.state.activePaneId = "w1:p1";

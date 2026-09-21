@@ -39,6 +39,11 @@
     // The tokens page, which is only ever read while it is open: `rows` stays
     // null until it has been, so opening it knows to say it is reading.
     usage: { days: 7, rows: null, columns: null, picked: -1, scrubbing: false, error: "" },
+    // Transcript text that arrived while something in it was selected.
+    heldHistory: null,
+    // What has been sent to each chat, oldest first, for the recall arrow.
+    history: {},
+    recall: { at: -1, text: null },
   };
 
   // DOM Elements
@@ -72,6 +77,7 @@
   const elKeysBar = document.getElementById("keys-bar");
   const elKeysNumbers = document.getElementById("keys-numbers");
   const elModeCurrent = document.getElementById("mode-current");
+  const elBtnRecall = document.getElementById("btn-recall");
   const elBtnSend = document.getElementById("btn-send");
   const elBtnCtrlC = document.getElementById("btn-ctrl-c");
   const elBtnEsc = document.getElementById("btn-esc");
@@ -1808,9 +1814,13 @@
     rememberDraft(state.activePaneId);
     touchAgent(paneId);
     state.activePaneId = paneId;
+    resetRecall();
     restoreDraft(paneId);
     renderAttachments();
     state.historyText = "";
+    // A redraw held for a selection belonged to the pane being left; letting
+    // it out now would paint the old chat into the new one's view.
+    state.heldHistory = null;
     elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
     if (open) triggerHaptic();
 
@@ -1985,6 +1995,11 @@
 
       const newText = data.text || "";
       if (newText !== state.historyText) {
+        // Something in it is selected: hold the redraw. See releaseHeld.
+        if (transcriptHeld()) {
+          state.heldHistory = newText;
+          return;
+        }
         state.historyText = newText;
         renderTranscript(newText);
 
@@ -2028,6 +2043,59 @@
   function updateScrollButton() {
     elBtnScrollBottom.classList.toggle("hidden", !state.isUserScrolledUp);
   }
+
+  /* ----------------------------------------------------- Holding still ---
+   *
+   * Both views redraw out from under you: the transcript is rewritten whole
+   * every time the pane's text changes, and the console is repainted by
+   * whatever Herdr sends. Either redraw takes a selection with it, which is
+   * why a long press on a phone could never hold a line still long enough to
+   * copy it - the handles appeared and two seconds later the text underneath
+   * them was gone.
+   *
+   * So while something is selected, what arrives is held and applied the
+   * moment the selection goes away. Nothing is dropped and nothing is
+   * reordered; the screen simply waits for the hand that is on it.
+   */
+  function selectionIn(el) {
+    if (!el) return false;
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+    return el.contains(sel.anchorNode) || el.contains(sel.focusNode);
+  }
+
+  function transcriptHeld() {
+    return selectionIn(elHistoryContent);
+  }
+
+  function consoleHeld() {
+    return selectionIn(elConsoleTerm);
+  }
+
+  /* Put back whatever was held while the selection stood. Called on every
+     selectionchange, which is also what fires when a tap collapses it. */
+  function releaseHeld() {
+    if (state.heldHistory !== null && !transcriptHeld()) {
+      const text = state.heldHistory;
+      state.heldHistory = null;
+      if (text !== state.historyText) {
+        state.historyText = text;
+        renderTranscript(text);
+        if (!state.isUserScrolledUp) scrollToBottom();
+      }
+    }
+    if (consoleState.held.length && !consoleHeld()) {
+      const frames = consoleState.held;
+      consoleState.held = [];
+      consoleState.heldBytes = 0;
+      const term = consoleState.term;
+      if (!term) return;
+      for (const bytes of frames) term.write(bytes);
+      if (keyboardOpen()) pinConsoleBottom();
+    }
+  }
+
+  document.addEventListener("selectionchange", releaseHeld);
 
   // Settings sheet
   function openSheet() {
@@ -2082,7 +2150,10 @@
         return;
       }
 
-      // Success: the draft has become the agent's problem.
+      // Success: the draft has become the agent's problem, and what it said
+      // goes behind the arrow so it can be brought back and sent again.
+      rememberSent(state.activePaneId, text);
+      resetRecall();
       clearDraft(state.activePaneId);
       elPromptInput.value = "";
       hideCompletions();
@@ -2238,14 +2309,113 @@
   });
 
   // Auto-resize textarea
+  // A single line of the composer: padding, border and one `line-height`.
+  const ONE_LINE = 40;
+
   function autoResizeTextarea() {
     const focused = elPromptInput.classList.contains("expanded");
     const cap = focused
       ? Math.max(140, Math.round(window.innerHeight * 0.4))
       : 120;
     elPromptInput.style.height = "auto";
-    elPromptInput.style.height = `${Math.min(elPromptInput.scrollHeight, cap)}px`;
+    const height = Math.min(elPromptInput.scrollHeight, cap);
+    elPromptInput.style.height = `${height}px`;
+    // Past one line there is room beside the box for a column of buttons.
+    elPromptForm.classList.toggle("stacked", height > ONE_LINE);
     elBtnSend.disabled = elPromptInput.value.trim().length === 0;
+    syncRecall();
+  }
+
+  /* ---------------------------------------------------------- Recall ---
+   *
+   * The arrow a terminal has. An empty composer offers it, and it brings back
+   * what was last sent to this chat so it can be edited and sent again -
+   * rewording a prompt that did not land, or running the same one after a
+   * `/clear`. Tapping again walks further back, exactly like holding up at a
+   * shell prompt. Anything you type ends the walk: from that keystroke on the
+   * text is yours rather than something being recalled, and an arrow that
+   * would throw it away has no business still being on screen.
+   */
+  const HISTORY_KEY = "sheepit.history";
+  // A phone is not where anybody scrolls back forty prompts.
+  const MAX_HISTORY = 20;
+  const MAX_HISTORY_CHATS = 40;
+
+  function loadHistory() {
+    try {
+      const raw = JSON.parse(readPref("history") || "{}");
+      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function saveHistory() {
+    const entries = Object.entries(state.history);
+    if (entries.length > MAX_HISTORY_CHATS) {
+      // Oldest first: the map is written in touch order, like the drafts.
+      state.history = Object.fromEntries(entries.slice(-MAX_HISTORY_CHATS));
+    }
+    try {
+      savePref(HISTORY_KEY, JSON.stringify(state.history));
+    } catch (err) {
+      // A full or disabled localStorage must not stop anybody sending.
+    }
+  }
+
+  function historyFor(paneId) {
+    return (paneId && state.history[paneId]) || [];
+  }
+
+  /* Newest last, the way a shell keeps it. The same prompt sent twice running
+     is one entry: the walk back is for finding something, and a run of
+     identical lines is the one thing it never helps you find. */
+  function rememberSent(paneId, text) {
+    if (!paneId || !text.trim()) return;
+    const list = historyFor(paneId).slice();
+    if (list[list.length - 1] !== text) list.push(text);
+    delete state.history[paneId];
+    state.history[paneId] = list.slice(-MAX_HISTORY);
+    saveHistory();
+  }
+
+  /* One step further back, stopping at the oldest rather than wrapping round:
+     a list that wraps hands you the newest prompt again just as you were
+     getting somewhere, with nothing on screen to say it has turned around. */
+  function recallPrev() {
+    const list = historyFor(state.activePaneId);
+    const next = state.recall.at < 0 ? list.length - 1 : state.recall.at - 1;
+    if (next < 0) return;
+    triggerHaptic();
+    const text = list[next];
+    state.recall = { at: next, text };
+    elPromptInput.value = text;
+    try {
+      elPromptInput.setSelectionRange(text.length, text.length);
+    } catch (err) {
+      // Not focused, or a browser that refuses: the text is what matters.
+    }
+    autoResizeTextarea();
+    rememberDraft();
+    renderAttachments();
+  }
+
+  /* The arrow is offered where it means something and nowhere else: an empty
+     box with something behind it, or a box still holding exactly what the
+     last tap put there. */
+  function syncRecall() {
+    if (state.recall.text !== null && elPromptInput.value !== state.recall.text) {
+      state.recall = { at: -1, text: null };
+    }
+    const walking = state.recall.text !== null;
+    const show =
+      historyFor(state.activePaneId).length > 0 &&
+      (walking || !elPromptInput.value.trim());
+    elBtnRecall.classList.toggle("hidden", !show);
+  }
+
+  function resetRecall() {
+    state.recall = { at: -1, text: null };
   }
 
   /* -------------------------------------------------------- Attachments ---
@@ -3073,6 +3243,7 @@
       state.activity = loadActivity();
       state.customOrder = loadOrder();
       state.drafts = loadDrafts();
+      state.history = loadHistory();
       state.bleat = readPref("bleat") !== "0";
       elToggleBleat.checked = state.bleat;
     } catch (err) {
@@ -4017,6 +4188,7 @@
     autoResizeTextarea();
   });
 
+  elBtnRecall.addEventListener("click", recallPrev);
   elPromptForm.addEventListener("submit", submitPrompt);
 
   /* ^C arms itself before it fires, rather than asking through confirm():
@@ -4654,9 +4826,15 @@
   const CONSOLE_PAD_X = 12;
   const CONSOLE_PAD_Y = 12;
 
+  /* Frames held while the screen is being selected from. A cap, because a
+     selection left standing on a pane that is still printing would otherwise
+     buffer the night: past it the hold gives up and the screen catches up,
+     which loses the selection but never loses output. */
+  const CONSOLE_HOLD_MAX = 256 * 1024;
+
   const consoleState = {
     term: null, ws: null, paneId: null, scrollAcc: 0, cols: 80, rows: 24,
-    loading: null, cellHeight: CELL_HEIGHT,
+    loading: null, cellHeight: CELL_HEIGHT, held: [], heldBytes: 0,
   };
   const encoder = new TextEncoder();
 
@@ -4753,12 +4931,15 @@
       { passive: false }
     );
 
+    /* A drag on the screen scrolls Herdr's scrollback - except while there is
+       a selection on it, where the same drag is somebody moving a selection
+       handle and scrolling the pane under it would take the text away. */
     let touchY = null;
     elConsoleTerm.addEventListener("touchstart", (e) => {
-      touchY = e.touches.length === 1 ? e.touches[0].clientY : null;
+      touchY = e.touches.length === 1 && !consoleHeld() ? e.touches[0].clientY : null;
     }, { passive: true });
     elConsoleTerm.addEventListener("touchmove", (e) => {
-      if (touchY === null || !consoleState.ws) return;
+      if (touchY === null || !consoleState.ws || consoleHeld()) return;
       const y = e.touches[0].clientY;
       const moved = touchY - y;
       // A tap that drifts is still a tap; only a real drag scrolls.
@@ -4895,6 +5076,9 @@
     // than drawing the new pane's frames over the old pane's.
     if (consoleState.paneId !== state.activePaneId) {
       term.reset();
+      // Including anything held for a selection: it is the old pane's screen.
+      consoleState.held = [];
+      consoleState.heldBytes = 0;
       consoleState.paneId = state.activePaneId;
     }
     fitConsole();
@@ -4935,7 +5119,20 @@
         }
         return;
       }
-      term.write(new Uint8Array(event.data));
+      const bytes = new Uint8Array(event.data);
+      /* Copying something off the screen means the screen has to stand still.
+         What arrives meanwhile is written the moment the selection goes. */
+      if (consoleHeld() && consoleState.heldBytes + bytes.length <= CONSOLE_HOLD_MAX) {
+        consoleState.held.push(bytes);
+        consoleState.heldBytes += bytes.length;
+        return;
+      }
+      if (consoleState.held.length) {
+        for (const held of consoleState.held) term.write(held);
+        consoleState.held = [];
+      }
+      consoleState.heldBytes = 0;
+      term.write(bytes);
       if (keyboardOpen()) pinConsoleBottom();
     };
     ws.onclose = () => {

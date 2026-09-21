@@ -860,6 +860,17 @@ html, body {
   position: relative;
 }
 
+/* A long press has to catch the text, not the tap highlight. The transcript
+   only needs saying out loud; the console has to be talked out of xterm's own
+   `user-select: none`, which is there to protect the selection xterm draws
+   itself with a mouse and which a finger never reaches. */
+.history-content,
+.console-term .xterm .xterm-screen {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
 .history-content {
   font-family: var(--font-mono);
   font-size: 13px;
@@ -1213,12 +1224,28 @@ html, body {
   margin: 0;
 }
 
+/* The three buttons travel together. Beside a one-line box they sit in a row,
+   the way they always have; once the box has grown they turn into a column in
+   the height the box itself just made, rather than pushing the composer
+   wider. Bottom-up, so send stays where the thumb last left it. */
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.prompt-form.stacked .prompt-actions {
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+}
 
 
 
 
-/* The paperclip sits where a thumb already is, at the same size as the send
-   button on the other side of the composer. */
+
+/* The paperclip sits where a thumb already is: in the cluster on the right,
+   between recall and send, at the size they all share. */
 .btn-attach {
   flex-shrink: 0;
   width: 36px;
@@ -1355,6 +1382,25 @@ html, body {
   color: var(--text-muted);
   font-size: 14px;
 }
+
+/* First of the three on the right, because it is the other thing you do with
+   an empty composer. Ghost rather than accent: recalling is not sending. */
+.btn-recall {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.btn-recall:active { background: var(--bg-hover); color: var(--text-primary); }
+.btn-recall.hidden { display: none; }
 
 .btn-send {
   width: 36px;
