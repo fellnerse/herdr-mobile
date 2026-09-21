@@ -39,6 +39,8 @@
     // The tokens page, which is only ever read while it is open: `rows` stays
     // null until it has been, so opening it knows to say it is reading.
     usage: { days: 7, rows: null, columns: null, picked: -1, scrubbing: false, error: "" },
+    // The changed-files listing, by path: what a row needs when it opens.
+    changedFiles: {},
     // Transcript text that arrived while something in it was selected.
     heldHistory: null,
     // What has been sent to each chat, oldest first, for the recall arrow.
@@ -5242,11 +5244,17 @@
         '<div class="history-empty">The working tree is clean.</div>';
       return;
     }
+    // Opening a row needs more than its path: whether it is a picture, and
+    // which side of it still exists.
+    state.changedFiles = {};
+    for (const file of data.files) state.changedFiles[file.path] = file;
     elChangesList.innerHTML = data.files
       .map((file) => {
         const name = file.path.split("/").pop();
         const dir = file.path.slice(0, file.path.length - name.length);
-        const counts = file.binary
+        const counts = file.image
+          ? '<span class="diff-binary">image</span>'
+          : file.binary
           ? '<span class="diff-binary">binary</span>'
           : `<span class="diff-add">+${file.added}</span>` +
             `<span class="diff-del">−${file.removed}</span>`;
@@ -5275,6 +5283,73 @@
     elChangesCount.classList.remove("hidden");
   }
 
+  /* ------------------------------------------------------- Pictures ---
+   *
+   * A patch for a PNG says "Binary files differ" and stops, which is true and
+   * useless: what somebody wants to know about a changed screenshot or icon
+   * is what it looks like now, and what it looked like before. So an image is
+   * drawn rather than parsed - the working tree on one side, HEAD on the
+   * other, and only the sides that exist. A new file has no before; a deleted
+   * one has no after.
+   */
+  function imageUrl(path, side) {
+    return (
+      `/api/agents/${encodeURIComponent(state.activePaneId)}/image` +
+      `?path=${encodeURIComponent(path)}&side=${side}`
+    );
+  }
+
+  /* Which halves of a picture there are to show. git's letters, not the word
+     `statusLabel` makes of them: a staged addition has nothing at HEAD even
+     though it is not untracked, and a deletion has nothing on disk. */
+  function imageSides(file) {
+    const letters = (file.index_status + file.worktree_status).replace(/\s/g, "");
+    return {
+      before: !file.untracked && !letters.includes("A"),
+      after: !letters.includes("D"),
+    };
+  }
+
+  function shotHtml(label, path, side) {
+    return `
+      <figure class="diff-shot">
+        <figcaption class="diff-shot-label">${escapeHtml(label)}</figcaption>
+        <img class="diff-shot-img" alt="${escapeHtml(path)}, ${escapeHtml(label)}"
+             src="${escapeHtml(imageUrl(path, side))}">
+        <figcaption class="diff-shot-size"></figcaption>
+      </figure>`;
+  }
+
+  function imageDiffHtml(file) {
+    const sides = imageSides(file);
+    const shots = [];
+    // A rename is the same picture under a new name, so its before is the
+    // name it had.
+    if (sides.before) shots.push(shotHtml("before", file.old_path || file.path, "head"));
+    if (sides.after) shots.push(shotHtml("after", file.path, "work"));
+    if (!shots.length) return '<div class="diff-loading">Nothing to show.</div>';
+    return `<div class="diff-images${shots.length > 1 ? " two" : ""}">${shots.join("")}</div>`;
+  }
+
+  /* Each picture says its own size once the browser knows it, which is the
+     one number a diff of an image would have told you. An image the gateway
+     refused - too big, or gone from disk since the listing - says so where it
+     would have been, rather than leaving a broken frame. */
+  function measureShots(body) {
+    body.querySelectorAll(".diff-shot-img").forEach((img) => {
+      const caption = img.parentElement.querySelector(".diff-shot-size");
+      const say = () => {
+        if (caption) caption.textContent = `${img.naturalWidth}×${img.naturalHeight}`;
+      };
+      if (img.complete && img.naturalWidth) say();
+      else img.addEventListener("load", say, { once: true });
+      img.addEventListener("error", () => {
+        img.classList.add("hidden");
+        if (caption) caption.textContent = "could not be read";
+      }, { once: true });
+    });
+  }
+
   async function toggleDiff(row) {
     const body = row.parentElement.querySelector(".diff-body");
     if (!body.classList.contains("hidden")) {
@@ -5284,9 +5359,19 @@
     }
     row.classList.add("open");
     body.classList.remove("hidden");
-    if (body.getAttribute("data-patch") !== null) return;
+    if (body.getAttribute("data-patch") !== null || body.hasAttribute("data-shot")) return;
     body.innerHTML = '<div class="diff-loading">Reading…</div>';
     const path = row.getAttribute("data-path");
+    const file = state.changedFiles[path];
+    if (file && file.image) {
+      /* Drawn, not parsed. Marked with its own attribute rather than an empty
+         `data-patch`, because that is what Unified/Split redraws - and a
+         picture has no second layout to be drawn in. */
+      body.setAttribute("data-shot", "1");
+      body.innerHTML = imageDiffHtml(file);
+      measureShots(body);
+      return;
+    }
     try {
       const res = await fetch(
         `/api/agents/${encodeURIComponent(state.activePaneId)}/diff` +

@@ -585,6 +585,24 @@ class HerdrHandler(BaseHTTPRequestHandler):
         if not self.head_only:
             self.wfile.write(body)
 
+    def send_blob(self, data: bytes, content_type: str):
+        """Bytes that are not JSON - an image out of the working tree.
+
+        `nosniff` and a CSP of its own, because this is the one route that
+        answers with a file somebody else wrote: whatever the type says it is
+        is what the browser must treat it as, and nothing it contains runs.
+        """
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+        # The working tree moves under it; a cached picture is the old one.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.end_headers()
+        if not self.head_only:
+            self.wfile.write(data)
+
     def same_origin(self) -> bool:
         """Is this request the app itself, rather than some other page?
 
@@ -844,6 +862,25 @@ class HerdrHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, **gitdiff.file_diff(cwd, rel_path)})
                 except gitdiff.GitError as e:
                     self.send_json({"ok": False, "error": str(e)}, 400)
+                return
+
+        # API: One changed image, as the picture rather than as a patch
+        # /api/agents/{pane_id}/image?path=...&side=work|head
+        if path.startswith("/api/agents/") and path.endswith("/image"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                cwd = pane_cwd(unquote(parts[3]))
+                rel_path = qs.get("path", [""])[0]
+                side = qs.get("side", ["work"])[0]
+                if not cwd:
+                    self.send_json({"ok": False, "error": "No cwd for pane"}, 404)
+                    return
+                try:
+                    data, mime = gitdiff.image_blob(cwd, rel_path, side)
+                except gitdiff.GitError as e:
+                    self.send_json({"ok": False, "error": str(e)}, 404)
+                    return
+                self.send_blob(data, mime)
                 return
 
         # API: Get history / output for a specific agent pane

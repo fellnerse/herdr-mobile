@@ -401,6 +401,41 @@ with tempfile.TemporaryDirectory() as tmp:
         except gitdiff.GitError:
             pass
 
+    # A picture is drawn rather than patched, so both of its sides have to be
+    # readable as bytes - HEAD's copy and the one on disk.
+    png = bytes.fromhex("89504e470d0a1a0a") + b"pretend this is a png"
+    (root / "shot.png").write_bytes(png)
+    git(root, "add", "shot.png")
+    git(root, "commit", "-qm", "a picture")
+    (root / "shot.png").write_bytes(png + b" changed")
+
+    listing = {f["path"]: f for f in gitdiff.changed_files(str(root))["files"]}
+    check("a picture says what it is", listing["shot.png"]["image"], "image/png")
+    check("a text file says nothing", listing["kept.txt"]["image"], "")
+    check("and neither does other binary", listing["blob.bin"]["image"], "")
+    check("the extension is what decides", gitdiff.image_type("a/B.JPEG"), "image/jpeg")
+    # SVG is text, and its diff is worth reading.
+    check("svg is not one of them", gitdiff.image_type("logo.svg"), "")
+
+    work, mime = gitdiff.image_blob(str(root), "shot.png")
+    check("the working tree side is what is on disk", work, png + b" changed")
+    check("with the type the browser needs", mime, "image/png")
+    check("the HEAD side is what was committed",
+          gitdiff.image_blob(str(root), "shot.png", "head")[0], png)
+    check("a file HEAD never had has no before",
+          "exists" in error_of(lambda: gitdiff.image_blob(str(root), "fresh.png", "head"))
+          or "does not exist" in error_of(lambda: gitdiff.image_blob(str(root), "fresh.png", "head")),
+          True)
+    check("only pictures are served this way",
+          error_of(lambda: gitdiff.image_blob(str(root), "kept.txt")), "not an image")
+    # The same check the patch route makes, because the phone names the path.
+    for bad in ("../escape.png", "/etc/passwd.png", "sub/../../escape.png"):
+        try:
+            gitdiff.image_blob(str(root), bad)
+            failures.append(f"FAIL {bad} should be refused as an image")
+        except gitdiff.GitError:
+            pass
+
     # Somewhere that is not a repository is an answer, not an error.
     check("no repository", gitdiff.changed_files(tmp)["repo"], False)
     check("nowhere at all", gitdiff.changed_files("/nonexistent/path")["repo"], False)

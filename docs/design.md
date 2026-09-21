@@ -553,6 +553,27 @@ opposite each other. A run of removals pairs one-to-one with the run of
 additions that replaced it, and the shorter side is padded - which is what
 keeps everything after a lopsided edit level.
 
+### A picture is not a patch
+
+`Binary files a/icon.png and b/icon.png differ` is true and useless. A changed
+screenshot, icon or diagram has exactly one question behind it - what does it
+look like now, and what did it look like before - so an image row is drawn
+rather than parsed: HEAD on one side, the working tree on the other, from
+`/api/agents/{pane}/image?path=…&side=work|head`.
+
+Only the sides that exist are drawn. A new file has no before, a deleted one
+has no after, and a rename fetches its before under the name the file used to
+have. The extension decides what counts as a picture rather than the bytes,
+because the browser is the thing that has to recognise them; SVG is
+deliberately not on the list, since it is text and its diff is worth reading.
+
+Each picture sits on a checkerboard and says its own pixel size once the
+browser knows it. The checkerboard is what distinguishes a transparent corner
+from one the colour of your theme, and the size is the one number a patch
+would have told you. The gateway serves those bytes under
+`default-src 'none'; sandbox` and `nosniff`: it is the only route that answers
+with a file somebody else wrote.
+
 ## Where it went: the tokens page
 
 The strip on the flock answers "can I start something now". It cannot answer
