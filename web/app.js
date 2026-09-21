@@ -4376,6 +4376,13 @@
               <input type="checkbox" id="hb-clear-${escapeHtml(hb.id)}" class="heartbeat-clear-toggle" ${hb.clear_session !== false ? "checked" : ""}>
             </div>
             <div class="heartbeat-card-row">
+              <label for="hb-autoclose-${escapeHtml(hb.id)}">
+                Auto-close tab on success
+                <span class="sheet-hint">closes tab when HEARTBEAT_OK; leaves open on alert</span>
+              </label>
+              <input type="checkbox" id="hb-autoclose-${escapeHtml(hb.id)}" class="heartbeat-autoclose-toggle" ${hb.auto_close !== false ? "checked" : ""}>
+            </div>
+            <div class="heartbeat-card-row">
               <label>Interval</label>
               <select class="heartbeat-interval-select">
                 <option value="1" ${Math.round(hb.interval_hours) === 1 ? "selected" : ""}>Every 1 hour</option>
@@ -4434,6 +4441,7 @@
       const customModelInput = card.querySelector(".heartbeat-custom-model");
       const intervalSelect = card.querySelector(".heartbeat-interval-select");
       const promptTextarea = card.querySelector(".heartbeat-prompt-input");
+      const autoCloseToggle = card.querySelector(".heartbeat-autoclose-toggle");
       const runBtn = card.querySelector(".heartbeat-run-btn");
       const deleteBtn = card.querySelector(".heartbeat-delete");
       const clearToggle = card.querySelector(".heartbeat-clear-toggle");
@@ -4476,6 +4484,11 @@
       if (clearToggle) {
         clearToggle.addEventListener("change", () => {
           updateHeartbeat(id, { clear_session: clearToggle.checked });
+        });
+      }
+      if (autoCloseToggle) {
+        autoCloseToggle.addEventListener("change", () => {
+          updateHeartbeat(id, { auto_close: autoCloseToggle.checked });
         });
       }
       if (nameInput) {
@@ -4564,10 +4577,9 @@
           heartbeat: {
             name: "New Check",
             enabled: true,
-            interval_hours: 24,
-            target_type: "new_agent",
             target_workspace: firstWs,
             clear_session: true,
+            auto_close: true,
           },
         }),
       });

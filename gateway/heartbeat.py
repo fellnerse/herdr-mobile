@@ -49,6 +49,7 @@ class HeartbeatItem:
     agent_kind: str = "claude"  # "claude" | "codex"
     model: str = ""  # empty for default, or model name e.g. "claude-3-7-sonnet"
     clear_session: bool = True
+    auto_close: bool = True  # auto-close tab on clean completion (keep open on alert)
     prompt: str = DEFAULT_PROMPT
     ok_sentinel: str = DEFAULT_SENTINEL
     last_run_at: float | None = None
@@ -239,10 +240,27 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
         if target_hb:
             target_hb.last_status = "ok"
             target_hb.last_summary = f"All checks passed ({sentinel})"
+            if target_hb.auto_close:
+                tab_id = row.get("tab_id")
+                if not tab_id:
+                    try:
+                        panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
+                        for p in panes:
+                            if p.get("pane_id") == pane_id:
+                                tab_id = p.get("tab_id")
+                                break
+                    except Exception:
+                        pass
+                if tab_id:
+                    try:
+                        call_herdr_rpc("tab.close", {"tab_id": tab_id})
+                        log.info("heartbeat [%s] auto-closed tab %s on clean completion", hb_name, tab_id)
+                        target_hb.target_pane = ""
+                    except Exception as e:
+                        log.warning("failed to auto-close tab %s: %s", tab_id, e)
             cfg.save()
         log.info("heartbeat [%s] on pane %s finished clean (%s); suppressing push", hb_name, pane_id, sentinel)
         return False, None
-
     summary = extract_summary(output)
     if target_hb:
         target_hb.last_status = "alert"
@@ -280,27 +298,48 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
 
     # 2. New dedicated agent mode (in target_workspace)
     if hb.target_workspace:
-        # Reuse existing dedicated heartbeat tab if present in this workspace
-        if hb.target_pane:
-            for a in agents:
-                if a.get("pane_id") == hb.target_pane and a.get("workspace_id") == hb.target_workspace:
-                    return hb.target_pane
+        target_tab_label = f"hb-{hb.name[:10].lower().replace(' ', '-')}"
 
+        # Fetch all tabs and panes for this workspace
         try:
             tab_res = call_herdr_rpc("tab.list", {"workspace_id": hb.target_workspace})
             tabs = tab_res.get("result", {}).get("tabs", [])
-            for t in tabs:
-                label = t.get("label") or ""
-                if label.startswith("hb-") or label == "heartbeat":
-                    tab_id = t.get("tab_id")
-                    for a in agents:
-                        if a.get("tab_id") == tab_id:
-                            if hb.agent_kind and a.get("agent") and a.get("agent") != hb.agent_kind:
-                                continue
-                            hb.target_pane = a.get("pane_id", "")
-                            return hb.target_pane
+            pane_res = call_herdr_rpc("pane.list")
+            panes = [p for p in pane_res.get("result", {}).get("panes", []) if p.get("workspace_id") == hb.target_workspace]
         except Exception as e:
-            log.warning("failed to inspect tabs in %s: %s", hb.target_workspace, e)
+            log.warning("failed to inspect tabs/panes in %s: %s", hb.target_workspace, e)
+            tabs, panes = [], []
+
+        # Look for existing tab matching our heartbeat label
+        for t in tabs:
+            label = t.get("label") or ""
+            if label == target_tab_label or label.startswith("hb-") or label == "heartbeat":
+                tab_id = t.get("tab_id")
+                matching_panes = [p for p in panes if p.get("tab_id") == tab_id]
+                if matching_panes:
+                    p = matching_panes[0]
+                    p_id = p.get("pane_id")
+                    current_agent = p.get("agent")
+                    # If pane has no agent yet (shell), start the agent in this existing tab!
+                    if not current_agent or current_agent == "unknown":
+                        args = ["--model", hb.model] if hb.model else None
+                        try:
+                            herdr.agent_start(f"hb-{hb.id[:8]}", p_id, kind=hb.agent_kind or "claude", args=args)
+                        except Exception as e:
+                            log.warning("failed to start agent in existing shell pane %s: %s", p_id, e)
+                        hb.target_pane = p_id
+                        return p_id
+                    # If agent kind matches, reuse this existing tab!
+                    if not hb.agent_kind or current_agent == hb.agent_kind:
+                        hb.target_pane = p_id
+                        return p_id
+                    # If agent kind changed, close the old tab and create a fresh one
+                    try:
+                        call_herdr_rpc("tab.close", {"tab_id": tab_id})
+                    except Exception:
+                        pass
+                    break
+
         # No dedicated tab found; create one in this workspace
         cwd = ""
         for a in agents:
@@ -319,8 +358,7 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
 
         if cwd:
             try:
-                tab_label = f"hb-{hb.name[:10].lower().replace(' ', '-')}"
-                new_pane = herdr.open_pane(cwd, workspace_id=hb.target_workspace, label=tab_label)
+                new_pane = herdr.open_pane(cwd, workspace_id=hb.target_workspace, label=target_tab_label)
                 if new_pane:
                     args = ["--model", hb.model] if hb.model else None
                     herdr.agent_start(f"hb-{hb.id[:8]}", new_pane, kind=hb.agent_kind or "claude", args=args)
@@ -328,7 +366,6 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
                     return new_pane
             except Exception as e:
                 log.warning("failed to create dedicated heartbeat tab in %s: %s", hb.target_workspace, e)
-
     # Fallback to target_pane if set
     if hb.target_pane:
         for a in agents:
@@ -515,6 +552,8 @@ def handle_post_heartbeat(handler, body: dict) -> None:
             target_hb.agent_kind = str(item_data["agent_kind"]).strip() or "claude"
         if "model" in item_data:
             target_hb.model = str(item_data["model"]).strip()
+        if "auto_close" in item_data:
+            target_hb.auto_close = bool(item_data["auto_close"])
 
     cfg.save()
     handler.send_json({
