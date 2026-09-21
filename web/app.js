@@ -4266,19 +4266,41 @@
           statusBadge = '<span class="heartbeat-status-badge heartbeat-status-running">RUNNING</span>';
         }
         const agents = state.agents || [];
+        const workspaces = [];
+        const seenWs = new Set();
+        for (const a of agents) {
+          if (a.workspace_id && !seenWs.has(a.workspace_id)) {
+            seenWs.add(a.workspace_id);
+            workspaces.push({
+              id: a.workspace_id,
+              name: a.workspace_label || a.name || a.workspace_id,
+            });
+          }
+        }
+
         let hasSelected = false;
-        const agentOptions = agents
+        const newAgentOptions = workspaces
+          .map((w) => {
+            const isSel = hb.target_type !== "existing_agent" && hb.target_workspace === w.id;
+            if (isSel) hasSelected = true;
+            return `<option value="new:${escapeHtml(w.id)}" ${isSel ? "selected" : ""}>New agent in ${escapeHtml(w.name)}</option>`;
+          })
+          .join("");
+
+        const existingAgentOptions = agents
           .map((a) => {
-            const isSel = hb.target_pane === a.pane_id || (!hb.target_pane && hb.target_workspace === a.workspace_id);
+            const isSel = hb.target_type === "existing_agent" && hb.target_pane === a.pane_id;
             if (isSel) hasSelected = true;
             const name = a.display_name || a.name || a.pane_id;
-            return `<option value="pane:${escapeHtml(a.pane_id)}" ${isSel ? "selected" : ""}>${escapeHtml(name)} (${escapeHtml(a.pane_id)})</option>`;
+            return `<option value="pane:${escapeHtml(a.pane_id)}" ${isSel ? "selected" : ""}>Existing chat: ${escapeHtml(name)} (${escapeHtml(a.pane_id)})</option>`;
           })
           .join("");
 
         let offlineOption = "";
         if (!hasSelected && hb.target_pane) {
           offlineOption = `<option value="pane:${escapeHtml(hb.target_pane)}" selected>${escapeHtml(hb.target_pane)} (offline / not found)</option>`;
+        } else if (!hasSelected && hb.target_workspace) {
+          offlineOption = `<option value="new:${escapeHtml(hb.target_workspace)}" selected>New agent in ${escapeHtml(hb.target_workspace)} (offline / not found)</option>`;
         }
 
         return `
@@ -4296,12 +4318,24 @@
               </div>
             </div>
             <div class="heartbeat-card-row">
-              <label>Target agent</label>
+              <label>Target</label>
               <select class="heartbeat-target-select">
-                <option value="">Select target agent…</option>
+                <option value="">Select target…</option>
                 ${offlineOption}
-                ${agentOptions}
+                <optgroup label="New Dedicated Agent (Recommended)">
+                  ${newAgentOptions}
+                </optgroup>
+                <optgroup label="Existing Chat">
+                  ${existingAgentOptions}
+                </optgroup>
               </select>
+            </div>
+            <div class="heartbeat-card-row">
+              <label for="hb-clear-${escapeHtml(hb.id)}">
+                Clear session before run
+                <span class="sheet-hint">sends /clear so context never runs full</span>
+              </label>
+              <input type="checkbox" id="hb-clear-${escapeHtml(hb.id)}" class="heartbeat-clear-toggle" ${hb.clear_session !== false ? "checked" : ""}>
             </div>
             <div class="heartbeat-card-row">
               <label>Interval</label>
@@ -4344,20 +4378,33 @@
       const promptTextarea = card.querySelector(".heartbeat-prompt-input");
       const runBtn = card.querySelector(".heartbeat-run-btn");
       const deleteBtn = card.querySelector(".heartbeat-delete");
-
+      const clearToggle = card.querySelector(".heartbeat-clear-toggle");
       if (targetSelect) {
         targetSelect.addEventListener("change", () => {
           const val = targetSelect.value;
-          if (val.startsWith("pane:")) {
+          if (val.startsWith("new:")) {
+            const ws_id = val.slice(4);
+            updateHeartbeat(id, {
+              target_type: "new_agent",
+              target_workspace: ws_id,
+              target_pane: "",
+            });
+          } else if (val.startsWith("pane:")) {
             const pane_id = val.slice(5);
             const a = (state.agents || []).find((x) => x.pane_id === pane_id);
             updateHeartbeat(id, {
+              target_type: "existing_agent",
               target_pane: pane_id,
               target_workspace: a ? a.workspace_id : "",
             });
           } else {
-            updateHeartbeat(id, { target_pane: "", target_workspace: "" });
+            updateHeartbeat(id, { target_type: "new_agent", target_pane: "", target_workspace: "" });
           }
+        });
+      }
+      if (clearToggle) {
+        clearToggle.addEventListener("change", () => {
+          updateHeartbeat(id, { clear_session: clearToggle.checked });
         });
       }
       if (nameInput) {
@@ -4436,6 +4483,7 @@
 
   async function addHeartbeat() {
     triggerHaptic();
+    const firstWs = (state.agents && state.agents[0]) ? state.agents[0].workspace_id : "";
     try {
       await fetch("/api/heartbeat", {
         method: "POST",
@@ -4445,6 +4493,9 @@
             name: "New Check",
             enabled: true,
             interval_hours: 24,
+            target_type: "new_agent",
+            target_workspace: firstWs,
+            clear_session: true,
           },
         }),
       });

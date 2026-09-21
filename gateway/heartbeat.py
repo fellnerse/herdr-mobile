@@ -43,8 +43,10 @@ class HeartbeatItem:
     name: str = "Live Web Stats"
     enabled: bool = True
     interval_hours: float = 24.0
+    target_type: str = "new_agent"  # "new_agent" | "existing_agent"
     target_pane: str = ""
     target_workspace: str = ""
+    clear_session: bool = True
     prompt: str = DEFAULT_PROMPT
     ok_sentinel: str = DEFAULT_SENTINEL
     last_run_at: float | None = None
@@ -266,17 +268,68 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
     if not agents:
         return None
 
+    # 1. Existing agent mode
+    if hb.target_type == "existing_agent":
+        if hb.target_pane:
+            for a in agents:
+                if a.get("pane_id") == hb.target_pane:
+                    return hb.target_pane
+        return None
+
+    # 2. New dedicated agent mode (in target_workspace)
+    if hb.target_workspace:
+        # Reuse existing dedicated heartbeat tab if present in this workspace
+        if hb.target_pane:
+            for a in agents:
+                if a.get("pane_id") == hb.target_pane and a.get("workspace_id") == hb.target_workspace:
+                    return hb.target_pane
+
+        try:
+            tab_res = call_herdr_rpc("tab.list", {"workspace_id": hb.target_workspace})
+            tabs = tab_res.get("result", {}).get("tabs", [])
+            for t in tabs:
+                label = t.get("label") or ""
+                if label.startswith("hb-") or label == "heartbeat":
+                    tab_id = t.get("tab_id")
+                    for a in agents:
+                        if a.get("tab_id") == tab_id:
+                            hb.target_pane = a.get("pane_id", "")
+                            return hb.target_pane
+        except Exception as e:
+            log.warning("failed to inspect tabs in %s: %s", hb.target_workspace, e)
+
+        # No dedicated tab found; create one in this workspace
+        cwd = ""
+        for a in agents:
+            if a.get("workspace_id") == hb.target_workspace:
+                cwd = a.get("cwd") or a.get("foreground_cwd") or ""
+                break
+        if not cwd:
+            try:
+                ws_res = call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", [])
+                for w in ws_res:
+                    if w.get("workspace_id") == hb.target_workspace:
+                        cwd = w.get("cwd") or ""
+                        break
+            except Exception:
+                pass
+
+        if cwd:
+            try:
+                tab_label = f"hb-{hb.name[:10].lower().replace(' ', '-')}"
+                new_pane = herdr.open_pane(cwd, workspace_id=hb.target_workspace, label=tab_label)
+                if new_pane:
+                    herdr.agent_start(f"hb-{hb.id[:8]}", new_pane, kind="claude")
+                    hb.target_pane = new_pane
+                    return new_pane
+            except Exception as e:
+                log.warning("failed to create dedicated heartbeat tab in %s: %s", hb.target_workspace, e)
+
+    # Fallback to target_pane if set
     if hb.target_pane:
         for a in agents:
             if a.get("pane_id") == hb.target_pane:
                 return hb.target_pane
-        return None
-
-    if hb.target_workspace:
-        for a in agents:
-            if a.get("workspace_id") == hb.target_workspace:
-                return a.get("pane_id")
-        return None
 
     return None
 
@@ -322,6 +375,14 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         target_hb.last_summary = msg
         cfg.save()
         return {"ok": False, "error": msg}
+
+    # Clear session before running to prevent context window bloat over time
+    if target_hb.clear_session and status in ("idle", "done"):
+        try:
+            herdr.agent_prompt(pane_id, "/clear")
+            time.sleep(0.8)
+        except Exception as e:
+            log.warning("failed to clear session in %s: %s", pane_id, e)
     prompt = (target_hb.prompt or DEFAULT_PROMPT).strip()
     sentinel = (target_hb.ok_sentinel or DEFAULT_SENTINEL).strip()
 
@@ -442,6 +503,10 @@ def handle_post_heartbeat(handler, body: dict) -> None:
             val = str(item_data["ok_sentinel"]).strip()
             if val:
                 target_hb.ok_sentinel = val
+        if "target_type" in item_data:
+            target_hb.target_type = str(item_data["target_type"]).strip()
+        if "clear_session" in item_data:
+            target_hb.clear_session = bool(item_data["clear_session"])
 
     cfg.save()
     handler.send_json({
