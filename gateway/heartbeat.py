@@ -270,17 +270,15 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
         for a in agents:
             if a.get("pane_id") == hb.target_pane:
                 return hb.target_pane
+        return None
 
     if hb.target_workspace:
         for a in agents:
             if a.get("workspace_id") == hb.target_workspace:
                 return a.get("pane_id")
+        return None
 
-    for a in agents:
-        if a.get("agent_status") in ("idle", "done"):
-            return a.get("pane_id")
-
-    return agents[0].get("pane_id")
+    return None
 
 
 def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
@@ -310,8 +308,20 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
 
     pane_id = find_target_pane(target_hb)
     if not pane_id:
-        return {"ok": False, "error": f"No suitable agent pane found for heartbeat '{target_hb.name}'"}
+        msg = f"No target agent configured or online for '{target_hb.name}'. Please select an agent in Settings."
+        target_hb.last_status = "error"
+        target_hb.last_summary = msg
+        cfg.save()
+        return {"ok": False, "error": msg}
 
+    herdr = Herdr()
+    status = herdr.status(pane_id)
+    if status == "working":
+        msg = f"Target agent in {pane_id} is currently busy doing other work"
+        target_hb.last_status = "busy"
+        target_hb.last_summary = msg
+        cfg.save()
+        return {"ok": False, "error": msg}
     prompt = (target_hb.prompt or DEFAULT_PROMPT).strip()
     sentinel = (target_hb.ok_sentinel or DEFAULT_SENTINEL).strip()
 

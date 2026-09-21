@@ -4265,6 +4265,21 @@
         } else if (hb.last_status === "running") {
           statusBadge = '<span class="heartbeat-status-badge heartbeat-status-running">RUNNING</span>';
         }
+        const agents = state.agents || [];
+        let hasSelected = false;
+        const agentOptions = agents
+          .map((a) => {
+            const isSel = hb.target_pane === a.pane_id || (!hb.target_pane && hb.target_workspace === a.workspace_id);
+            if (isSel) hasSelected = true;
+            const name = a.display_name || a.name || a.pane_id;
+            return `<option value="pane:${escapeHtml(a.pane_id)}" ${isSel ? "selected" : ""}>${escapeHtml(name)} (${escapeHtml(a.pane_id)})</option>`;
+          })
+          .join("");
+
+        let offlineOption = "";
+        if (!hasSelected && hb.target_pane) {
+          offlineOption = `<option value="pane:${escapeHtml(hb.target_pane)}" selected>${escapeHtml(hb.target_pane)} (offline / not found)</option>`;
+        }
 
         return `
           <div class="heartbeat-card" data-id="${escapeHtml(hb.id)}">
@@ -4279,6 +4294,14 @@
                   </svg>
                 </button>
               </div>
+            </div>
+            <div class="heartbeat-card-row">
+              <label>Target agent</label>
+              <select class="heartbeat-target-select">
+                <option value="">Select target agent…</option>
+                ${offlineOption}
+                ${agentOptions}
+              </select>
             </div>
             <div class="heartbeat-card-row">
               <label>Interval</label>
@@ -4316,11 +4339,27 @@
       const id = card.dataset.id;
       const nameInput = card.querySelector(".heartbeat-name-input");
       const toggleInput = card.querySelector(".heartbeat-toggle");
+      const targetSelect = card.querySelector(".heartbeat-target-select");
       const intervalSelect = card.querySelector(".heartbeat-interval-select");
       const promptTextarea = card.querySelector(".heartbeat-prompt-input");
       const runBtn = card.querySelector(".heartbeat-run-btn");
       const deleteBtn = card.querySelector(".heartbeat-delete");
 
+      if (targetSelect) {
+        targetSelect.addEventListener("change", () => {
+          const val = targetSelect.value;
+          if (val.startsWith("pane:")) {
+            const pane_id = val.slice(5);
+            const a = (state.agents || []).find((x) => x.pane_id === pane_id);
+            updateHeartbeat(id, {
+              target_pane: pane_id,
+              target_workspace: a ? a.workspace_id : "",
+            });
+          } else {
+            updateHeartbeat(id, { target_pane: "", target_workspace: "" });
+          }
+        });
+      }
       if (nameInput) {
         nameInput.addEventListener("blur", () => {
           const name = nameInput.value.trim();
