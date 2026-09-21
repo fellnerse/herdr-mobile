@@ -86,6 +86,12 @@
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elPushHint = document.getElementById("push-hint");
+  const elGlobalSettingsView = document.getElementById("global-settings-view");
+  const elBtnCloseGlobalSettings = document.getElementById("btn-close-global-settings");
+  const elBtnFlockSettings = document.getElementById("btn-flock-settings");
+  const elBtnOpenGlobalSettings = document.getElementById("btn-open-global-settings");
+  const elBtnAddHeartbeat = document.getElementById("btn-add-heartbeat");
+  const elHeartbeatsList = document.getElementById("heartbeats-list");
   const elPickerQuota = document.getElementById("picker-quota");
   const elChatQueue = document.getElementById("chat-queue");
   const elBtnConsole = document.getElementById("btn-console");
@@ -2035,6 +2041,21 @@
     elSheetBackdrop.classList.add("hidden");
   }
 
+  function openGlobalSettings() {
+    triggerHaptic();
+    closeSheet();
+    if (elGlobalSettingsView) {
+      elGlobalSettingsView.classList.remove("hidden");
+      refreshGlobalSettings();
+    }
+  }
+
+  function closeGlobalSettings() {
+    if (elGlobalSettingsView) {
+      elGlobalSettingsView.classList.add("hidden");
+    }
+  }
+
   /* Send a prompt - which means queue it. There is deliberately only one path:
      into a free chat with usage left this lands within the second, and into a
      busy one or an empty window it waits, without you having to know which of
@@ -3952,12 +3973,9 @@
 
   elBtnSettings.addEventListener("click", openSheet);
   elBtnCloseSheet.addEventListener("click", closeSheet);
-  /* One backdrop serves both sheets, so it has to dismiss whichever is up -
-     closing only the settings sheet left the task sheet stranded on screen
-     with nothing behind it to tap. */
+  /* One backdrop dismisses any open sheet. */
   elSheetBackdrop.addEventListener("click", () => {
-    if (!elTaskSheet.classList.contains("hidden")) closeTaskSheet();
-    else closeSheet();
+    closeSheet();
   });
 
   elHistoryContainer.addEventListener("scroll", onHistoryScroll, { passive: true });
@@ -4211,6 +4229,370 @@
       setPushHint("failed: " + err.message);
     }
   });
+
+  async function refreshGlobalSettings() {
+    refreshPushState();
+    if (!elHeartbeatsList) return;
+    try {
+      const res = await fetch("/api/heartbeat");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.ok) return;
+      const heartbeats = data.heartbeats || [];
+      renderHeartbeats(heartbeats);
+    } catch (err) {
+      /* gateway offline */
+    }
+  }
+  function getRootProjects() {
+    const rootProjects = [];
+    const seen = new Set();
+    for (const a of (state.agents || [])) {
+      if (a.main_checkout && a.workspace_id && !seen.has(a.project_name || a.project)) {
+        const key = a.project_name || a.project;
+        seen.add(key);
+        rootProjects.push({
+          workspace_id: a.workspace_id,
+          name: a.project_name || a.name || key,
+        });
+      }
+    }
+    if (!rootProjects.length) {
+      const groups = groupByProject(state.agents || []);
+      for (const g of groups) {
+        if (g.from && !seen.has(g.name)) {
+          seen.add(g.name);
+          rootProjects.push({
+            workspace_id: g.from,
+            name: g.name,
+          });
+        }
+      }
+    }
+    return rootProjects;
+  }
+
+
+  function renderHeartbeats(heartbeats) {
+    if (!elHeartbeatsList) return;
+    if (!heartbeats.length) {
+      elHeartbeatsList.innerHTML = '<div class="sheet-hint" style="padding: 12px 0;">No heartbeats configured. Tap "+ Add" above to create one.</div>';
+      return;
+    }
+
+    elHeartbeatsList.innerHTML = heartbeats
+      .map((hb) => {
+        const lastTimeText = hb.last_run_at
+          ? new Date(hb.last_run_at * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" })
+          : "Never";
+        let statusBadge = "";
+        if (hb.last_status === "ok") {
+          statusBadge = '<span class="heartbeat-status-badge heartbeat-status-ok">OK</span>';
+        } else if (hb.last_status === "alert") {
+          statusBadge = '<span class="heartbeat-status-badge heartbeat-status-alert">ALERT</span>';
+        } else if (hb.last_status === "running") {
+          statusBadge = '<span class="heartbeat-status-badge heartbeat-status-running">RUNNING</span>';
+        }
+        const rootProjects = getRootProjects();
+        let hasSelected = false;
+        const projectOptions = rootProjects
+          .map((p) => {
+            const isSel = hb.target_workspace === p.workspace_id;
+            if (isSel) hasSelected = true;
+            return `<option value="${escapeHtml(p.workspace_id)}" ${isSel ? "selected" : ""}>New agent in ${escapeHtml(p.name)}</option>`;
+          })
+          .join("");
+        let offlineOption = "";
+        if (!hasSelected && hb.target_workspace) {
+          offlineOption = `<option value="${escapeHtml(hb.target_workspace)}" selected>New agent in ${escapeHtml(hb.target_workspace)} (offline / not found)</option>`;
+        }
+
+        const isCodex = hb.agent_kind === "codex";
+        const isOmp = hb.agent_kind === "omp";
+        const standardClaudeModels = ["", "claude-3-7-sonnet", "claude-3-5-haiku", "claude-3-opus"];
+        const standardCodexModels = ["", "gpt-5-codex", "o3-mini", "o3"];
+        const standardOmpModels = ["", "google-antigravity/gemini-3.8-flash", "anthropic/claude-3-7-sonnet", "openai/gpt-4.5-preview"];
+        const standardModels = isOmp ? standardOmpModels : (isCodex ? standardCodexModels : standardClaudeModels);
+        const isCustomModel = Boolean(hb.model && !standardModels.includes(hb.model));
+
+        const modelList = isOmp
+          ? [
+              { val: "", label: "Default" },
+              { val: "google-antigravity/gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+              { val: "anthropic/claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
+              { val: "openai/gpt-4.5-preview", label: "GPT-4.5 Preview" },
+              { val: "custom", label: "Custom…" },
+            ]
+          : isCodex
+          ? [
+              { val: "", label: "Default" },
+              { val: "gpt-5-codex", label: "GPT-5 Codex" },
+              { val: "o3-mini", label: "o3-mini" },
+              { val: "o3", label: "o3" },
+              { val: "custom", label: "Custom…" },
+            ]
+          : [
+              { val: "", label: "Default" },
+              { val: "claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
+              { val: "claude-3-5-haiku", label: "Claude 3.5 Haiku" },
+              { val: "claude-3-opus", label: "Claude 3 Opus" },
+              { val: "custom", label: "Custom…" },
+            ];
+
+        const modelOptions = modelList
+          .map((m) => {
+            const isSel = isCustomModel ? m.val === "custom" : hb.model === m.val;
+            return `<option value="${escapeHtml(m.val)}" ${isSel ? "selected" : ""}>${escapeHtml(m.label)}</option>`;
+          })
+          .join("");
+
+        return `
+          <div class="heartbeat-card" data-id="${escapeHtml(hb.id)}">
+            <div class="heartbeat-card-head">
+              <input type="text" class="heartbeat-name-input" value="${escapeHtml(hb.name)}" placeholder="Check Name">
+              <div class="heartbeat-card-controls">
+                <input type="checkbox" class="heartbeat-toggle" ${hb.enabled ? "checked" : ""}>
+                <button type="button" class="btn-icon-danger heartbeat-delete" title="Delete check">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="heartbeat-card-row">
+              <label>Target project</label>
+              <select class="heartbeat-target-select">
+                <option value="">Select root project…</option>
+                ${offlineOption}
+                ${projectOptions}
+              </select>
+            </div>
+            <div class="heartbeat-card-row">
+              <label for="hb-clear-${escapeHtml(hb.id)}">
+                Clear session before run
+                <span class="sheet-hint">sends /clear so context never runs full</span>
+              </label>
+              <input type="checkbox" id="hb-clear-${escapeHtml(hb.id)}" class="heartbeat-clear-toggle" ${hb.clear_session !== false ? "checked" : ""}>
+            </div>
+            <div class="heartbeat-card-row">
+              <label for="hb-autoclose-${escapeHtml(hb.id)}">
+                Auto-close tab on success
+                <span class="sheet-hint">closes tab when HEARTBEAT_OK; leaves open on alert</span>
+              </label>
+              <input type="checkbox" id="hb-autoclose-${escapeHtml(hb.id)}" class="heartbeat-autoclose-toggle" ${hb.auto_close !== false ? "checked" : ""}>
+            </div>
+            <div class="heartbeat-card-row">
+              <label>Interval</label>
+              <select class="heartbeat-interval-select">
+                <option value="1" ${Math.round(hb.interval_hours) === 1 ? "selected" : ""}>Every 1 hour</option>
+                <option value="6" ${Math.round(hb.interval_hours) === 6 ? "selected" : ""}>Every 6 hours</option>
+                <option value="12" ${Math.round(hb.interval_hours) === 12 ? "selected" : ""}>Every 12 hours</option>
+                <option value="24" ${Math.round(hb.interval_hours) === 24 ? "selected" : ""}>Every 24 hours (daily)</option>
+              </select>
+            </div>
+            <div class="heartbeat-card-row">
+              <label>Harness</label>
+              <select class="heartbeat-harness-select">
+                <option value="claude" ${hb.agent_kind === "claude" || !hb.agent_kind ? "selected" : ""}>Claude Code</option>
+                <option value="codex" ${hb.agent_kind === "codex" ? "selected" : ""}>Codex</option>
+                <option value="omp" ${hb.agent_kind === "omp" ? "selected" : ""}>OMP (Oh My Pi)</option>
+              </select>
+            </div>
+            <div class="heartbeat-card-row">
+              <label>Model</label>
+              <div style="display: flex; gap: 6px; align-items: center;">
+                <select class="heartbeat-model-select">
+                  ${modelOptions}
+                </select>
+                <input type="text" class="heartbeat-custom-model ${isCustomModel ? "" : "hidden"}" value="${escapeHtml(hb.model || "")}" placeholder="Model name" style="width: 120px;">
+              </div>
+            </div>
+            <div class="sheet-row-stacked">
+              <label style="font-size: 13px; color: var(--text-secondary);">
+                Prompt
+                <span class="sheet-hint">sentinel ${escapeHtml(hb.ok_sentinel || "HEARTBEAT_OK")} suppresses push</span>
+              </label>
+              <textarea class="sheet-textarea heartbeat-prompt-input" rows="3">${escapeHtml(hb.prompt || "")}</textarea>
+            </div>
+            <div class="heartbeat-card-footer">
+              <div class="sheet-agent-text" style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span class="sheet-hint">Last: ${lastTimeText}</span>
+                  ${statusBadge}
+                </div>
+                <span class="sheet-hint" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(hb.last_summary || "")}</span>
+              </div>
+              <button type="button" class="sheet-btn-small heartbeat-run-btn">Run now</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    // Attach event listeners for each card
+    elHeartbeatsList.querySelectorAll(".heartbeat-card").forEach((card) => {
+      const id = card.dataset.id;
+      const nameInput = card.querySelector(".heartbeat-name-input");
+      const toggleInput = card.querySelector(".heartbeat-toggle");
+      const targetSelect = card.querySelector(".heartbeat-target-select");
+      const harnessSelect = card.querySelector(".heartbeat-harness-select");
+      const modelSelect = card.querySelector(".heartbeat-model-select");
+      const customModelInput = card.querySelector(".heartbeat-custom-model");
+      const intervalSelect = card.querySelector(".heartbeat-interval-select");
+      const promptTextarea = card.querySelector(".heartbeat-prompt-input");
+      const autoCloseToggle = card.querySelector(".heartbeat-autoclose-toggle");
+      const runBtn = card.querySelector(".heartbeat-run-btn");
+      const deleteBtn = card.querySelector(".heartbeat-delete");
+      const clearToggle = card.querySelector(".heartbeat-clear-toggle");
+
+      if (targetSelect) {
+        targetSelect.addEventListener("change", () => {
+          const ws_id = targetSelect.value;
+          updateHeartbeat(id, {
+            target_type: "new_agent",
+            target_workspace: ws_id,
+            target_pane: "",
+          });
+        });
+      }
+      if (harnessSelect) {
+        harnessSelect.addEventListener("change", () => {
+          updateHeartbeat(id, { agent_kind: harnessSelect.value, model: "" });
+          refreshGlobalSettings();
+        });
+      }
+      if (modelSelect) {
+        modelSelect.addEventListener("change", () => {
+          if (modelSelect.value === "custom") {
+            if (customModelInput) {
+              customModelInput.classList.remove("hidden");
+              customModelInput.focus();
+            }
+          } else {
+            if (customModelInput) customModelInput.classList.add("hidden");
+            updateHeartbeat(id, { model: modelSelect.value });
+          }
+        });
+      }
+      if (customModelInput) {
+        customModelInput.addEventListener("blur", () => {
+          const model = customModelInput.value.trim();
+          updateHeartbeat(id, { model });
+        });
+      }
+      if (clearToggle) {
+        clearToggle.addEventListener("change", () => {
+          updateHeartbeat(id, { clear_session: clearToggle.checked });
+        });
+      }
+      if (autoCloseToggle) {
+        autoCloseToggle.addEventListener("change", () => {
+          updateHeartbeat(id, { auto_close: autoCloseToggle.checked });
+        });
+      }
+      if (nameInput) {
+        nameInput.addEventListener("blur", () => {
+          const name = nameInput.value.trim();
+          if (name) updateHeartbeat(id, { name });
+        });
+      }
+      if (toggleInput) {
+        toggleInput.addEventListener("change", () => {
+          updateHeartbeat(id, { enabled: toggleInput.checked });
+        });
+      }
+      if (intervalSelect) {
+        intervalSelect.addEventListener("change", () => {
+          updateHeartbeat(id, { interval_hours: parseFloat(intervalSelect.value) });
+        });
+      }
+      if (promptTextarea) {
+        promptTextarea.addEventListener("blur", () => {
+          const prompt = promptTextarea.value.trim();
+          if (prompt) updateHeartbeat(id, { prompt });
+        });
+      }
+      if (runBtn) {
+        runBtn.addEventListener("click", async () => {
+          triggerHaptic();
+          runBtn.disabled = true;
+          runBtn.textContent = "Running…";
+          try {
+            await fetch("/api/heartbeat/run", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id }),
+            });
+          } catch (err) {
+            /* ignore */
+          } finally {
+            setTimeout(async () => {
+              runBtn.disabled = false;
+              runBtn.textContent = "Run now";
+              await refreshGlobalSettings();
+            }, 1000);
+          }
+        });
+      }
+      if (deleteBtn) {
+        deleteBtn.addEventListener("click", async () => {
+          triggerHaptic();
+          try {
+            await fetch("/api/heartbeat/delete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id }),
+            });
+            await refreshGlobalSettings();
+          } catch (err) {
+            /* ignore */
+          }
+        });
+      }
+    });
+  }
+
+  async function updateHeartbeat(id, updates) {
+    try {
+      await fetch("/api/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ heartbeat: { id, ...updates } }),
+      });
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  async function addHeartbeat() {
+    triggerHaptic();
+    const rootProjects = getRootProjects();
+    const firstWs = rootProjects.length ? rootProjects[0].workspace_id : "";
+    try {
+      await fetch("/api/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          heartbeat: {
+            name: "New Check",
+            enabled: true,
+            target_workspace: firstWs,
+            clear_session: true,
+            auto_close: true,
+          },
+        }),
+      });
+      await refreshGlobalSettings();
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  if (elBtnFlockSettings) elBtnFlockSettings.addEventListener("click", openGlobalSettings);
+  if (elBtnOpenGlobalSettings) elBtnOpenGlobalSettings.addEventListener("click", openGlobalSettings);
+  if (elBtnCloseGlobalSettings) elBtnCloseGlobalSettings.addEventListener("click", closeGlobalSettings);
+  if (elBtnAddHeartbeat) elBtnAddHeartbeat.addEventListener("click", addHeartbeat);
 
   if (pushSupported()) {
     navigator.serviceWorker

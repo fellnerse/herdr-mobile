@@ -27,6 +27,7 @@ import tokens
 import gitdiff
 import machine
 import wsproto
+import heartbeat
 from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
 from terminal import TerminalStream, TerminalError
 from scheduler import config as sched_config
@@ -299,20 +300,73 @@ def name_agent_rows(rows: list) -> None:
 # The watcher sees the working -> stopped transition; the push that follows
 # carries no payload, so what it saw is parked here for the service worker to
 # come and read.
-_LAST_FINISHED = {"at": 0.0, "agents": []}
+_LAST_FINISHED = {"at": 0.0, "agents": [], "title": None, "body": None}
 _LAST_FINISHED_LOCK = threading.Lock()
+_NOTIFICATION_INTERCEPTORS = []
+_API_ROUTES = {"GET": {}, "POST": {}}
 
 
-def record_finished(rows: list) -> None:
+def register_api_route(method: str, path: str, handler) -> None:
+    """Register a custom API route handler:
+        handler(request_handler, params_or_body) -> None
+    For GET: handler(self, qs: dict) -> None
+    For POST: handler(self, body: dict) -> None
+    """
+    _API_ROUTES[method.upper()][path] = handler
+
+def register_notification_interceptor(interceptor) -> None:
+    """Register a callable:
+        interceptor(pane_id: str, row: dict) -> tuple[bool, dict | None]
+    Returns (should_notify, custom_metadata).
+    If should_notify is False, the push is suppressed for this pane.
+    If custom_metadata is returned (e.g. {"title": ..., "body": ...}), it enriches
+    the parked notification.
+    """
+    _NOTIFICATION_INTERCEPTORS.append(interceptor)
+
+# Initialize heartbeat routes and interceptor
+heartbeat.init_heartbeat_routes(register_api_route, register_notification_interceptor)
+
+
+def filter_stopped_agents(stopped_panes: list, rows: dict) -> tuple[list, str | None, str | None]:
+    """Pass stopped panes through registered interceptors.
+    Returns (notify_rows, custom_title, custom_body).
+    """
+    notify_rows = []
+    custom_title = None
+    custom_body = None
+    for pane_id in stopped_panes:
+        row = rows.get(pane_id)
+        if not row:
+            continue
+        suppress = False
+        for interceptor in _NOTIFICATION_INTERCEPTORS:
+            try:
+                should_notify, meta = interceptor(pane_id, row)
+                if not should_notify:
+                    suppress = True
+                    break
+                if meta:
+                    custom_title = meta.get("title") or custom_title
+                    custom_body = meta.get("body") or custom_body
+            except Exception as e:
+                print(f"notification interceptor failed for {pane_id}: {e}", file=sys.stderr)
+        if not suppress:
+            notify_rows.append(row)
+    return notify_rows, custom_title, custom_body
+
+
+def record_finished(rows: list, title: str | None = None, body: str | None = None) -> None:
     with _LAST_FINISHED_LOCK:
         _LAST_FINISHED["at"] = time.time()
+        _LAST_FINISHED["title"] = title
+        _LAST_FINISHED["body"] = body
         _LAST_FINISHED["agents"] = [
             {"pane_id": r.get("pane_id"),
              "name": r.get("display_name") or r.get("name"),
              "title": r.get("title", ""), "status": r.get("status")}
             for r in rows
         ]
-
 
 # How long the parked transition is worth reading. The service worker applies
 # the same rule, but the record should not outlive it here either: it names
@@ -368,9 +422,16 @@ def last_finished() -> dict:
         age = round(time.time() - at, 1) if at else None
         if age is not None and age > FINISHED_TTL:
             _LAST_FINISHED["at"] = 0.0
+            _LAST_FINISHED["title"] = None
+            _LAST_FINISHED["body"] = None
             _LAST_FINISHED["agents"] = []
             return {"at": 0.0, "age": None, "agents": []}
-        return {"at": at, "age": age, "agents": list(_LAST_FINISHED["agents"])}
+        res = {"at": at, "age": age, "agents": list(_LAST_FINISHED["agents"])}
+        if _LAST_FINISHED.get("title"):
+            res["title"] = _LAST_FINISHED["title"]
+        if _LAST_FINISHED.get("body"):
+            res["body"] = _LAST_FINISHED["body"]
+        return res
 
 
 # ---------------------------------------------------------------- attachments
@@ -674,6 +735,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
 
         if not self.guard_origin(path):
             return
+        # Check registered custom API routes
+        if path in _API_ROUTES["GET"]:
+            _API_ROUTES["GET"][path](self, qs)
+            return
+
 
         # API: List all active agents
         if path == "/api/agents":
@@ -898,6 +964,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
             body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
         except Exception:
             self.send_json({"ok": False, "error": "Invalid JSON"}, 400)
+            return
+
+        # Check registered custom API routes
+        if path in _API_ROUTES["POST"]:
+            _API_ROUTES["POST"][path](self, body)
             return
 
         # API: Register a Web Push subscription
@@ -1377,12 +1448,16 @@ class StatusWatcher(threading.Thread):
                 continue
             # Name them before pushing: the notification wants to say which
             # agent stopped and what it wants, and only this side of the wire
-            # knows.
+            # knows. Interceptors may suppress clean runs or customize alerts.
             try:
                 rows = {r.get("pane_id"): r for r in agent_rows()}
-                record_finished([rows[p] for p in stopped if p in rows])
+                notify_rows, custom_title, custom_body = filter_stopped_agents(stopped, rows)
+                if not notify_rows:
+                    continue
+                record_finished(notify_rows, title=custom_title, body=custom_body)
             except Exception as e:
                 print(f"naming finished agents failed: {e}", file=sys.stderr)
+                continue
             if push.load_subs():
                 try:
                     push.broadcast()
@@ -1667,6 +1742,7 @@ def run():
     # Config is re-read every pass, so editing scheduler.json takes effect
     # without a restart.
     SCHEDULER = Scheduler(sched_config.load)
+    heartbeat.start_runner()
     SCHEDULER.start()
     print(f"SheepIt gateway listening on http://{HOST}:{PORT}")
     print(f"Herdr socket target: {HERDR_SOCKET_PATH}")

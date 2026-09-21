@@ -70,6 +70,7 @@ function names(agents) {
 function describe(last) {
   if (!last || !last.agents || !last.agents.length) return null;
   if (last.age !== null && last.age > FRESH_SECONDS) return null; // a stale record
+  if (last.title && last.body) return { title: last.title, body: last.body };
   const who = names(last.agents);
   if (!who) return null;
   const asking = last.agents.filter((a) => a.status === "blocked");
