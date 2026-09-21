@@ -4244,6 +4244,34 @@
       /* gateway offline */
     }
   }
+  function getRootProjects() {
+    const rootProjects = [];
+    const seen = new Set();
+    for (const a of (state.agents || [])) {
+      if (a.main_checkout && a.workspace_id && !seen.has(a.project_name || a.project)) {
+        const key = a.project_name || a.project;
+        seen.add(key);
+        rootProjects.push({
+          workspace_id: a.workspace_id,
+          name: a.project_name || a.name || key,
+        });
+      }
+    }
+    if (!rootProjects.length) {
+      const groups = groupByProject(state.agents || []);
+      for (const g of groups) {
+        if (g.from && !seen.has(g.name)) {
+          seen.add(g.name);
+          rootProjects.push({
+            workspace_id: g.from,
+            name: g.name,
+          });
+        }
+      }
+    }
+    return rootProjects;
+  }
+
 
   function renderHeartbeats(heartbeats) {
     if (!elHeartbeatsList) return;
@@ -4265,42 +4293,19 @@
         } else if (hb.last_status === "running") {
           statusBadge = '<span class="heartbeat-status-badge heartbeat-status-running">RUNNING</span>';
         }
-        const agents = state.agents || [];
-        const workspaces = [];
-        const seenWs = new Set();
-        for (const a of agents) {
-          if (a.workspace_id && !seenWs.has(a.workspace_id)) {
-            seenWs.add(a.workspace_id);
-            workspaces.push({
-              id: a.workspace_id,
-              name: a.workspace_label || a.name || a.workspace_id,
-            });
-          }
-        }
-
+        const rootProjects = getRootProjects();
         let hasSelected = false;
-        const newAgentOptions = workspaces
-          .map((w) => {
-            const isSel = hb.target_type !== "existing_agent" && hb.target_workspace === w.id;
+        const projectOptions = rootProjects
+          .map((p) => {
+            const isSel = hb.target_workspace === p.workspace_id;
             if (isSel) hasSelected = true;
-            return `<option value="new:${escapeHtml(w.id)}" ${isSel ? "selected" : ""}>New agent in ${escapeHtml(w.name)}</option>`;
-          })
-          .join("");
-
-        const existingAgentOptions = agents
-          .map((a) => {
-            const isSel = hb.target_type === "existing_agent" && hb.target_pane === a.pane_id;
-            if (isSel) hasSelected = true;
-            const name = a.display_name || a.name || a.pane_id;
-            return `<option value="pane:${escapeHtml(a.pane_id)}" ${isSel ? "selected" : ""}>Existing chat: ${escapeHtml(name)} (${escapeHtml(a.pane_id)})</option>`;
+            return `<option value="${escapeHtml(p.workspace_id)}" ${isSel ? "selected" : ""}>New agent in ${escapeHtml(p.name)}</option>`;
           })
           .join("");
 
         let offlineOption = "";
-        if (!hasSelected && hb.target_pane) {
-          offlineOption = `<option value="pane:${escapeHtml(hb.target_pane)}" selected>${escapeHtml(hb.target_pane)} (offline / not found)</option>`;
-        } else if (!hasSelected && hb.target_workspace) {
-          offlineOption = `<option value="new:${escapeHtml(hb.target_workspace)}" selected>New agent in ${escapeHtml(hb.target_workspace)} (offline / not found)</option>`;
+        if (!hasSelected && hb.target_workspace) {
+          offlineOption = `<option value="${escapeHtml(hb.target_workspace)}" selected>New agent in ${escapeHtml(hb.target_workspace)} (offline / not found)</option>`;
         }
 
         return `
@@ -4318,16 +4323,11 @@
               </div>
             </div>
             <div class="heartbeat-card-row">
-              <label>Target</label>
+              <label>Target project</label>
               <select class="heartbeat-target-select">
-                <option value="">Select target…</option>
+                <option value="">Select root project…</option>
                 ${offlineOption}
-                <optgroup label="New Dedicated Agent (Recommended)">
-                  ${newAgentOptions}
-                </optgroup>
-                <optgroup label="Existing Chat">
-                  ${existingAgentOptions}
-                </optgroup>
+                ${projectOptions}
               </select>
             </div>
             <div class="heartbeat-card-row">
@@ -4380,27 +4380,12 @@
       const deleteBtn = card.querySelector(".heartbeat-delete");
       const clearToggle = card.querySelector(".heartbeat-clear-toggle");
       if (targetSelect) {
-        targetSelect.addEventListener("change", () => {
-          const val = targetSelect.value;
-          if (val.startsWith("new:")) {
-            const ws_id = val.slice(4);
-            updateHeartbeat(id, {
-              target_type: "new_agent",
-              target_workspace: ws_id,
-              target_pane: "",
-            });
-          } else if (val.startsWith("pane:")) {
-            const pane_id = val.slice(5);
-            const a = (state.agents || []).find((x) => x.pane_id === pane_id);
-            updateHeartbeat(id, {
-              target_type: "existing_agent",
-              target_pane: pane_id,
-              target_workspace: a ? a.workspace_id : "",
-            });
-          } else {
-            updateHeartbeat(id, { target_type: "new_agent", target_pane: "", target_workspace: "" });
-          }
-        });
+          const ws_id = targetSelect.value;
+          updateHeartbeat(id, {
+            target_type: "new_agent",
+            target_workspace: ws_id,
+            target_pane: "",
+          });
       }
       if (clearToggle) {
         clearToggle.addEventListener("change", () => {
@@ -4483,7 +4468,8 @@
 
   async function addHeartbeat() {
     triggerHaptic();
-    const firstWs = (state.agents && state.agents[0]) ? state.agents[0].workspace_id : "";
+    const rootProjects = getRootProjects();
+    const firstWs = rootProjects.length ? rootProjects[0].workspace_id : "";
     try {
       await fetch("/api/heartbeat", {
         method: "POST",
