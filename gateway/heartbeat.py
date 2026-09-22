@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -322,7 +323,7 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
                     current_agent = p.get("agent")
                     # If pane has no agent yet (shell), start the agent in this existing tab!
                     if not current_agent or current_agent == "unknown":
-                        args = ["--model", hb.model] if hb.model else None
+                        args = _launch_args(hb.agent_kind or "claude", hb.model)
                         try:
                             herdr.agent_start(f"hb-{hb.id[:8]}", p_id, kind=hb.agent_kind or "claude", args=args)
                         except Exception as e:
@@ -360,7 +361,7 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
             try:
                 new_pane = herdr.open_pane(cwd, workspace_id=hb.target_workspace, label=target_tab_label)
                 if new_pane:
-                    args = ["--model", hb.model] if hb.model else None
+                    args = _launch_args(hb.agent_kind or "claude", hb.model)
                     herdr.agent_start(f"hb-{hb.id[:8]}", new_pane, kind=hb.agent_kind or "claude", args=args)
                     hb.target_pane = new_pane
                     return new_pane
@@ -373,6 +374,24 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
                 return hb.target_pane
 
     return None
+
+
+def _launch_args(agent_kind: str, model: str) -> list[str]:
+    """CLI flags to start a harness nobody is watching.
+
+    A heartbeat can't answer a permission prompt, so every kind gets whatever
+    flag makes it run unattended, on top of a model override if one is set.
+    """
+    args = []
+    if model:
+        args += ["--model", model]
+    if agent_kind == "omp":
+        args.append("--auto-approve")
+    elif agent_kind == "codex":
+        args += ["--ask-for-approval", "never"]
+    else:  # claude
+        args += ["--permission-mode", "auto"]
+    return args
 
 
 def send_agent_prompt(herdr: Herdr, pane_id: str, text: str) -> None:
@@ -477,9 +496,7 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
             cfg.save()
             return {"ok": False, "error": msg}
 
-        args = []
-        if target_hb.model:
-            args.extend(["--model", target_hb.model])
+        args = _launch_args(target_hb.agent_kind or "claude", target_hb.model)
         clean_prompt = " ".join(line.strip() for line in prompt.splitlines() if line.strip())
         args.append(clean_prompt)
         mark_heartbeat_started(pane_id, sentinel, target_hb.id, target_hb.name)
@@ -591,6 +608,65 @@ class HeartbeatRunner(threading.Thread):
             time.sleep(self.check_interval_sec)
 
 
+# Model catalogs, asked of each harness rather than pinned in source
+
+_MODEL_CACHE_TTL = 6 * 3600.0
+_model_cache: dict[str, tuple[float, list[dict]]] = {}
+
+# Claude Code has no CLI command to list models, but its `--model` aliases
+# always resolve to whichever build is current, so offering these instead of
+# a snapshot of full names is what keeps this list from going stale again.
+_CLAUDE_MODELS = [
+    {"value": "", "label": "Default"},
+    {"value": "sonnet", "label": "Sonnet (latest)"},
+    {"value": "opus", "label": "Opus (latest)"},
+    {"value": "haiku", "label": "Haiku (latest)"},
+    {"value": "fable", "label": "Fable (latest)"},
+]
+
+
+def _omp_models() -> list[dict]:
+    models = [{"value": "", "label": "Default"}]
+    try:
+        proc = subprocess.run(
+            ["omp", "models", "--json"], capture_output=True, text=True, timeout=15,
+        )
+        data = json.loads(proc.stdout)
+        seen = set()
+        found = []
+        for m in data.get("models", []):
+            if m.get("kind") != "chat":
+                continue
+            selector = m.get("selector") or m.get("id")
+            if not selector or selector in seen:
+                continue
+            seen.add(selector)
+            label = m.get("name") or selector
+            provider = m.get("provider")
+            found.append({"value": selector, "label": f"{label} ({provider})" if provider else label})
+        found.sort(key=lambda m: m["label"])
+        models += found
+    except Exception as e:
+        log.warning("failed to query omp models: %s", e)
+    return models
+
+
+def get_harness_models(agent_kind: str) -> list[dict]:
+    """Ask the harness itself what models it can run, rather than guessing."""
+    if agent_kind == "claude":
+        return _CLAUDE_MODELS
+    if agent_kind != "omp":
+        # Codex's CLI has no listing command either; Default/Custom is honest.
+        return [{"value": "", "label": "Default"}]
+
+    cached = _model_cache.get(agent_kind)
+    if cached and time.time() - cached[0] < _MODEL_CACHE_TTL:
+        return cached[1]
+    models = _omp_models()
+    _model_cache[agent_kind] = (time.time(), models)
+    return models
+
+
 # API Handlers for server.py route registry
 
 
@@ -601,6 +677,11 @@ def handle_get_heartbeat(handler, qs: dict) -> None:
         "heartbeats": [hb.to_dict() for hb in cfg.heartbeats],
         "config": cfg.to_dict(),
     })
+
+
+def handle_get_heartbeat_models(handler, qs: dict) -> None:
+    agent_kind = (qs.get("kind", ["claude"])[0] or "claude").strip()
+    handler.send_json({"ok": True, "kind": agent_kind, "models": get_harness_models(agent_kind)})
 
 
 def handle_post_heartbeat(handler, body: dict) -> None:
@@ -691,6 +772,7 @@ def handle_post_heartbeat_run(handler, body: dict) -> None:
 def init_heartbeat_routes(register_route_fn, register_interceptor_fn) -> None:
     """Register heartbeat routes and notification interceptor."""
     register_route_fn("GET", "/api/heartbeat", handle_get_heartbeat)
+    register_route_fn("GET", "/api/heartbeat/models", handle_get_heartbeat_models)
     register_route_fn("POST", "/api/heartbeat", handle_post_heartbeat)
     register_route_fn("POST", "/api/heartbeat/delete", handle_post_heartbeat_delete)
     register_route_fn("POST", "/api/heartbeat/run", handle_post_heartbeat_run)
