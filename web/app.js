@@ -4411,7 +4411,7 @@
       const data = await res.json();
       if (!data.ok) return;
       const heartbeats = data.heartbeats || [];
-      renderHeartbeats(heartbeats);
+      await renderHeartbeats(heartbeats);
     } catch (err) {
       /* gateway offline */
     }
@@ -4445,12 +4445,35 @@
   }
 
 
-  function renderHeartbeats(heartbeats) {
+  // Cached per agent kind for the session: the harness's own model catalog
+  // doesn't change mid-session, and re-fetching on every render is wasted work.
+  const hbModelsCache = {};
+  async function fetchHeartbeatModels(kind) {
+    if (hbModelsCache[kind]) return hbModelsCache[kind];
+    let models = [{ val: "", label: "Default" }];
+    try {
+      const res = await fetch(`/api/heartbeat/models?kind=${encodeURIComponent(kind)}`);
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.models)) {
+        models = data.models.map((m) => ({ val: m.value, label: m.label }));
+      }
+    } catch (err) {
+      /* gateway offline; card falls back to Default/Custom */
+    }
+    hbModelsCache[kind] = models;
+    return models;
+  }
+
+  async function renderHeartbeats(heartbeats) {
     if (!elHeartbeatsList) return;
     if (!heartbeats.length) {
       elHeartbeatsList.innerHTML = '<div class="sheet-hint" style="padding: 12px 0;">No heartbeats configured. Tap "+ Add" above to create one.</div>';
       return;
     }
+
+    const kinds = Array.from(new Set(heartbeats.map((hb) => hb.agent_kind || "claude")));
+    const modelsByKind = {};
+    await Promise.all(kinds.map(async (kind) => { modelsByKind[kind] = await fetchHeartbeatModels(kind); }));
 
     elHeartbeatsList.innerHTML = heartbeats
       .map((hb) => {
@@ -4479,44 +4502,17 @@
           offlineOption = `<option value="${escapeHtml(hb.target_workspace)}" selected>New agent in ${escapeHtml(hb.target_workspace)} (offline / not found)</option>`;
         }
 
-        const isCodex = hb.agent_kind === "codex";
-        const isOmp = hb.agent_kind === "omp";
-        const standardClaudeModels = ["", "claude-3-7-sonnet", "claude-3-5-haiku", "claude-3-opus"];
-        const standardCodexModels = ["", "gpt-5-codex", "o3-mini", "o3"];
-        const standardOmpModels = ["", "google-antigravity/gemini-3.8-flash", "anthropic/claude-3-7-sonnet", "openai/gpt-4.5-preview"];
-        const standardModels = isOmp ? standardOmpModels : (isCodex ? standardCodexModels : standardClaudeModels);
-        const isCustomModel = Boolean(hb.model && !standardModels.includes(hb.model));
+        // Models come from the harness itself (fetched in renderHeartbeats),
+        // not a pinned list here that would go stale the day a model ships.
+        const catalog = modelsByKind[hb.agent_kind || "claude"] || [{ val: "", label: "Default" }];
+        const isCustomModel = Boolean(hb.model && !catalog.some((m) => m.val === hb.model));
 
-        const modelList = isOmp
-          ? [
-              { val: "", label: "Default" },
-              { val: "google-antigravity/gemini-3.8-flash", label: "Gemini 3.8 Flash" },
-              { val: "anthropic/claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
-              { val: "openai/gpt-4.5-preview", label: "GPT-4.5 Preview" },
-              { val: "custom", label: "Custom…" },
-            ]
-          : isCodex
-          ? [
-              { val: "", label: "Default" },
-              { val: "gpt-5-codex", label: "GPT-5 Codex" },
-              { val: "o3-mini", label: "o3-mini" },
-              { val: "o3", label: "o3" },
-              { val: "custom", label: "Custom…" },
-            ]
-          : [
-              { val: "", label: "Default" },
-              { val: "claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
-              { val: "claude-3-5-haiku", label: "Claude 3.5 Haiku" },
-              { val: "claude-3-opus", label: "Claude 3 Opus" },
-              { val: "custom", label: "Custom…" },
-            ];
-
-        const modelOptions = modelList
+        const modelOptions = catalog
           .map((m) => {
-            const isSel = isCustomModel ? m.val === "custom" : hb.model === m.val;
+            const isSel = !isCustomModel && hb.model === m.val;
             return `<option value="${escapeHtml(m.val)}" ${isSel ? "selected" : ""}>${escapeHtml(m.label)}</option>`;
           })
-          .join("");
+          .join("") + `<option value="custom" ${isCustomModel ? "selected" : ""}>Custom…</option>`;
 
         return `
           <div class="heartbeat-card" data-id="${escapeHtml(hb.id)}">

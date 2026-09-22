@@ -1901,6 +1901,45 @@ with tempfile.TemporaryDirectory(prefix="sheepit-multi-hb-") as hb_dir:
         check("remaining heartbeat is hb_tests", dh.response.get("heartbeats", [])[0]["id"], "hb_tests")
     finally:
         heartbeat.CONFIG_PATH = orig_config_path
+
+# Unattended launch flags: a heartbeat can't answer a permission prompt, so
+# every harness needs whatever flag makes it run without one.
+check("claude launch args default to auto permission mode",
+      heartbeat._launch_args("claude", ""), ["--permission-mode", "auto"])
+check("claude launch args carry a model override",
+      heartbeat._launch_args("claude", "opus"), ["--model", "opus", "--permission-mode", "auto"])
+check("omp launch args auto-approve",
+      heartbeat._launch_args("omp", ""), ["--auto-approve"])
+check("codex launch args never ask for approval",
+      heartbeat._launch_args("codex", ""), ["--ask-for-approval", "never"])
+
+# Model catalogs: asked of the harness (or its own alias system), not pinned
+# to a snapshot that goes stale the day a new model ships.
+claude_models = heartbeat.get_harness_models("claude")
+check("claude model catalog offers current aliases, not pinned snapshots",
+      {m["value"] for m in claude_models}, {"", "sonnet", "opus", "haiku", "fable"})
+codex_models = heartbeat.get_harness_models("codex")
+check("codex model catalog is honest about having no listing command",
+      codex_models, [{"value": "", "label": "Default"}])
+
+orig_run = heartbeat.subprocess.run
+try:
+    class FakeProc:
+        stdout = json.dumps({"models": [
+            {"kind": "chat", "provider": "anthropic", "id": "claude-sonnet-5", "selector": "anthropic/claude-sonnet-5", "name": "Sonnet 5"},
+            {"kind": "embedding", "provider": "openai", "selector": "openai/text-embed"},
+        ]})
+    heartbeat.subprocess.run = lambda *a, **k: FakeProc()
+    heartbeat._model_cache.pop("omp", None)
+    omp_models = heartbeat.get_harness_models("omp")
+    check("omp model catalog asks `omp models --json` and skips non-chat kinds",
+          omp_models, [
+              {"value": "", "label": "Default"},
+              {"value": "anthropic/claude-sonnet-5", "label": "Sonnet 5 (anthropic)"},
+          ])
+finally:
+    heartbeat.subprocess.run = orig_run
+    heartbeat._model_cache.pop("omp", None)
 # ---------------------------------------------------------------------------
 
 if failures:
