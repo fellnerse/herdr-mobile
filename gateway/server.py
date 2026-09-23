@@ -4,6 +4,8 @@ SheepIt: the gateway between the phone and a local Herdr server.
 Connects directly to the Herdr UNIX socket and serves a mobile-friendly PWA.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import sys
