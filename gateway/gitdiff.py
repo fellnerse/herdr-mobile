@@ -29,14 +29,39 @@ MAX_DIFF_BYTES = 512 * 1024
 # An untracked file is counted by reading it; a huge one is not worth the read.
 MAX_COUNT_BYTES = 2 * 1024 * 1024
 
+# What the phone can look at as a picture rather than as a patch. The
+# extension decides, because the browser is the thing that has to recognise
+# the bytes; git has already said the file is binary. SVG is deliberately not
+# here - it is text, and its diff is worth reading.
+IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+    ".avif": "image/avif",
+}
+
+# One image, past which a phone screen is not where it wants to be looked at.
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
 
 class GitError(Exception):
     pass
 
 
 def run_git(root: str, args: list, timeout: int = STATUS_TIMEOUT) -> str:
-    """Run one git command in `root`. List argv, no shell: nothing here is
-    interpolated into a command line, so a path cannot become an argument."""
+    """Run one git command in `root`, as text."""
+    return run_git_bytes(root, args, timeout).decode("utf-8", errors="replace")
+
+
+def run_git_bytes(root: str, args: list, timeout: int = STATUS_TIMEOUT) -> bytes:
+    """Run one git command in `root`, as the bytes it wrote. List argv, no
+    shell: nothing here is interpolated into a command line, so a path cannot
+    become an argument. Raw, because `git show` on an image is a PNG and
+    decoding it would be the one thing that must not happen to it."""
     try:
         proc = subprocess.run(
             ["git", "-C", root, "-c", "core.quotepath=false"] + args,
@@ -51,7 +76,7 @@ def run_git(root: str, args: list, timeout: int = STATUS_TIMEOUT) -> str:
     if proc.returncode not in (0, 1):
         message = (proc.stderr or proc.stdout).decode("utf-8", errors="replace")
         raise GitError(message.strip().split("\n")[0] or f"git exited {proc.returncode}")
-    return proc.stdout.decode("utf-8", errors="replace")
+    return proc.stdout
 
 
 def repo_root(cwd: str) -> str:
@@ -118,6 +143,44 @@ def safe_path(root: str, rel: str) -> str:
     if not target.is_relative_to(Path(root).resolve()):
         raise GitError("path outside the repository")
     return str(target)
+
+
+def image_type(rel_path: str) -> str:
+    """The media type the browser would draw this path with, or "" for
+    anything that is not a picture."""
+    return IMAGE_TYPES.get(os.path.splitext(rel_path)[1].lower(), "")
+
+
+def image_blob(cwd: str, rel_path: str, side: str = "work") -> tuple:
+    """One image and its type: `work` is the file as it is on disk now,
+    `head` is what it was at the last commit.
+
+    The two sides are what makes a picture readable as a change at all - a
+    patch for a PNG says "Binary files differ" and stops there.
+    """
+    root = repo_root(cwd)
+    if not root:
+        raise GitError("not a git repository")
+    # Checked the same way the patch route checks it, before either side of
+    # it is read: the phone names the path, so the phone could name any path.
+    target = safe_path(root, rel_path)
+    mime = image_type(rel_path)
+    if not mime:
+        raise GitError("not an image")
+    if side == "head":
+        # `HEAD:path` rather than a working-tree read: a file that was deleted
+        # or replaced still has a before, and this is where it lives. git
+        # exits 128 when HEAD has no such file, which `run_git_bytes` raises.
+        data = run_git_bytes(root, ["show", "HEAD:" + rel_path], DIFF_TIMEOUT)
+    else:
+        try:
+            with open(target, "rb") as f:
+                data = f.read(MAX_IMAGE_BYTES + 1)
+        except OSError:
+            raise GitError("could not read that file")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise GitError("that image is too big to show")
+    return data, mime
 
 
 def _split_z(out: str) -> list:
@@ -219,6 +282,9 @@ def changed_files(cwd: str) -> dict:
             "removed": stat.get("removed", 0),
             "binary": stat.get("binary", False),
             "large": stat.get("large", False),
+            # Not "is it binary" but "can it be shown": what the phone draws
+            # in place of a patch it cannot read.
+            "image": image_type(path),
         })
 
     files.sort(key=lambda f: (-(f["added"] + f["removed"]), f["path"]))

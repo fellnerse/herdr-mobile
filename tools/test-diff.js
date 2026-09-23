@@ -20,9 +20,10 @@ const TO = "  elBtnChanges.addEventListener";
 
 const PRELUDE = `
   function escapeHtml(s) {
-    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
   }
-  const state = { diffSplit: false };
+  const state = { diffSplit: false, activePaneId: "w1:p1", changedFiles: {} };
   const el = () => ({
     classList: { add() {}, remove() {}, contains: () => false },
     setAttribute() {}, getAttribute: () => null, textContent: "", innerHTML: "",
@@ -45,7 +46,8 @@ function loadDiff() {
   return new Function(
     `${PRELUDE}${src.slice(from, to)}
      return { parsePatch, numberedRows, renderPatch, renderUnifiedRows,
-              renderSplitRows, statusLabel, state };`
+              renderSplitRows, statusLabel, imageSides, imageDiffHtml,
+              imageUrl, state };`
   )();
 }
 
@@ -181,6 +183,67 @@ check("untracked reads as new", d.statusLabel({ untracked: true, index_status: "
 check("modified", d.statusLabel({ index_status: "", worktree_status: "M" }), "modified");
 check("deleted", d.statusLabel({ index_status: "D", worktree_status: "" }), "deleted");
 check("renamed", d.statusLabel({ index_status: "R", worktree_status: "" }), "renamed");
+
+// -- pictures ---------------------------------------------------------------
+
+/* A patch for a PNG says "Binary files differ", so an image is drawn instead:
+   HEAD on one side, the working tree on the other, and only the sides that
+   still exist. */
+{
+  const modified = d.imageDiffHtml({
+    path: "web/icon.png", old_path: "", untracked: false,
+    index_status: "", worktree_status: "M", image: "image/png",
+  });
+  check("a modified image shows both sides",
+        (modified.match(/diff-shot-img/g) || []).length, 2);
+  check("the before comes from HEAD", modified.includes("side=head"), true);
+  check("the after comes from the working tree", modified.includes("side=work"), true);
+  check("and they sit side by side", modified.includes("diff-images two"), true);
+}
+
+{
+  const added = d.imageDiffHtml({
+    path: "shot.png", old_path: "", untracked: true,
+    index_status: "?", worktree_status: "?", image: "image/png",
+  });
+  check("a new image has no before",
+        (added.match(/diff-shot-img/g) || []).length, 1);
+  check("only the working tree", added.includes("side=work"), true);
+  check("staged and new is still new",
+        d.imageSides({ untracked: false, index_status: "A", worktree_status: "" }),
+        { before: false, after: true });
+}
+
+{
+  const gone = d.imageDiffHtml({
+    path: "old.png", old_path: "", untracked: false,
+    index_status: "", worktree_status: "D", image: "image/png",
+  });
+  check("a deleted image has no after", gone.includes("side=work"), false);
+  check("but it still has a before", gone.includes("side=head"), true);
+}
+
+// A rename's before is the name the file used to have.
+{
+  const moved = d.imageDiffHtml({
+    path: "img/new.png", old_path: "img/old.png", untracked: false,
+    index_status: "R", worktree_status: "", image: "image/png",
+  });
+  check("the before is fetched under the old name",
+        moved.includes(encodeURIComponent("img/old.png")), true);
+  check("and the after under the new one",
+        moved.includes(encodeURIComponent("img/new.png")), true);
+}
+
+// A path is a path, not markup, and it reaches the DOM as an attribute.
+{
+  const hostile = d.imageDiffHtml({
+    path: 'a"><img src=x onerror=alert(1)>.png', old_path: "", untracked: true,
+    index_status: "?", worktree_status: "?", image: "image/png",
+  });
+  check("a hostile path cannot break out of the src",
+        hostile.includes("onerror=alert(1)>"), false);
+}
 
 // ---------------------------------------------------------------------------
 
