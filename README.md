@@ -12,7 +12,7 @@ Your coding agents run on the machine under your desk. SheepIt puts them in
 your pocket: read what an agent is doing, answer the question it is stuck on,
 and start the next one — from the sofa, the kitchen, or the bus.
 
-It is a small web app you add to your iPhone home screen, plus a
+It is a small web app you add to your iPhone or Android home screen, plus a
 standard-library Python gateway that talks to [Herdr](https://herdr.dev), the
 terminal multiplexer your agents are running in. No accounts, no cloud, no
 dependencies: the phone reaches your own machine over your own
@@ -69,7 +69,7 @@ project telling you at a glance who is working and who is waiting.
   paperclip for the photo library and the camera. The image is scaled down on
   the phone, written beside the work, and its path goes into the prompt for the
   agent to read. Git never sees it.
-- **Native dictation.** Talk to your agent using the iOS keyboard's mic.
+- **Native dictation.** Talk to your agent using the phone keyboard's mic.
 - **Drafts that stay put.** A half-written prompt belongs to the project it
   was typed for: switch away to check on another agent, come back, and it is
   still there with the caret where you left it. Kept on the phone, sent
@@ -92,7 +92,7 @@ project telling you at a glance who is working and who is waiting.
 ## How it fits together
 
 ```
-iPhone (home screen web app)
+iPhone or Android (home screen web app)
       │  HTTPS over your tailnet
       ▼
 Tailscale Serve
@@ -112,18 +112,31 @@ uses, and `herdr-client.sock` for the console's live terminal - and serves the
 ## Quick start
 
 You need Python 3.10+, a running [Herdr](https://herdr.dev), and Tailscale on
-both machines.
+the computer and phone. Enable MagicDNS and HTTPS Certificates on the
+[Tailscale DNS page](https://login.tailscale.com/admin/dns) before using Serve.
 
 ```bash
-git clone https://github.com/mowolf/herdr-mobile.git sheepit
+git clone https://github.com/fellnerse/herdr-mobile.git sheepit
 cd sheepit
-python3 gateway/server.py                      # http://127.0.0.1:3009
+python3 gateway/server.py                      # keep this terminal open
+```
+
+In another terminal:
+
+```bash
 tailscale serve --bg --https=8443 http://127.0.0.1:3009
 ```
 
-Then open `https://<node>.<tailnet>.ts.net:8443` in Safari on the phone and
-**Share → Add to Home Screen**. On a Mac, `make -C menubar login` replaces all
-of that with one switch in the menu bar.
+Open `https://<node>.<tailnet>.ts.net:8443` on the phone. On iPhone, use Safari's
+**Share → Add to Home Screen**. On Android, use Chrome's **Install app** or
+**Add to Home screen**. The gateway and Serve commands are the same for both.
+On a Mac, `make -C menubar login` replaces those commands with one switch in
+the menu bar.
+
+The Android path was tested on a Pixel 8 with a Manjaro host on 2026-09-23:
+the installed app opened over Tailscale HTTPS, showed live Herdr agents, and
+Gboard voice typing worked in the prompt field. Sending a prompt and Android
+push notifications were not tested.
 
 Full instructions, autostart units and Tailscale routing live in
 **[docs/gateway.md](docs/gateway.md)**.
@@ -152,7 +165,7 @@ what it touched with the lines added and removed, and a tap for the diff.
 other. Untracked files are shown as what they are - all addition, against
 nothing.
 
-### Notifications
+### Notifications (iOS)
 
 The one that needs setting up, because iOS insists.
 
@@ -217,7 +230,10 @@ image; what you can see is exactly what will be sent.
 
 ### Dictation
 
-No setting. Tap the microphone on the iOS keyboard and talk into the composer.
+Tap the microphone on the phone keyboard and talk into the composer. On Android,
+this uses Gboard's voice typing; if its microphone is missing, enable **Voice
+typing** in Gboard settings and allow Gboard microphone access. SheepIt does
+not have a separate microphone button.
 
 ### The key palette
 
