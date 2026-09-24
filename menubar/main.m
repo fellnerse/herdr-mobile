@@ -220,18 +220,9 @@
     self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
     [self render];
 
-    // Something else may already hold the port: our own orphaned gateway from
-    // a previous run, which we can reclaim, or a launchd copy, which we cannot.
-    pid_t holder = [self portHolder];
-    if (holder > 0 && [self isOurGateway:holder]) {
-        kill(holder, SIGTERM);
-        usleep(400000);
-    }
-    if ([self portHolder] > 0) {
-        [self warnPortBusy];
-    } else {
-        [self start];
-    }
+    // -start reclaims an orphaned gateway of ours from a previous run, and says
+    // so when the port belongs to somebody else - a launchd copy, say.
+    [self start];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)note {
@@ -242,6 +233,12 @@
 
 - (void)start {
     if (!self.serverPath) { [self render]; return; }
+
+    // Turn On has to work after a Turn Off, so clear anything of ours still on
+    // the port before binding; a port held by someone else is worth saying out
+    // loud rather than starting a gateway that exits a moment later.
+    [self reclaimPort];
+    if ([self portHolder] > 0) { [self warnPortBusy]; [self render]; return; }
 
     // The gateway is only a proxy onto Herdr's socket, so there has to be a
     // Herdr server on the other end for the phone to show anything at all.
@@ -281,11 +278,36 @@
     [self render];
 }
 
+/// A terminate() only asks, and the port stays bound until the kernel has
+/// reaped the process - so a Turn Off followed straight by a Turn On used to
+/// land on "Address already in use" and die before it could bind, which reads
+/// from the bar as a switch that does nothing. Wait for the port to come free,
+/// and escalate to SIGKILL rather than hand a busy port to the next start.
+- (BOOL)waitForPortFree:(NSTimeInterval)seconds {
+    for (int i = 0; i < (int)(seconds * 20); i++) {
+        if ([self portHolder] <= 0) return YES;
+        usleep(50000);
+    }
+    return [self portHolder] <= 0;
+}
+
+/// Anything still listening that is our own gateway - the child we just asked
+/// to stop, or one orphaned by a crash - is killed so the port is ours again.
+- (void)reclaimPort {
+    pid_t holder = [self portHolder];
+    if (holder > 0 && [self isOurGateway:holder]) {
+        kill(holder, SIGKILL);
+        [self waitForPortFree:2.0];
+    }
+}
+
 - (void)stop {
     if (self.server.isRunning) [self.server terminate];
     if (self.caffeinate.isRunning) [self.caffeinate terminate];
     self.server = nil;
     self.caffeinate = nil;
+    [self waitForPortFree:2.0];
+    [self reclaimPort];
     [self render];
 }
 
