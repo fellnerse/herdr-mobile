@@ -122,6 +122,7 @@ html, body {
 .conn-dot.disconnected { background: var(--status-blocked); }
 
 .icon-btn {
+  text-decoration: none;
   background: transparent;
   border: none;
   color: var(--text-secondary);
