@@ -88,6 +88,7 @@ self.addEventListener("push", (event) => {
     (async () => {
       let title = "Agent finished";
       let body = "An agent is waiting for you.";
+      let url = "/";
 
       try {
         const [agentsRes, lastRes] = await Promise.all([
@@ -106,6 +107,8 @@ self.addEventListener("push", (event) => {
         if (data) await setBadge(waiting.length);
 
         const said = describe(last);
+        // A chat names the page it lives on; a pane is found from the flock.
+        if (said && last.url) url = last.url;
         if (said) {
           title = said.title;
           body = said.body;
@@ -128,6 +131,7 @@ self.addEventListener("push", (event) => {
         renotify: true,
         icon: "/icon.svg",
         badge: "/icon.svg",
+        data: { url },
       });
     })()
   );
@@ -137,11 +141,15 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
+      const url = (event.notification.data && event.notification.data.url) || "/";
       const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of all) {
+        if (url !== "/" && "navigate" in client) {
+          await client.navigate(url).catch(() => null);
+        }
         if ("focus" in client) return client.focus();
       }
-      return self.clients.openWindow("/");
+      return self.clients.openWindow(url);
     })()
   );
 });

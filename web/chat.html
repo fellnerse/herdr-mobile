@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sheep It · Chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#12151d">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="stylesheet" href="/chat.css">
+</head>
+<body>
+  <div id="app">
+    <!-- The chats: what the page opens on -->
+    <section id="list-view" class="view">
+      <header class="bar">
+        <a href="/" class="icon-btn" aria-label="Back to projects">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </a>
+        <span class="bar-title">Chats</span>
+        <span class="beta">poc</span>
+      </header>
+      <div class="scroll">
+        <form id="new-chat" class="new-chat">
+          <label>Project
+            <select id="new-cwd" required></select>
+          </label>
+          <div class="row">
+            <label>Permissions
+              <select id="new-mode"></select>
+            </label>
+            <label>Model
+              <select id="new-model">
+                <option value="">default</option>
+                <option value="opus">opus</option>
+                <option value="sonnet">sonnet</option>
+                <option value="haiku">haiku</option>
+              </select>
+            </label>
+          </div>
+          <button type="submit" class="primary">New chat</button>
+        </form>
+        <ul id="chat-list" class="chat-list"></ul>
+      </div>
+    </section>
+
+    <!-- One chat -->
+    <section id="chat-view" class="view hidden">
+      <header class="bar">
+        <button type="button" id="btn-back" class="icon-btn" aria-label="Back to chats">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </button>
+        <div class="bar-titles">
+          <span id="chat-title" class="bar-title">Chat</span>
+          <span id="chat-sub" class="bar-sub"></span>
+        </div>
+        <button type="button" id="btn-delete" class="icon-btn" aria-label="Delete chat" title="Delete chat">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>
+        </button>
+      </header>
+      <div id="messages" class="scroll messages"></div>
+      <div id="slash-menu" class="slash-menu hidden" role="listbox"></div>
+      <div id="attach-strip" class="attach-strip hidden"></div>
+      <form id="composer" class="composer">
+        <button type="button" id="btn-attach" class="attach" aria-label="Attach image">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+        </button>
+        <input type="file" id="attach-input" accept="image/*" multiple hidden>
+        <button type="button" id="btn-slash" class="attach slash" aria-label="Skills and commands">/</button>
+        <textarea id="input" rows="1" placeholder="Message Claude…" enterkeyhint="send"></textarea>
+        <button type="submit" id="btn-send" class="send" aria-label="Send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+        </button>
+        <button type="button" id="btn-stop" class="send stop hidden" aria-label="Stop">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>
+        </button>
+      </form>
+    </section>
+  </div>
+  <script src="/chat.js"></script>
+</body>
+</html>

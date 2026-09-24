@@ -29,6 +29,7 @@ import tokens
 import gitdiff
 import machine
 import wsproto
+import chat
 import heartbeat
 from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
 from terminal import TerminalStream, TerminalError
@@ -330,6 +331,35 @@ def register_notification_interceptor(interceptor) -> None:
 heartbeat.init_heartbeat_routes(register_api_route, register_notification_interceptor)
 
 
+def chat_dirs() -> list:
+    """Where a chat may start: every project the flock has, and every
+    directory one of its panes sits in."""
+    try:
+        rows = agent_rows()
+    except RuntimeError:
+        return []
+    seen = {}
+    for row in rows:
+        for cwd, name in ((row.get("project"), row.get("project_name")),
+                          (row.get("cwd"), row.get("name"))):
+            cwd = (cwd or "").rstrip("/")
+            if cwd.startswith("/") and cwd not in seen:
+                seen[cwd] = {"cwd": cwd, "name": name or cwd.rsplit("/", 1)[-1]}
+    return sorted(seen.values(), key=lambda d: d["cwd"])
+
+
+def chat_notify(title: str, body: str, url: str) -> None:
+    """A chat finished or wants an answer: park it like a pane that stopped,
+    with where the notification should open, and push."""
+    record_finished([{"name": title, "title": body, "status": "done"}],
+                    title=title, body=body, url=url)
+    if push.load_subs():
+        threading.Thread(target=push.broadcast, daemon=True).start()
+
+
+chat.init_chat_routes(register_api_route, chat_dirs, chat_notify)
+
+
 def filter_stopped_agents(stopped_panes: list, rows: dict) -> tuple[list, str | None, str | None]:
     """Pass stopped panes through registered interceptors.
     Returns (notify_rows, custom_title, custom_body).
@@ -358,11 +388,13 @@ def filter_stopped_agents(stopped_panes: list, rows: dict) -> tuple[list, str | 
     return notify_rows, custom_title, custom_body
 
 
-def record_finished(rows: list, title: str | None = None, body: str | None = None) -> None:
+def record_finished(rows: list, title: str | None = None, body: str | None = None,
+                    url: str | None = None) -> None:
     with _LAST_FINISHED_LOCK:
         _LAST_FINISHED["at"] = time.time()
         _LAST_FINISHED["title"] = title
         _LAST_FINISHED["body"] = body
+        _LAST_FINISHED["url"] = url
         _LAST_FINISHED["agents"] = [
             {"pane_id": r.get("pane_id"),
              "name": r.get("display_name") or r.get("name"),
@@ -433,6 +465,8 @@ def last_finished() -> dict:
             res["title"] = _LAST_FINISHED["title"]
         if _LAST_FINISHED.get("body"):
             res["body"] = _LAST_FINISHED["body"]
+        if _LAST_FINISHED.get("url"):
+            res["url"] = _LAST_FINISHED["url"]
         return res
 
 
@@ -985,6 +1019,9 @@ class HerdrHandler(BaseHTTPRequestHandler):
             if len(parts) == 5:
                 self.handle_attach(unquote(parts[3]))
                 return
+        if path == "/api/chat/upload":
+            chat.handle_upload(self, parse_qs(parsed.query))
+            return
 
         # Read JSON body. Content-Length is the client's claim about it, so it
         # is checked rather than believed: every route here takes a few short
