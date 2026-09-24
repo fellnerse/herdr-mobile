@@ -54,18 +54,32 @@ INTERRUPTED = "[Request interrupted by user"
 EPOCH = uuid.uuid4().hex[:8]
 
 
+# The gateway is started by launchd or a keep-alive with a bare PATH, and a
+# project's flake or direnv shell is nowhere near it: these are where an
+# install puts `claude` for the user rather than for one project.
+USER_BINS = ("~/.local/bin", "~/.claude/local", "~/.nix-profile/bin",
+             "/etc/profiles/per-user/{user}/bin", "/nix/var/nix/profiles/default/bin",
+             "/run/current-system/sw/bin", "/opt/homebrew/bin", "/usr/local/bin")
+
+
+def child_path() -> str:
+    user = os.environ.get("USER") or os.path.basename(os.path.expanduser("~"))
+    dirs = [os.path.expanduser(d.format(user=user)) for d in USER_BINS]
+    dirs += (os.environ.get("PATH") or "/usr/bin:/bin").split(os.pathsep)
+    return os.pathsep.join(dict.fromkeys(d for d in dirs if os.path.isdir(d)))
+
+
 def claude_bin() -> str:
-    found = os.environ.get("SHEEPIT_CLAUDE") or shutil.which("claude")
-    if found:
-        return found
-    # The menu bar app starts the gateway with launchd's PATH, which has none
-    # of the places an install puts it.
-    for p in ("~/.local/bin/claude", "~/.claude/local/claude",
-              "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
-        p = os.path.expanduser(p)
-        if os.access(p, os.X_OK):
-            return p
-    return "claude"
+    return os.environ.get("SHEEPIT_CLAUDE") or shutil.which("claude", path=child_path()) or "claude"
+
+
+def child_env() -> dict:
+    """The chat's environment: the user's, not whichever project shell the
+    gateway happened to be started from."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("DIRENV_", "IN_NIX_SHELL", "NIX_BUILD"))}
+    env["PATH"] = child_path()
+    return env
 
 
 def _clip(value):
@@ -204,7 +218,7 @@ class Chat:
         cmd += ["--resume" if meta.get("started") else "--session-id", meta["session_id"]]
         # stderr shares the pipe, so a full one cannot stall the other.
         self.proc = subprocess.Popen(
-            cmd, cwd=meta["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            cmd, cwd=meta["cwd"], env=child_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1)
         self.reaping = False
         self.last_used = time.time()

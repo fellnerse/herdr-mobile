@@ -332,19 +332,17 @@ heartbeat.init_heartbeat_routes(register_api_route, register_notification_interc
 
 
 def chat_dirs() -> list:
-    """Where a chat may start: every project the flock has, and every
-    directory one of its panes sits in."""
+    """Where a chat may start: the root of every project the flock has -
+    never a worktree, which comes and goes with its branch."""
     try:
         rows = agent_rows()
     except RuntimeError:
         return []
     seen = {}
     for row in rows:
-        for cwd, name in ((row.get("project"), row.get("project_name")),
-                          (row.get("cwd"), row.get("name"))):
-            cwd = (cwd or "").rstrip("/")
-            if cwd.startswith("/") and cwd not in seen:
-                seen[cwd] = {"cwd": cwd, "name": name or cwd.rsplit("/", 1)[-1]}
+        cwd = (row.get("project") or "").rstrip("/")
+        if cwd.startswith("/") and cwd not in seen:
+            seen[cwd] = {"cwd": cwd, "name": row.get("project_name") or cwd.rsplit("/", 1)[-1]}
     return sorted(seen.values(), key=lambda d: d["cwd"])
 
 
