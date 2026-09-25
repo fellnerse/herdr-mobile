@@ -143,7 +143,22 @@ def slim(event: dict) -> dict | None:
     return None
 
 
+def read_image(folder: Path, name: str):
+    """An image kept with a chat, and its content type; (None, None) for a
+    name that is not one of ours."""
+    if not re.fullmatch(r"[0-9a-f]{12}\.(jpg|png|gif|webp)", name or ""):
+        return None, None
+    try:
+        data = (folder / name).read_bytes()
+    except OSError:
+        return None, None
+    ext = name.rsplit(".", 1)[1]
+    return data, next(t for t, e in IMAGE_TYPES.items() if e == ext)
+
+
 class Chat:
+    epoch = EPOCH
+
     def __init__(self, meta: dict):
         self.meta = meta
         self.events: list[dict] = []
@@ -386,28 +401,29 @@ class Chat:
             print(f"chat push failed: {e}")
 
     def image(self, name: str):
-        if not re.fullmatch(r"[0-9a-f]{12}\.(jpg|png|gif|webp)", name or ""):
-            return None, None
-        try:
-            data = (self.dir / name).read_bytes()
-        except OSError:
-            return None, None
-        ext = name.rsplit(".", 1)[1]
-        return data, next(t for t, e in IMAGE_TYPES.items() if e == ext)
+        return read_image(self.dir, name)
 
-    def read(self, since: int, wait: float) -> tuple[list, int]:
+    def read(self, since: int, epoch: str, wait: float) -> tuple[int, list, int]:
+        """(from, events, next): what is past `since`, waiting up to `wait`
+        for something to be. An index from another epoch, or past the end,
+        reads again from the top."""
         self.last_seen = time.time()
         with self.cond:
+            if epoch != self.epoch or since > len(self.events):
+                since = 0
             if since >= len(self.events) and wait > 0:
                 self.cond.wait(wait)
             self.last_seen = time.time()
-            return self.events[since:], len(self.events)
+            return since, self.events[since:], len(self.events)
 
 
 _CHATS: dict[str, Chat] = {}
 _LOCK = threading.Lock()
 # project directory -> [{name, description, hint}], from `initialize`
 _COMMANDS: dict[str, list] = {}
+# Other kinds of chat, by the prefix of their id: "pane:wJ:p2" is a Herdr
+# pane read as one. Each is a function from the rest of the id to the chat.
+_KINDS: dict = {}
 _known_dirs = lambda: []  # noqa: E731 - replaced by init_chat_routes
 _notify = lambda title, body, url: None  # noqa: E731
 
@@ -433,8 +449,15 @@ def reap_forever():
                 chat.kill()
 
 
-def get(chat_id) -> Chat | None:
-    return _CHATS.get(chat_id if isinstance(chat_id, str) else "")
+def get(chat_id):
+    """The chat with this id: one of ours, or one of the kinds in _KINDS,
+    which answer the same methods."""
+    if not isinstance(chat_id, str):
+        return None
+    kind, _, rest = chat_id.partition(":")
+    if rest and kind in _KINDS:
+        return _KINDS[kind](rest)
+    return _CHATS.get(chat_id)
 
 
 # ---- routes -------------------------------------------------------------
@@ -454,11 +477,9 @@ def handle_events(handler, qs):
         since = max(0, int((qs.get("since") or ["0"])[0]))
     except ValueError:
         since = 0
-    if (qs.get("epoch") or [""])[0] != EPOCH or since > len(chat.events):
-        since = 0
     wait = 20.0 if (qs.get("wait") or [""])[0] == "1" else 0.0
-    events, nxt = chat.read(since, wait)
-    handler.send_json({"ok": True, "epoch": EPOCH, "from": since, "next": nxt,
+    since, events, nxt = chat.read(since, (qs.get("epoch") or [""])[0], wait)
+    handler.send_json({"ok": True, "epoch": chat.epoch, "from": since, "next": nxt,
                        "events": events, "chat": chat.summary()})
 
 
@@ -577,7 +598,7 @@ def handle_stop(handler, body):
 
 
 def handle_delete(handler, body):
-    chat = get(body.get("id"))
+    chat = _CHATS.get(body.get("id") if isinstance(body.get("id"), str) else "")
     if not chat:
         handler.send_json({"ok": False, "error": "No such chat"}, 404)
         return
