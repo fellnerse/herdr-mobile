@@ -595,7 +595,8 @@ CSP = "; ".join([
     "media-src 'self'",
     "worker-src 'self'",
     "manifest-src 'self'",
-    "frame-ancestors 'none'",
+    # Only the app itself: on a desktop it shows a pane's chat in a frame.
+    "frame-ancestors 'self'",
     "base-uri 'none'",
     "form-action 'none'",
 ])
@@ -1470,7 +1471,7 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_header("ETag", etag)
             self.send_header("Cache-Control", "no-cache, must-revalidate")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
             self.send_header("Content-Security-Policy", CSP)
             self.end_headers()
             if not head_only:

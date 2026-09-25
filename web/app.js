@@ -8,6 +8,8 @@
     linesCount: 100,
     showStatusBar: false,
     plainView: false,
+    // What a desktop's right column shows of a Claude Code pane.
+    paneView: "chat",
     diffSplit: false,
     numberKeys: 3,
     badgeCount: -1,
@@ -111,6 +113,7 @@
   const elBtnConsoleFit = document.getElementById("btn-console-fit");
   const elBtnChanges = document.getElementById("btn-changes");
   const elBtnPaneChat = document.getElementById("btn-pane-chat");
+  const elPaneChatFrame = document.getElementById("pane-chat-frame");
   const elChangesView = document.getElementById("changes-view");
   const elChangesList = document.getElementById("changes-list");
   const elChangesSub = document.getElementById("changes-sub");
@@ -859,6 +862,7 @@
     const chattable = !!(agent && agent.agent === "claude");
     elBtnPaneChat.classList.toggle("hidden", !chattable);
     if (chattable) elBtnPaneChat.href = "/chat.html#pane:" + agent.pane_id;
+    renderPaneChat(chattable && agent.pane_id);
 
     renderTabStrip();
     if (pickerVisible()) renderAgentList();
@@ -3248,6 +3252,7 @@
       state.showStatusBar = readPref("statusbar") === "1";
       elToggleStatusBar.checked = state.showStatusBar;
       state.plainView = readPref("plain") === "1";
+      state.paneView = readPref("view") || "chat";
       elTogglePlain.checked = state.plainView;
       setDiffLayout(readPref("diffsplit") === "1");
       syncStatusBarRow();
@@ -3806,9 +3811,37 @@
     if (row.dataset.paneId && !openAsChat(row.dataset.paneId)) selectAgent(row.dataset.paneId);
   });
 
-  /* On a phone a Claude Code pane opens as a chat, and the transcript is the
-     button in its header. Not past 900px: there the chat sits beside the
-     flock, and a page of its own would take the flock away. */
+  /* A Claude Code pane is shown as its chat, and the transcript is the button
+     in the chat's header. On a phone that is chat.html; past 900px, where the
+     flock is a column beside it, it is the same page in a frame over the
+     transcript, and which of the two the right column shows is remembered. */
+  function setPaneView(view) {
+    state.paneView = view;
+    savePref("sheepit.view", view);
+    renderAgentBar();
+  }
+
+  function renderPaneChat(paneId) {
+    const show = wide.matches && state.paneView === "chat" && !!paneId;
+    const src = show ? "/chat.html#pane:" + paneId : "";
+    if (elPaneChatFrame.dataset.src !== src) {
+      elPaneChatFrame.dataset.src = src;
+      // about:blank rather than no src: a hidden chat must stop its poll.
+      elPaneChatFrame.src = src || "about:blank";
+    }
+    elPaneChatFrame.classList.toggle("hidden", !show);
+  }
+
+  elBtnPaneChat.addEventListener("click", (e) => {
+    if (!wide.matches) return; // a phone follows the link
+    e.preventDefault();
+    setPaneView("chat");
+  });
+  window.addEventListener("message", (e) => {
+    if (e.origin === location.origin && e.data && e.data.sheepit === "transcript") setPaneView("transcript");
+  });
+  wide.addEventListener("change", () => renderAgentBar());
+
   function openAsChat(paneId) {
     const agent = state.agents.find((a) => a.pane_id === paneId);
     if (wide.matches || !agent || agent.agent !== "claude") return false;

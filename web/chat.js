@@ -11,6 +11,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  const embedded = window.parent !== window;
   const elList = $("list-view"), elChat = $("chat-view");
   const elMessages = $("messages"), elInput = $("input");
   const elSend = $("btn-send"), elStop = $("btn-stop");
@@ -376,6 +377,8 @@
     $("btn-delete").classList.toggle("hidden", pane);
     $("btn-transcript").classList.toggle("hidden", !pane);
     if (pane) $("btn-transcript").href = "/#" + chat.id;
+    // In the desktop app's frame the flock is beside it, so there is no back.
+    $("btn-back").classList.toggle("hidden", pane && embedded);
     elList.classList.add("hidden");
     elChat.classList.remove("hidden");
     if (location.hash !== "#" + chat.id) history.replaceState(null, "", "#" + chat.id);
@@ -662,6 +665,13 @@
     elSend.disabled = false;
   });
   elStop.addEventListener("click", () => current && api("/api/chat/stop", { id: current.id }).catch(() => {}));
+  // Inside the desktop app, the transcript is the same pane in the parent.
+  $("btn-transcript").addEventListener("click", (e) => {
+    if (!embedded) return;
+    e.preventDefault();
+    parent.postMessage({ sheepit: "transcript" }, location.origin);
+  });
+
   // A pane was opened from the flock, and goes back to it.
   $("btn-back").addEventListener("click", () => {
     if (current && current.kind === "pane") location.href = "/";
