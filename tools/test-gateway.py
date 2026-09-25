@@ -1861,8 +1861,14 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-interceptor-") as hb_dir:
     heartbeat.mark_heartbeat_started("w1:p2", "HEARTBEAT_OK")
     check("pane is marked active", heartbeat.is_heartbeat_active("w1:p2"), True)
 
-    # Mock pane_read on Herdr
+    # Mock pane_read on Herdr, and keep a clean run's auto-close away from
+    # the real Herdr: it would close whatever tab w1:p2 is on this machine.
     orig_pane_read = heartbeat.Herdr.pane_read
+    orig_rpc = heartbeat.call_herdr_rpc
+    closed = []
+    heartbeat.call_herdr_rpc = lambda method, params=None: (
+        closed.append(params) or {} if method == "tab.close"
+        else {"result": {"panes": [{"pane_id": "w1:p2", "tab_id": "w1:t2"}]}})
     try:
         heartbeat.Herdr.pane_read = lambda self, p, lines=40: "Auditing stats...\nHEARTBEAT_OK\n"
         should_notify, meta = heartbeat.heartbeat_notification_interceptor(
@@ -1870,6 +1876,7 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-interceptor-") as hb_dir:
         )
         check("sentinel present suppresses push notification", should_notify, False)
         check("sentinel present returns no alert meta", meta, None)
+        check("a clean run closes its own tab", closed, [{"tab_id": "w1:t2"}])
 
         # Active heartbeat: output does NOT contain sentinel -> alert!
         heartbeat.mark_heartbeat_started("w1:p3", "HEARTBEAT_OK")
@@ -1883,6 +1890,50 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-interceptor-") as hb_dir:
               meta and "3 critical Sentry crashes" in meta.get("body", ""), True)
     finally:
         heartbeat.Herdr.pane_read = orig_pane_read
+        heartbeat.call_herdr_rpc = orig_rpc
+
+# A run outlives the gateway that started it: a restart must still hear it
+# finish, and a run whose pane is gone must stop claiming to be running.
+running = heartbeat.HeartbeatItem(id="hb_run", name="Run", last_status="running", target_pane="wJ:p4")
+idle = heartbeat.HeartbeatItem(id="hb_idle", name="Idle", last_status="ok", target_pane="wJ:p5")
+heartbeat.resume_active_runs(heartbeat.HeartbeatConfig(heartbeats=[running, idle]))
+check("a restart resumes watching a running heartbeat", heartbeat.is_heartbeat_active("wJ:p4"), True)
+check("a finished heartbeat is not watched again", heartbeat.is_heartbeat_active("wJ:p5"), False)
+check("a run whose pane is still there is kept",
+      heartbeat.drop_lost_runs(heartbeat.HeartbeatConfig(heartbeats=[running]), {"wJ:p4"}), False)
+check("a run whose pane is gone is dropped",
+      heartbeat.drop_lost_runs(heartbeat.HeartbeatConfig(heartbeats=[running]), set()), True)
+check("a lost run says so", (running.last_status, heartbeat.is_heartbeat_active("wJ:p4")), ("error", False))
+
+# A check opens its tab in the workspace's checkout, whether or not an agent
+# already runs there: a project whose one pane is a shell must still be a target.
+orig_rpc = heartbeat.call_herdr_rpc
+try:
+    heartbeat.call_herdr_rpc = lambda method, params=None: {"result": {
+        "workspaces": [{"workspace_id": "wE", "worktree": {"checkout_path": "/src/whatsanalyze"}},
+                       {"workspace_id": "w2J"}],
+        "panes": [{"workspace_id": "wE", "cwd": "/elsewhere", "agent": None},
+                  {"workspace_id": "w2J", "cwd": "/src/lib-order", "agent": None}]}}
+    check("a workspace opens in its checkout", heartbeat.workspace_cwd("wE"), "/src/whatsanalyze")
+    check("a workspace outside git opens where its shell is", heartbeat.workspace_cwd("w2J"), "/src/lib-order")
+    check("an unknown workspace has nowhere to open", heartbeat.workspace_cwd("wX"), "")
+finally:
+    heartbeat.call_herdr_rpc = orig_rpc
+
+# A scheduled run that fails to start waits before it is tried again.
+with tempfile.TemporaryDirectory(prefix="sheepit-hb-runner-") as hb_dir:
+    orig_config_path, orig_trigger = heartbeat.CONFIG_PATH, heartbeat.trigger_heartbeat
+    tries = []
+    try:
+        heartbeat.CONFIG_PATH = Path(hb_dir) / "heartbeat.json"
+        heartbeat.HeartbeatConfig(heartbeats=[heartbeat.HeartbeatItem(id="hb_due", enabled=True)]).save()
+        heartbeat.trigger_heartbeat = lambda hb: tries.append(hb.id) or {"ok": False, "error": "no workspace"}
+        runner = heartbeat.HeartbeatRunner()
+        for minute in range(16):
+            runner.tick(1_000_000 + minute * 60)
+        check("a failed start is retried after 15 minutes, not every minute", len(tries), 2)
+    finally:
+        heartbeat.CONFIG_PATH, heartbeat.trigger_heartbeat = orig_config_path, orig_trigger
 
 # Notification policy filtering and _LAST_FINISHED
 rows = {
