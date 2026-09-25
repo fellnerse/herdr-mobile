@@ -3803,8 +3803,19 @@
       suppressClick = false;
       return;
     }
-    if (row.dataset.paneId) selectAgent(row.dataset.paneId);
+    if (row.dataset.paneId && !openAsChat(row.dataset.paneId)) selectAgent(row.dataset.paneId);
   });
+
+  /* On a phone a Claude Code pane opens as a chat, and the transcript is the
+     button in its header. Not past 900px: there the chat sits beside the
+     flock, and a page of its own would take the flock away. */
+  function openAsChat(paneId) {
+    const agent = state.agents.find((a) => a.pane_id === paneId);
+    if (wide.matches || !agent || agent.agent !== "claude") return false;
+    rememberDraft(state.activePaneId);
+    location.href = "/chat.html#pane:" + paneId;
+    return true;
+  }
 
   /* Two gestures share these rows, and which one it is only becomes clear
      after the finger has been down a moment.

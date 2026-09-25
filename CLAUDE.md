@@ -216,7 +216,9 @@ same messages in it. `chat.get` resolves both, so the `/api/chat/*` routes do
 not know which they are talking to. A pane's permission prompt is not in its
 log: a tool call with no result while Herdr says `blocked` stands in for it,
 and is answered with the keys the TUI numbers its options with (`1` yes, `2`
-always, Esc no).
+always, Esc no). On a phone a Claude Code row opens as this chat
+(`openAsChat` in `app.js`), with the transcript a button in its header; past
+900px it does not, since a page of its own would take the flock column away.
 
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's

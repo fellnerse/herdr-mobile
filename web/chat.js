@@ -69,14 +69,15 @@
 
   /* ---- A little markdown: fences, headings, bullets, tables, `code`, **bold**, links. */
   // Code spans and links are set aside as \u0000n\u0000 while the rest is
-  // rewritten, so a URL inside backticks stays text and one inside a link is
-  // not linked twice. Only http(s): the href comes from the agent.
+  // rewritten, so a URL inside a sentence in backticks stays text and one
+  // inside a link is not linked twice. Only http(s): the href comes from the agent.
   const link = (href, text) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   function inline(s) {
     const held = [];
     const hold = (html) => "\u0000" + (held.push(html) - 1) + "\u0000";
     return esc(s)
-      .replace(/`([^`\n]+)`/g, (_, c) => hold("<code>" + c + "</code>"))
+      // ...unless the code is nothing but a URL, which is there to be opened.
+      .replace(/`([^`\n]+)`/g, (_, c) => hold(/^https?:\/\/[\w-]+(\.[\w-]+)+(:\d+)?(\/[^\s…]*)?$/.test(c) ? link(c, "<code>" + c + "</code>") : "<code>" + c + "</code>"))
       .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(u, t)))
       .replace(/https?:\/\/[^\s<]+/g, (u) => {
         const tail = u.match(/[.,;:!?)\]]*$/)[0];
@@ -373,6 +374,8 @@
       ? [shortDir(chat.cwd), chat.model || "claude", "herdr pane"].join(" · ")
       : [shortDir(chat.cwd), chat.model || "default", chat.mode].join(" · ");
     $("btn-delete").classList.toggle("hidden", pane);
+    $("btn-transcript").classList.toggle("hidden", !pane);
+    if (pane) $("btn-transcript").href = "/#" + chat.id;
     elList.classList.add("hidden");
     elChat.classList.remove("hidden");
     if (location.hash !== "#" + chat.id) history.replaceState(null, "", "#" + chat.id);
@@ -659,9 +662,9 @@
     elSend.disabled = false;
   });
   elStop.addEventListener("click", () => current && api("/api/chat/stop", { id: current.id }).catch(() => {}));
-  // A pane was opened from the main app, and goes back to it.
+  // A pane was opened from the flock, and goes back to it.
   $("btn-back").addEventListener("click", () => {
-    if (current && current.kind === "pane") location.href = "/#" + current.id;
+    if (current && current.kind === "pane") location.href = "/";
     else showList();
   });
   $("btn-delete").addEventListener("click", async () => {
