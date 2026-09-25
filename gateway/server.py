@@ -358,6 +358,7 @@ def chat_notify(title: str, body: str, url: str) -> None:
 
 chat.init_chat_routes(register_api_route, chat_dirs, chat_notify)
 chat.register_kind("pane", panechat.get)
+heartbeat.set_notifier(chat_notify)
 
 
 def filter_stopped_agents(stopped_panes: list, rows: dict) -> tuple[list, str | None, str | None]:

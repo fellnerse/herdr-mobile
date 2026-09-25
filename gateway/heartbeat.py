@@ -167,6 +167,16 @@ class HeartbeatConfig:
             self.heartbeats[0].prompt = val
 
 
+# How an alert the runner finds itself reaches the phone: set by the server,
+# which owns the push. The StatusWatcher path returns its alert instead.
+_notify = None
+
+
+def set_notifier(fn) -> None:
+    global _notify
+    _notify = fn
+
+
 # In-memory tracking of active heartbeat turns: pane_id -> {started_at, sentinel, heartbeat_id, heartbeat_name}
 _ACTIVE_HEARTBEATS: dict[str, dict] = {}
 _ACTIVE_LOCK = threading.Lock()
@@ -208,6 +218,13 @@ def extract_summary(text: str, max_length: int = 140) -> str:
     return summary
 
 
+def said_sentinel(output: str, sentinel: str) -> bool:
+    """Whether the agent answered with the sentinel, rather than the pane
+    merely showing the prompt that mentions it: the answer is a line of its
+    own (Claude Code puts a bullet in front), the prompt is not."""
+    return any(line.strip().lstrip("●⏺•").strip() == sentinel for line in output.splitlines())
+
+
 def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, dict | None]:
     """Intercept stopped panes to suppress clean heartbeats or format alerts."""
     info = pop_heartbeat(pane_id)
@@ -237,7 +254,7 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
 
     status = row.get("status")
 
-    if sentinel in output and status != "blocked":
+    if said_sentinel(output, sentinel) and status != "blocked":
         if target_hb:
             target_hb.last_status = "ok"
             target_hb.last_summary = f"All checks passed ({sentinel})"
@@ -275,6 +292,27 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
         "title": alert_title,
         "body": summary,
     }
+
+
+def workspace_cwd(workspace_id: str) -> str:
+    """Where a new tab in this workspace opens: the checkout it belongs to.
+
+    Not only where an agent already runs - a workspace whose one pane is a
+    shell has no agent, and asking only agents is what made such a project
+    impossible to run a check in.
+    """
+    try:
+        for w in call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", []):
+            if w.get("workspace_id") == workspace_id:
+                path = (w.get("worktree") or {}).get("checkout_path")
+                if path:
+                    return path
+        for p in call_herdr_rpc("pane.list").get("result", {}).get("panes", []):
+            if p.get("workspace_id") == workspace_id and p.get("cwd"):
+                return p["cwd"]
+    except Exception as e:
+        log.warning("could not find a directory for workspace %s: %s", workspace_id, e)
+    return ""
 
 
 def find_target_pane(hb: HeartbeatItem) -> str | None:
@@ -342,21 +380,7 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
                     break
 
         # No dedicated tab found; create one in this workspace
-        cwd = ""
-        for a in agents:
-            if a.get("workspace_id") == hb.target_workspace:
-                cwd = a.get("cwd") or a.get("foreground_cwd") or ""
-                break
-        if not cwd:
-            try:
-                ws_res = call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", [])
-                for w in ws_res:
-                    if w.get("workspace_id") == hb.target_workspace:
-                        cwd = w.get("cwd") or ""
-                        break
-            except Exception:
-                pass
-
+        cwd = workspace_cwd(hb.target_workspace)
         if cwd:
             try:
                 new_pane = herdr.open_pane(cwd, workspace_id=hb.target_workspace, label=target_tab_label)
@@ -461,25 +485,7 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         except Exception as e:
             log.warning("failed to check existing tabs in %s: %s", target_hb.target_workspace, e)
 
-        cwd = ""
-        try:
-            agents = herdr.agent_list()
-            for a in agents:
-                if a.get("workspace_id") == target_hb.target_workspace:
-                    cwd = a.get("cwd") or a.get("foreground_cwd") or ""
-                    break
-        except Exception:
-            pass
-        if not cwd:
-            try:
-                ws_res = call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", [])
-                for w in ws_res:
-                    if w.get("workspace_id") == target_hb.target_workspace:
-                        cwd = w.get("cwd") or ""
-                        break
-            except Exception:
-                pass
-
+        cwd = workspace_cwd(target_hb.target_workspace)
         if not cwd:
             msg = f"Target workspace '{target_hb.target_workspace}' not found or has no cwd"
             target_hb.last_status = "error"
@@ -580,32 +586,111 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
     }
 
 
+def resume_active_runs(cfg: HeartbeatConfig) -> None:
+    """Watch again for runs a previous gateway started.
+
+    Which pane a run is in used to live only in memory, so a restart while a
+    check was running - and the gateway restarts several times a day - left it
+    `running` forever, with no push and no tab closed.
+    """
+    for hb in cfg.heartbeats:
+        if hb.last_status == "running" and hb.target_pane and not is_heartbeat_active(hb.target_pane):
+            mark_heartbeat_started(hb.target_pane, (hb.ok_sentinel or DEFAULT_SENTINEL).strip(), hb.id, hb.name)
+
+
+def drop_lost_runs(cfg: HeartbeatConfig, pane_ids: set[str]) -> bool:
+    """A run whose pane is gone will never report: say so rather than `running`."""
+    changed = False
+    for hb in cfg.heartbeats:
+        if hb.last_status == "running" and hb.target_pane not in pane_ids:
+            pop_heartbeat(hb.target_pane)
+            hb.last_status = "error"
+            hb.last_summary = f"Run lost: {hb.target_pane or 'its pane'} closed before it finished"
+            log.warning("heartbeat [%s]: %s", hb.name, hb.last_summary)
+            changed = True
+    return changed
+
+
+# A run younger than this is not judged: the pane can read idle for a moment
+# between being opened and the agent taking the prompt.
+SETTLE_SEC = 60.0
+
+
+def resolve_stopped_runs(cfg: HeartbeatConfig, panes: list[dict], now: float) -> bool:
+    """Read the result of a run whose agent has stopped.
+
+    The StatusWatcher only hears a pane that stops `done` or `blocked`, since
+    those are what earn a push. A check nobody is watching often ends `idle`
+    instead, and then its answer was never read - no alert, no tab closed,
+    `running` for good. Whichever of the two gets there first handles the run:
+    the interceptor pops it, so the other finds nothing.
+    """
+    by_id = {p.get("pane_id"): p for p in panes}
+    resolved = False
+    for hb in cfg.heartbeats:
+        pane = by_id.get(hb.target_pane)
+        if hb.last_status != "running" or not pane or not is_heartbeat_active(hb.target_pane):
+            continue
+        status = pane.get("agent_status")
+        if status not in ("idle", "done") or now - (hb.last_run_at or 0.0) < SETTLE_SEC:
+            continue
+        row = {"pane_id": hb.target_pane, "tab_id": pane.get("tab_id"), "status": status, "name": hb.name}
+        should_notify, meta = heartbeat_notification_interceptor(hb.target_pane, row)
+        if should_notify and meta and _notify:
+            _notify(meta["title"], meta["body"], None)
+        resolved = True
+    return resolved
+
+
 class HeartbeatRunner(threading.Thread):
     """Background daemon checking if any scheduled heartbeats should run."""
+
+    # A scheduled run that failed to start is tried again after this, not on
+    # every pass: a missing workspace used to fire (and fail) once a minute.
+    RETRY_SEC = 15 * 60
 
     def __init__(self, check_interval_sec: int = 60):
         super().__init__(daemon=True, name="heartbeat-runner")
         self.check_interval_sec = check_interval_sec
         self.running = True
+        self.failed_at: dict[str, float] = {}
 
     def run(self) -> None:
         time.sleep(5)
+        try:
+            resume_active_runs(HeartbeatConfig.load())
+        except Exception as e:
+            log.exception("heartbeat resume error: %s", e)
         while self.running:
             try:
-                cfg = HeartbeatConfig.load()
-                now = time.time()
-                for hb in cfg.heartbeats:
-                    if hb.enabled and hb.interval_hours > 0:
-                        interval_sec = hb.interval_hours * 3600.0
-                        last_run = hb.last_run_at or 0.0
-                        if (now - last_run) >= interval_sec:
-                            log.info("triggering scheduled heartbeat '%s' (interval: %.1fh)",
-                                     hb.name, hb.interval_hours)
-                            trigger_heartbeat(hb)
+                self.tick(time.time())
             except Exception as e:
                 log.exception("heartbeat runner error: %s", e)
-
             time.sleep(self.check_interval_sec)
+
+    def tick(self, now: float) -> None:
+        cfg = HeartbeatConfig.load()
+        if any(hb.last_status == "running" for hb in cfg.heartbeats):
+            panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
+            if drop_lost_runs(cfg, {p.get("pane_id") for p in panes}):
+                cfg.save()
+            if resolve_stopped_runs(cfg, panes, now):
+                cfg = HeartbeatConfig.load()
+        for hb in cfg.heartbeats:
+            if not (hb.enabled and hb.interval_hours > 0):
+                continue
+            if now - (hb.last_run_at or 0.0) < hb.interval_hours * 3600.0:
+                continue
+            if now - self.failed_at.get(hb.id, 0.0) < self.RETRY_SEC:
+                continue
+            log.info("triggering scheduled heartbeat '%s' (interval: %.1fh)", hb.name, hb.interval_hours)
+            res = trigger_heartbeat(hb)
+            if res.get("ok"):
+                self.failed_at.pop(hb.id, None)
+                log.info("heartbeat '%s' started in %s", hb.name, res.get("pane_id"))
+            else:
+                self.failed_at[hb.id] = now
+                log.warning("heartbeat '%s' did not start: %s", hb.name, res.get("error"))
 
 
 # Model catalogs, asked of each harness rather than pinned in source
