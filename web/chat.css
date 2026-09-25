@@ -232,3 +232,4 @@ details.tool pre {
 .msg table { border-collapse: collapse; font-size: 13px; }
 .msg th, .msg td { border: 1px solid var(--border-strong); padding: 4px 8px; text-align: left; vertical-align: top; }
 .msg th { background: var(--bg-card); font-weight: 600; }
+.msg a { color: #7fb2ff; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
