@@ -67,11 +67,24 @@
     return Math.floor(s / 86400) + "d";
   }
 
-  /* ---- A little markdown: fences, headings, bullets, tables, `code`, **bold**. */
+  /* ---- A little markdown: fences, headings, bullets, tables, `code`, **bold**, links. */
+  // Code spans and links are set aside as \u0000n\u0000 while the rest is
+  // rewritten, so a URL inside backticks stays text and one inside a link is
+  // not linked twice. Only http(s): the href comes from the agent.
+  const link = (href, text) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   function inline(s) {
+    const held = [];
+    const hold = (html) => "\u0000" + (held.push(html) - 1) + "\u0000";
     return esc(s)
-      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+      .replace(/`([^`\n]+)`/g, (_, c) => hold("<code>" + c + "</code>"))
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(u, t)))
+      .replace(/https?:\/\/[^\s<]+/g, (u) => {
+        const tail = u.match(/[.,;:!?)\]]*$/)[0];
+        u = u.slice(0, u.length - tail.length);
+        return hold(link(u, u)) + tail;
+      })
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\u0000(\d+)\u0000/g, (_, i) => held[i]);
   }
   function markdown(text) {
     const out = [];
