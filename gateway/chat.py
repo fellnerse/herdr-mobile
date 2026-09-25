@@ -449,6 +449,10 @@ def reap_forever():
                 chat.kill()
 
 
+def register_kind(prefix: str, get_fn) -> None:
+    _KINDS[prefix] = get_fn
+
+
 def get(chat_id):
     """The chat with this id: one of ours, or one of the kinds in _KINDS,
     which answer the same methods."""

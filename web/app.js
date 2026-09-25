@@ -110,6 +110,7 @@
   const elBtnConsoleKeyboard = document.getElementById("btn-console-keyboard");
   const elBtnConsoleFit = document.getElementById("btn-console-fit");
   const elBtnChanges = document.getElementById("btn-changes");
+  const elBtnPaneChat = document.getElementById("btn-pane-chat");
   const elChangesView = document.getElementById("changes-view");
   const elChangesList = document.getElementById("changes-list");
   const elChangesSub = document.getElementById("changes-sub");
@@ -785,8 +786,13 @@
       ) {
         // The first agent on screen, or failing that the first row there is:
         // a project whose tabs are all plain shells is still worth opening.
-        const first = state.agents.find((a) => a.has_agent) || state.agents[0];
-        if (first) {
+        // Back from the chat view, which names the pane it was showing.
+        const back = location.hash.startsWith("#pane:") ? decodeURIComponent(location.hash.slice(6)) : "";
+        if (back) history.replaceState(null, "", location.pathname);
+        const returned = back && state.agents.find((a) => a.pane_id === back);
+        const first = returned || state.agents.find((a) => a.has_agent) || state.agents[0];
+        if (returned) selectAgent(returned.pane_id, true);
+        else if (first) {
           /* Chosen, not opened, while the flock is on screen: the chat behind
              it is loaded and ready, but nothing drags you into it. A workspace
              closed from a chat still lands you in the next one. */
@@ -849,6 +855,10 @@
       ? "Select project"
       : "No agents";
     elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
+    // Only Claude Code writes the session log the chat view reads.
+    const chattable = !!(agent && agent.agent === "claude");
+    elBtnPaneChat.classList.toggle("hidden", !chattable);
+    if (chattable) elBtnPaneChat.href = "/chat.html#pane:" + agent.pane_id;
 
     renderTabStrip();
     if (pickerVisible()) renderAgentList();

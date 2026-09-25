@@ -208,6 +208,16 @@ views are not counted on top of the drive they are part of, overlays like
 nothing (`0`) is not a counter nobody keeps (`—`). `docs/design.md` is the
 detail.
 
+**A pane can be read as a chat too.** `chat.html` draws events, and two
+things produce them: a headless `claude -p` per chat (`gateway/chat.py`), and
+a Claude Code already running in a Herdr pane (`gateway/panechat.py`, id
+`pane:<pane_id>`), whose session log -- the one `agent_session` names -- has the
+same messages in it. `chat.get` resolves both, so the `/api/chat/*` routes do
+not know which they are talking to. A pane's permission prompt is not in its
+log: a tool call with no result while Herdr says `blocked` stands in for it,
+and is answered with the keys the TUI numbers its options with (`1` yes, `2`
+always, Esc no).
+
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's
 `StatusWatcher` thread parked when it saw the transition (TTL 120s, applied on

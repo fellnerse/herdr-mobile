@@ -191,6 +191,10 @@
         case "error": items.push({ kind: "error", text: ev.text }); break;
       }
     }
+    // A pane stopped on something the log does not show: a trust prompt, a menu.
+    if (chat && chat.kind === "pane" && chat.status === "blocked" && !pending.size) {
+      items.push({ kind: "meta", text: "waiting on something in the terminal" });
+    }
     if (live) items.push({ kind: "assistant", text: live, live: true });
     else if (running && !pending.size && items.length && items[items.length - 1].kind !== "tool") items.push({ kind: "typing" });
     for (const t of Object.values(tools)) t.state = t.result === undefined ? (running ? "" : "stale") : (t.error ? "err" : "ok");
@@ -265,7 +269,9 @@
     const running = !!(current && current.running);
     const nearBottom = elMessages.scrollHeight - elMessages.scrollTop - elMessages.clientHeight < 80;
     const html = build(events, current).map(itemHtml);
-    if (!html.length) html.push(`<div class="empty">Ask Claude anything about ${esc(shortDir(current && current.cwd))}.</div>`);
+    if (!html.length) html.push(current && current.kind === "pane"
+      ? `<div class="empty">${current.claude ? "Nothing in this session yet." : "There is no Claude Code in this pane."}</div>`
+      : `<div class="empty">Ask Claude anything about ${esc(shortDir(current && current.cwd))}.</div>`);
     // Put back only what changed: the rest keeps its node, its image, its scroll.
     html.forEach((h, i) => {
       if (drawn[i] === h) return;
@@ -362,7 +368,11 @@
     elMessages.innerHTML = "";
     clearAttached();
     $("chat-title").textContent = chat.title || "New chat";
-    $("chat-sub").textContent = [shortDir(chat.cwd), chat.model || "default", chat.mode].join(" · ");
+    const pane = chat.kind === "pane";
+    $("chat-sub").textContent = pane
+      ? [shortDir(chat.cwd), chat.model || "claude", "herdr pane"].join(" · ")
+      : [shortDir(chat.cwd), chat.model || "default", chat.mode].join(" · ");
+    $("btn-delete").classList.toggle("hidden", pane);
     elList.classList.add("hidden");
     elChat.classList.remove("hidden");
     if (location.hash !== "#" + chat.id) history.replaceState(null, "", "#" + chat.id);
@@ -381,10 +391,19 @@
 
   /* A push names the chat in the hash; the page may already be open. */
   window.addEventListener("hashchange", () => {
-    const c = listData.chats.find((x) => x.id === location.hash.slice(1));
-    if (c && (!current || current.id !== c.id)) openChat(c);
-    else if (!c && location.hash.length > 1) loadList();
+    const id = decodeURIComponent(location.hash.slice(1));
+    const c = listData.chats.find((x) => x.id === id);
+    if (current && current.id === id) return;
+    if (c) openChat(c);
+    else if (id.startsWith("pane:")) openById(id);
+    else if (id) loadList();
   });
+
+  /* A Herdr pane is not in the list: the main app links to it by id. */
+  async function openById(id) {
+    try { openChat((await api(`/api/chat/events?id=${encodeURIComponent(id)}`)).chat); }
+    catch (e) { alert(e.message); location.href = "/"; }
+  }
 
   /* ---- The list and the new-chat form. */
   let listData = { chats: [], dirs: [], modes: [] };
@@ -413,8 +432,10 @@
         `</button></li>`;
     }).join("") : `<li class="empty">No chats yet.</li>`;
     if (!current && location.hash.length > 1) {
-      const c = listData.chats.find((x) => x.id === location.hash.slice(1));
+      const id = decodeURIComponent(location.hash.slice(1));
+      const c = listData.chats.find((x) => x.id === id);
       if (c) openChat(c);
+      else if (id.startsWith("pane:")) openById(id);
     }
   }
 
@@ -638,7 +659,11 @@
     elSend.disabled = false;
   });
   elStop.addEventListener("click", () => current && api("/api/chat/stop", { id: current.id }).catch(() => {}));
-  $("btn-back").addEventListener("click", showList);
+  // A pane was opened from the main app, and goes back to it.
+  $("btn-back").addEventListener("click", () => {
+    if (current && current.kind === "pane") location.href = "/#" + current.id;
+    else showList();
+  });
   $("btn-delete").addEventListener("click", async () => {
     if (!current || !confirm("Delete this chat? The Claude Code session itself stays.")) return;
     await api("/api/chat/delete", { id: current.id }).catch(() => {});
