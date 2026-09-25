@@ -167,6 +167,16 @@ class HeartbeatConfig:
             self.heartbeats[0].prompt = val
 
 
+# How an alert the runner finds itself reaches the phone: set by the server,
+# which owns the push. The StatusWatcher path returns its alert instead.
+_notify = None
+
+
+def set_notifier(fn) -> None:
+    global _notify
+    _notify = fn
+
+
 # In-memory tracking of active heartbeat turns: pane_id -> {started_at, sentinel, heartbeat_id, heartbeat_name}
 _ACTIVE_HEARTBEATS: dict[str, dict] = {}
 _ACTIVE_LOCK = threading.Lock()
@@ -208,6 +218,13 @@ def extract_summary(text: str, max_length: int = 140) -> str:
     return summary
 
 
+def said_sentinel(output: str, sentinel: str) -> bool:
+    """Whether the agent answered with the sentinel, rather than the pane
+    merely showing the prompt that mentions it: the answer is a line of its
+    own (Claude Code puts a bullet in front), the prompt is not."""
+    return any(line.strip().lstrip("●⏺•").strip() == sentinel for line in output.splitlines())
+
+
 def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, dict | None]:
     """Intercept stopped panes to suppress clean heartbeats or format alerts."""
     info = pop_heartbeat(pane_id)
@@ -237,7 +254,7 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
 
     status = row.get("status")
 
-    if sentinel in output and status != "blocked":
+    if said_sentinel(output, sentinel) and status != "blocked":
         if target_hb:
             target_hb.last_status = "ok"
             target_hb.last_summary = f"All checks passed ({sentinel})"
@@ -594,6 +611,37 @@ def drop_lost_runs(cfg: HeartbeatConfig, pane_ids: set[str]) -> bool:
     return changed
 
 
+# A run younger than this is not judged: the pane can read idle for a moment
+# between being opened and the agent taking the prompt.
+SETTLE_SEC = 60.0
+
+
+def resolve_stopped_runs(cfg: HeartbeatConfig, panes: list[dict], now: float) -> bool:
+    """Read the result of a run whose agent has stopped.
+
+    The StatusWatcher only hears a pane that stops `done` or `blocked`, since
+    those are what earn a push. A check nobody is watching often ends `idle`
+    instead, and then its answer was never read - no alert, no tab closed,
+    `running` for good. Whichever of the two gets there first handles the run:
+    the interceptor pops it, so the other finds nothing.
+    """
+    by_id = {p.get("pane_id"): p for p in panes}
+    resolved = False
+    for hb in cfg.heartbeats:
+        pane = by_id.get(hb.target_pane)
+        if hb.last_status != "running" or not pane or not is_heartbeat_active(hb.target_pane):
+            continue
+        status = pane.get("agent_status")
+        if status not in ("idle", "done") or now - (hb.last_run_at or 0.0) < SETTLE_SEC:
+            continue
+        row = {"pane_id": hb.target_pane, "tab_id": pane.get("tab_id"), "status": status, "name": hb.name}
+        should_notify, meta = heartbeat_notification_interceptor(hb.target_pane, row)
+        if should_notify and meta and _notify:
+            _notify(meta["title"], meta["body"], None)
+        resolved = True
+    return resolved
+
+
 class HeartbeatRunner(threading.Thread):
     """Background daemon checking if any scheduled heartbeats should run."""
 
@@ -626,6 +674,8 @@ class HeartbeatRunner(threading.Thread):
             panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
             if drop_lost_runs(cfg, {p.get("pane_id") for p in panes}):
                 cfg.save()
+            if resolve_stopped_runs(cfg, panes, now):
+                cfg = HeartbeatConfig.load()
         for hb in cfg.heartbeats:
             if not (hb.enabled and hb.interval_hours > 0):
                 continue

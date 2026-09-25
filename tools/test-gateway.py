@@ -1920,6 +1920,39 @@ try:
 finally:
     heartbeat.call_herdr_rpc = orig_rpc
 
+# The sentinel counts when the agent answers with it, not when the pane
+# still shows the prompt that asks for it.
+check("a bulleted sentinel is an answer", heartbeat.said_sentinel("● HEARTBEAT_OK\n", "HEARTBEAT_OK"), True)
+check("a bare sentinel line is an answer", heartbeat.said_sentinel("x\n  HEARTBEAT_OK\n", "HEARTBEAT_OK"), True)
+check("the prompt mentioning the sentinel is not",
+      heartbeat.said_sentinel("❯ Run it. If all checks pass output ONLY: HEARTBEAT_OK - otherwise", "HEARTBEAT_OK"), False)
+
+# A run that stops idle - which the StatusWatcher never reports - is read by
+# the runner: its alert reaches the phone, a young or working run is left be.
+with tempfile.TemporaryDirectory(prefix="sheepit-hb-resolve-") as hb_dir:
+    orig = (heartbeat.CONFIG_PATH, heartbeat.Herdr.pane_read, heartbeat._notify)
+    pushed = []
+    try:
+        heartbeat.CONFIG_PATH = Path(hb_dir) / "heartbeat.json"
+        heartbeat.Herdr.pane_read = lambda self, p, lines=40: "Found a real bug in EmojiCloud.vue:72\n"
+        heartbeat.set_notifier(lambda title, body, url: pushed.append(title))
+        hb = heartbeat.HeartbeatItem(id="hb_idle_end", name="Sentry", last_status="running",
+                                     target_pane="wE:pR", last_run_at=1000.0)
+        cfg = heartbeat.HeartbeatConfig(heartbeats=[hb])
+        cfg.save()
+        heartbeat.mark_heartbeat_started("wE:pR", "HEARTBEAT_OK", hb.id, hb.name)
+        idle = [{"pane_id": "wE:pR", "tab_id": "wE:tR", "agent_status": "idle"}]
+        check("a run is not judged in its first minute",
+              heartbeat.resolve_stopped_runs(cfg, idle, 1030.0), False)
+        check("a working run is not judged",
+              heartbeat.resolve_stopped_runs(cfg, [dict(idle[0], agent_status="working")], 2000.0), False)
+        check("a run that stopped idle is read", heartbeat.resolve_stopped_runs(cfg, idle, 2000.0), True)
+        check("its alert is pushed", pushed, ["Heartbeat Alert: Sentry"])
+        check("and recorded", heartbeat.HeartbeatConfig.load().heartbeats[0].last_status, "alert")
+        check("and read only once", heartbeat.resolve_stopped_runs(cfg, idle, 2060.0), False)
+    finally:
+        heartbeat.CONFIG_PATH, heartbeat.Herdr.pane_read, heartbeat._notify = orig
+
 # A scheduled run that fails to start waits before it is tried again.
 with tempfile.TemporaryDirectory(prefix="sheepit-hb-runner-") as hb_dir:
     orig_config_path, orig_trigger = heartbeat.CONFIG_PATH, heartbeat.trigger_heartbeat
