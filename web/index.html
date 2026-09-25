@@ -39,6 +39,12 @@
           <line x1="12" y1="15.5" x2="17" y2="15.5"></line>
         </svg>
       </button>
+      <!-- The same Claude Code as messages, read from its session log -->
+      <a id="btn-pane-chat" href="/chat.html" class="icon-btn hidden" aria-label="Chat view" title="Chat view">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.8 8.8 0 0 1-4-.9L3 20.5l1.5-4.3A8 8 0 0 1 3.5 11.5 8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4z"></path>
+        </svg>
+      </a>
       <button type="button" id="btn-changes" class="icon-btn" aria-label="Changed files" title="Changed files">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14.5 2.5H6a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -73,6 +79,8 @@
     <nav id="tab-strip" class="tab-strip hidden" aria-label="Tabs in this worktree"></nav>
 
     <!-- Scrollable Transcript -->
+    <!-- On a desktop, a Claude Code pane's chat, over the transcript -->
+    <iframe id="pane-chat-frame" class="pane-chat-frame hidden" title="Chat"></iframe>
     <main id="history-container" class="history-container">
       <div id="history-content" class="history-content">
         <div class="history-empty">No active agent selected.</div>

@@ -62,6 +62,15 @@ RECENT_IDS = 400
 KINDS = ("input", "output", "cache_read", "cache_write")
 
 
+def session_log(session_id: str) -> Path | None:
+    """The log Claude Code keeps for one session, under whichever project
+    directory it was started in; None for an id that is not one."""
+    if not re.fullmatch(r"[0-9a-f-]{36}", session_id or ""):
+        return None
+    found = list(CLAUDE_PROJECTS.glob(f"*/{session_id}.jsonl"))
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 

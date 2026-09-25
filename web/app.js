@@ -8,6 +8,8 @@
     linesCount: 100,
     showStatusBar: false,
     plainView: false,
+    // What a desktop's right column shows of a Claude Code pane.
+    paneView: "chat",
     diffSplit: false,
     numberKeys: 3,
     badgeCount: -1,
@@ -110,6 +112,8 @@
   const elBtnConsoleKeyboard = document.getElementById("btn-console-keyboard");
   const elBtnConsoleFit = document.getElementById("btn-console-fit");
   const elBtnChanges = document.getElementById("btn-changes");
+  const elBtnPaneChat = document.getElementById("btn-pane-chat");
+  const elPaneChatFrame = document.getElementById("pane-chat-frame");
   const elChangesView = document.getElementById("changes-view");
   const elChangesList = document.getElementById("changes-list");
   const elChangesSub = document.getElementById("changes-sub");
@@ -785,8 +789,13 @@
       ) {
         // The first agent on screen, or failing that the first row there is:
         // a project whose tabs are all plain shells is still worth opening.
-        const first = state.agents.find((a) => a.has_agent) || state.agents[0];
-        if (first) {
+        // Back from the chat view, which names the pane it was showing.
+        const back = location.hash.startsWith("#pane:") ? decodeURIComponent(location.hash.slice(6)) : "";
+        if (back) history.replaceState(null, "", location.pathname);
+        const returned = back && state.agents.find((a) => a.pane_id === back);
+        const first = returned || state.agents.find((a) => a.has_agent) || state.agents[0];
+        if (returned) selectAgent(returned.pane_id, true);
+        else if (first) {
           /* Chosen, not opened, while the flock is on screen: the chat behind
              it is loaded and ready, but nothing drags you into it. A workspace
              closed from a chat still lands you in the next one. */
@@ -849,6 +858,11 @@
       ? "Select project"
       : "No agents";
     elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
+    // Only Claude Code writes the session log the chat view reads.
+    const chattable = !!(agent && agent.agent === "claude");
+    elBtnPaneChat.classList.toggle("hidden", !chattable);
+    if (chattable) elBtnPaneChat.href = "/chat.html#pane:" + agent.pane_id;
+    renderPaneChat(chattable && agent.pane_id);
 
     renderTabStrip();
     if (pickerVisible()) renderAgentList();
@@ -3238,6 +3252,7 @@
       state.showStatusBar = readPref("statusbar") === "1";
       elToggleStatusBar.checked = state.showStatusBar;
       state.plainView = readPref("plain") === "1";
+      state.paneView = readPref("view") || "chat";
       elTogglePlain.checked = state.plainView;
       setDiffLayout(readPref("diffsplit") === "1");
       syncStatusBarRow();
@@ -3793,8 +3808,47 @@
       suppressClick = false;
       return;
     }
-    if (row.dataset.paneId) selectAgent(row.dataset.paneId);
+    if (row.dataset.paneId && !openAsChat(row.dataset.paneId)) selectAgent(row.dataset.paneId);
   });
+
+  /* A Claude Code pane is shown as its chat, and the transcript is the button
+     in the chat's header. On a phone that is chat.html; past 900px, where the
+     flock is a column beside it, it is the same page in a frame over the
+     transcript, and which of the two the right column shows is remembered. */
+  function setPaneView(view) {
+    state.paneView = view;
+    savePref("sheepit.view", view);
+    renderAgentBar();
+  }
+
+  function renderPaneChat(paneId) {
+    const show = wide.matches && state.paneView === "chat" && !!paneId;
+    const src = show ? "/chat.html#pane:" + paneId : "";
+    if (elPaneChatFrame.dataset.src !== src) {
+      elPaneChatFrame.dataset.src = src;
+      // about:blank rather than no src: a hidden chat must stop its poll.
+      elPaneChatFrame.src = src || "about:blank";
+    }
+    elPaneChatFrame.classList.toggle("hidden", !show);
+  }
+
+  elBtnPaneChat.addEventListener("click", (e) => {
+    if (!wide.matches) return; // a phone follows the link
+    e.preventDefault();
+    setPaneView("chat");
+  });
+  window.addEventListener("message", (e) => {
+    if (e.origin === location.origin && e.data && e.data.sheepit === "transcript") setPaneView("transcript");
+  });
+  wide.addEventListener("change", () => renderAgentBar());
+
+  function openAsChat(paneId) {
+    const agent = state.agents.find((a) => a.pane_id === paneId);
+    if (wide.matches || !agent || agent.agent !== "claude") return false;
+    rememberDraft(state.activePaneId);
+    location.href = "/chat.html#pane:" + paneId;
+    return true;
+  }
 
   /* Two gestures share these rows, and which one it is only becomes clear
      after the finger has been down a moment.

@@ -2059,6 +2059,106 @@ try:
 finally:
     heartbeat.subprocess.run = orig_run
     heartbeat._model_cache.pop("omp", None)
+# ---- A Herdr pane read as a chat -------------------------------------------
+# The session log Claude Code writes is the transcript; a tool call with no
+# result in a blocked pane is the permission prompt.
+
+import panechat  # noqa: E402
+
+SID = "0123abcd-0000-4000-8000-000000000000"
+log_dir = Path(tempfile.mkdtemp(prefix="sheepit-log-"))
+log = log_dir / f"{SID}.jsonl"
+
+
+def entry(kind, content, **extra):
+    return json.dumps({"type": kind, "message": {"role": kind, "content": content,
+                                                 "model": "claude-test"}, **extra}) + "\n"
+
+
+log.write_text(
+    entry("user", "fix the login page")
+    + entry("user", [{"type": "text", "text": "Base directory for this skill"}], isMeta=True)
+    + entry("user", "<command-name>/review</command-name>\n<command-args>42</command-args>")
+    + entry("user", "<local-command-stdout>ok</local-command-stdout>")
+    + json.dumps({"type": "file-history-snapshot"}) + "\n"
+    + entry("assistant", [{"type": "thinking", "thinking": "hm"}])
+    + entry("assistant", [{"type": "text", "text": "On it."}])
+    + entry("assistant", [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "a"}}])
+    + entry("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "x"}])
+    + entry("assistant", [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "rm -rf build"}}])
+    + entry("user", "sidechain", isSidechain=True)
+    + json.dumps({"type": "system", "subtype": "turn_duration", "durationMs": 1200}) + "\n"
+)
+
+fake_pane = {"pane_id": "wX:p1", "agent": "claude", "agent_status": "working", "cwd": "/tmp/proj",
+             "terminal_title_stripped": "Claude Code",
+             "agent_session": {"kind": "id", "value": SID}}
+sent = []
+
+
+def fake_rpc(method, params=None, timeout=5.0):
+    if method == "pane.get":
+        return {"result": {"pane": dict(fake_pane)}}
+    sent.append((method, params))
+    return {"result": {}}
+
+
+orig = (panechat.call_herdr_rpc, panechat.tokens.session_log)
+panechat.call_herdr_rpc = fake_rpc
+panechat.tokens.session_log = lambda sid: log if sid == SID else None
+try:
+    pc = panechat.get("wX:p1")
+    check("pane chat: what the log says, in order",
+          [(e["type"], e.get("text")) for e in pc.events],
+          [("prompt", "fix the login page"), ("prompt", "/review 42"), ("assistant", None),
+           ("assistant", None), ("tool_results", None), ("assistant", None), ("result", None)])
+    check("pane chat: the summary names the project, not Claude Code",
+          (pc.summary()["title"], pc.summary()["model"], pc.summary()["running"]),
+          ("proj", "claude-test", True))
+    check("pane chat: working is not asking", pc.summary()["pending"], [])
+
+    fake_pane["agent_status"] = "blocked"
+    _, events, nxt = pc.read(len(pc.events), pc.epoch, 0)
+    check("pane chat: blocked with a tool open asks about that tool",
+          [(e["type"], e.get("tool"), e.get("request_id")) for e in events], [("ask", "Bash", "t2")])
+    check("pane chat: the ask is pending", pc.summary()["pending"], ["t2"])
+    pc.refresh()
+    check("pane chat: asked once, not on every poll", sum(e["type"] == "ask" for e in pc.events), 1)
+
+    pc.answer("t2", "always")
+    check("pane chat: always is the TUI's second option",
+          sent[-1], ("agent.send_keys", {"target": "wX:p1", "keys": ["2"]}))
+    pc.refresh()
+    check("pane chat: an answered ask stays closed while the pane catches up", pc.summary()["pending"], [])
+
+    with open(log, "a") as f:
+        f.write(entry("user", [{"type": "tool_result", "tool_use_id": "t2", "content": "done"}]))
+        f.write(entry("assistant", [{"type": "tool_use", "id": "t3", "name": "AskUserQuestion", "input": {
+            "questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]}}]))
+    pc.refresh()
+    pc.answer("t3", "allow", {"Which?": "B"})
+    check("pane chat: a single question is answered with its option's number", sent[-1][1]["keys"], ["2"])
+
+    before = pc.epoch
+    fake_pane["agent_session"] = {"kind": "id", "value": "ffffffff-0000-4000-8000-000000000000"}
+    since, events, nxt = pc.read(5, before, 0)
+    check("pane chat: a new session (/clear) reads from the top",
+          (pc.epoch != before, since, events, nxt), (True, 0, [], 0))
+
+    try:
+        pc.send("hi", [])
+        failures.append("FAIL pane chat: a blocked pane should refuse a message")
+    except ValueError:
+        pass
+    fake_pane["agent_status"] = "idle"
+    pc.refresh()
+    pc.send("hi", [])
+    check("pane chat: a message is agent.prompt", sent[-1], ("agent.prompt", {"target": "wX:p1", "text": "hi"}))
+    check("pane chat: a pane Herdr does not have is no chat",
+          panechat.get("not a pane"), None)
+finally:
+    panechat.call_herdr_rpc, panechat.tokens.session_log = orig
+
 # ---------------------------------------------------------------------------
 
 if failures:
