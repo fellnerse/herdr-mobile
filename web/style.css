@@ -2275,6 +2275,37 @@ footer.input-dock.chat-covered { display: none !important; }
 
 .console-term .xterm { height: 100%; }
 
+.console-composer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+.console-composer textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 22vh;
+  resize: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 9px 10px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: 14px/1.35 var(--font-mono);
+}
+.console-composer button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--accent-primary);
+  color: white;
+  font-weight: 600;
+}
+
 .console-keys {
   flex-shrink: 0;
   display: flex;

@@ -15,7 +15,7 @@
     historyText: "",
     linesCount: 400,
     // What a desktop's right column shows of a Claude Code pane.
-    paneView: "chat",
+    paneView: "transcript",
     diffSplit: false,
     numberKeys: 3,
     badgeCount: -1,
@@ -134,6 +134,9 @@
   const elConsoleTerm = document.getElementById("console-term");
   const elConsoleSub = document.getElementById("console-sub");
   const elConsoleKeys = document.getElementById("console-keys");
+  const elConsoleInput = document.getElementById("console-input");
+  const elConsoleComposer = document.getElementById("console-composer");
+  const elConsoleCompleteBar = document.getElementById("console-complete-bar");
   const elBtnChanges = document.getElementById("btn-changes");
   const elBtnPaneChat = document.getElementById("btn-pane-chat");
   const elChatView = document.getElementById("chat-chat-view");
@@ -596,7 +599,7 @@
     elViewSwitcher.classList.toggle("hidden", !agent);
     elBtnChanges.classList.remove("hidden");
     document.getElementById("chat-btn-delete").classList.add("hidden");
-    const chattable = !!(agent && agent.agent === "claude");
+    const chattable = !!(agent && ["claude", "codex"].includes(agent.agent));
     const chatShowing = chattable && (state.chatVisible || (wide.matches && state.paneView === "chat"));
     if (agent) {
       const name = agentBarName(agent);
@@ -2235,6 +2238,10 @@
     if (state.activePaneId === paneId) {
       if (hadChat) renderAgentBar();
       if (open) closePicker();
+      if (open && elConsoleView.classList.contains("hidden")) {
+        if (!wide.matches) stopPolling();
+        openConsole();
+      }
       return;
     }
     if (open) closePicker();
@@ -2258,6 +2265,12 @@
     renderChatQueue();
     retargetPaneViews();
     fetchHistory(true);
+    // Opening a pane from the flock enters its terminal by default. Chat is
+    // still opened explicitly from the chat action.
+    if (open) {
+      if (!wide.matches) stopPolling();
+      openConsole();
+    }
   }
 
   /* ------------------------------------------------------------ The tabs ---
@@ -2401,15 +2414,21 @@
     }
   }
 
-  // Fetch Agent History
+  // Fetch Agent History. A setting change can race an in-flight poll; only
+  // render the newest request so an old line count cannot overwrite it.
+  let historyRequest = 0;
   async function fetchHistory(forceScroll = false, forceRender = false) {
     if (!state.activePaneId) return;
+    const request = ++historyRequest;
+    const paneId = state.activePaneId;
+    const lines = state.linesCount;
 
     try {
-      const url = `/api/agents/${encodeURIComponent(state.activePaneId)}/history?lines=${state.linesCount}&source=recent_unwrapped&format=ansi`;
+      const url = `/api/agents/${encodeURIComponent(paneId)}/history?lines=${lines}&source=recent_unwrapped&format=ansi`;
       const res = await fetch(url);
       if (!res.ok) throw new Error("Failed to fetch history");
       const data = await res.json();
+      if (request !== historyRequest || paneId !== state.activePaneId || lines !== state.linesCount) return;
       const newText = data.text || "";
       if (forceRender || newText !== state.historyText) {
         // Something in it is selected: hold the redraw. See releaseHeld.
@@ -2647,68 +2666,68 @@
   let completeAbort = null;
 
   /// The @token immediately before the caret, or null.
-  function activeToken() {
-    const pos = elPromptInput.selectionStart ?? elPromptInput.value.length;
-    const upto = elPromptInput.value.slice(0, pos);
+  function activeToken(input = elPromptInput) {
+    const pos = input.selectionStart ?? input.value.length;
+    const upto = input.value.slice(0, pos);
     const match = /(^|\s)@(\S*)$/.exec(upto);
     if (!match) return null;
     return { query: match[2], start: pos - match[2].length };
   }
 
-  function hideCompletions() {
-    elCompleteBar.classList.add("hidden");
-    elCompleteBar.innerHTML = "";
+  function hideCompletions(bar = elCompleteBar) {
+    bar.classList.add("hidden");
+    bar.innerHTML = "";
   }
 
-  function scheduleCompletion() {
+  function scheduleCompletion(input = elPromptInput, bar = elCompleteBar) {
     clearTimeout(completeTimer);
-    const token = activeToken();
+    const token = activeToken(input);
     if (!token || !state.activePaneId) {
-      hideCompletions();
+      hideCompletions(bar);
       return;
     }
-    completeTimer = setTimeout(() => fetchCompletions(token.query), 130);
+    completeTimer = setTimeout(() => fetchCompletions(token.query, bar), 130);
   }
 
-  async function fetchCompletions(query) {
+  async function fetchCompletions(query, bar = elCompleteBar) {
     if (completeAbort) completeAbort.abort();
     completeAbort = new AbortController();
     try {
       const url = `/api/agents/${encodeURIComponent(state.activePaneId)}/files?q=${encodeURIComponent(query)}`;
       const res = await fetch(url, { signal: completeAbort.signal });
-      if (!res.ok) return hideCompletions();
+      if (!res.ok) return hideCompletions(bar);
       const data = await res.json();
-      renderCompletions(data.entries || []);
+      renderCompletions(data.entries || [], bar);
     } catch (err) {
-      if (err.name !== "AbortError") hideCompletions();
+      if (err.name !== "AbortError") hideCompletions(bar);
     }
   }
 
-  function renderCompletions(entries) {
-    if (!entries.length) return hideCompletions();
-    elCompleteBar.innerHTML = entries
+  function renderCompletions(entries, bar = elCompleteBar) {
+    if (!entries.length) return hideCompletions(bar);
+    bar.innerHTML = entries
       .map(
         (e) =>
           `<button type="button" class="complete-chip${e.is_dir ? " is-dir" : ""}" data-path="${escapeHtml(e.path)}" data-dir="${e.is_dir ? 1 : 0}">${escapeHtml(e.name)}${e.is_dir ? "/" : ""}</button>`
       )
       .join("");
-    elCompleteBar.classList.remove("hidden");
+    bar.classList.remove("hidden");
   }
 
   /// Replace the token under the caret; a directory stays open for the next segment.
-  function applyCompletion(path, isDir) {
-    const token = activeToken();
+  function applyCompletion(path, isDir, input = elPromptInput, bar = elCompleteBar) {
+    const token = activeToken(input);
     if (!token) return;
-    const value = elPromptInput.value;
+    const value = input.value;
     const insert = path + (isDir ? "/" : " ");
-    elPromptInput.value = value.slice(0, token.start) + insert + value.slice(token.start + token.query.length);
+    input.value = value.slice(0, token.start) + insert + value.slice(token.start + token.query.length);
     const caret = token.start + insert.length;
-    elPromptInput.setSelectionRange(caret, caret);
-    elPromptInput.focus();
-    autoResizeTextarea();
+    input.setSelectionRange(caret, caret);
+    input.focus();
+    if (input === elPromptInput) autoResizeTextarea();
     triggerHaptic();
-    if (isDir) scheduleCompletion();
-    else hideCompletions();
+    if (isDir) scheduleCompletion(input, bar);
+    else hideCompletions(bar);
   }
 
   // Keep focus in the composer when a chip is pressed.
@@ -2718,6 +2737,12 @@
     const chip = e.target.closest(".complete-chip");
     if (chip) applyCompletion(chip.dataset.path, chip.dataset.dir === "1");
   });
+  elConsoleCompleteBar.addEventListener("mousedown", (e) => e.preventDefault());
+  elConsoleCompleteBar.addEventListener("click", (e) => {
+    const chip = e.target.closest(".complete-chip");
+    if (chip) applyCompletion(chip.dataset.path, chip.dataset.dir === "1", elConsoleInput, elConsoleCompleteBar);
+  });
+  elConsoleInput.addEventListener("input", () => scheduleCompletion(elConsoleInput, elConsoleCompleteBar));
 
   // Auto-resize textarea
   // A single line of the composer: padding, border and one `line-height`.
@@ -3482,7 +3507,7 @@
       const lines = Number(readPref("lines"));
       if ([200, 400, 600, 800].includes(lines)) state.linesCount = lines;
       elLinesSelect.value = String(state.linesCount);
-      state.paneView = readPref("view") || "chat";
+      state.paneView = readPref("view") || "transcript";
       setDiffLayout(readPref("diffsplit") === "1");
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
@@ -4244,7 +4269,7 @@
 
   function openAsChat(paneId) {
     const agent = state.agents.find((a) => a.pane_id === paneId);
-    if (!agent || agent.agent !== "claude") return false;
+    if (!agent || !["claude", "codex"].includes(agent.agent)) return false;
     rememberDraft(state.activePaneId);
     selectAgent(paneId, false);
     if (!wide.matches) closePicker();
@@ -5432,6 +5457,9 @@
       (e) => {
         if (!consoleState.ws) return;
         e.preventDefault();
+        // xterm treats wheel input as terminal keys in mouse tracking mode.
+        // Capture the gesture before xterm so it cannot send arrow-up bytes.
+        e.stopImmediatePropagation();
         consoleState.scrollAcc += e.deltaY;
         const lines = Math.trunc(consoleState.scrollAcc / 40);
         if (!lines) return;
@@ -5442,7 +5470,7 @@
           lines: Math.min(20, Math.abs(lines)),
         });
       },
-      { passive: false }
+      { passive: false, capture: true }
     );
 
     /* A drag on the screen scrolls Herdr's scrollback - except while there is
@@ -5745,6 +5773,28 @@
   elConsoleKeys.addEventListener("click", (e) => {
     const btn = e.target.closest(".key-btn");
     if (btn && btn.dataset.key) sendConsoleKey(btn.dataset.key);
+  });
+  elConsoleInput.addEventListener("input", () => {
+    elConsoleInput.style.height = "auto";
+    elConsoleInput.style.height = `${Math.min(elConsoleInput.scrollHeight, Math.round(window.innerHeight * 0.22))}px`;
+  });
+  elConsoleInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      elConsoleComposer.requestSubmit();
+    }
+  });
+  elConsoleComposer.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const value = elConsoleInput.value;
+    if (!value || !consoleState.ws) return;
+    // Console composer is deliberately a raw-byte send path: line breaks in
+    // the draft become terminal CRs, with a final CR to submit the command.
+    sendConsole(encoder.encode(value.replace(/\n/g, "\r") + "\r"));
+    elConsoleInput.value = "";
+    elConsoleInput.style.height = "";
+    hideCompletions(elConsoleCompleteBar);
+    elConsoleInput.focus();
   });
   window.addEventListener("resize", fitConsole);
   if (window.visualViewport) {
@@ -6863,7 +6913,7 @@
   /* Why a pane's chat is empty. Three different reasons read as one blank
      screen otherwise, and only the last of them is worth waiting through. */
   function paneEmpty(chat) {
-    if (!chat.claude) return "There is no Claude Code in this pane.";
+    if (!chat.supported) return "There is no supported agent in this pane.";
     if (!chat.session) return "Found no session log for this pane yet — it appears once Claude Code has named the session.";
     return "Nothing in this session yet.";
   }

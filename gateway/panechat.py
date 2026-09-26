@@ -71,6 +71,49 @@ def slim_log(entry: dict) -> dict | None:
     return {"type": "prompt", "text": text, "images": []} if text else None
 
 
+def slim_codex(entry: dict) -> dict | None:
+    """Translate one Codex rollout line into the shared pane-chat events."""
+    if not isinstance(entry, dict):
+        return None
+    kind = entry.get("type")
+    payload = entry.get("payload") or {}
+    if kind == "response_item":
+        item = payload
+        item_kind = item.get("type")
+        if item_kind == "message":
+            role = item.get("role")
+            content = item.get("content") or []
+            text = "".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") in
+                ("input_text", "output_text", "text")
+            ).strip()
+            if not text:
+                return None
+            return {"type": "prompt" if role == "user" else "assistant",
+                    **({"text": text, "images": []} if role == "user" else
+                       {"content": [{"type": "text", "text": text}]})}
+        if item_kind == "function_call":
+            try:
+                args = item.get("arguments") or "{}"
+                args = json.loads(args) if isinstance(args, str) else args
+            except (ValueError, TypeError):
+                args = {"arguments": item.get("arguments", "")}
+            return {"type": "assistant", "content": [{
+                "type": "tool_use", "id": item.get("call_id") or item.get("id"),
+                "name": item.get("name") or "tool", "input": args,
+            }]}
+        if item_kind == "function_call_output":
+            return {"type": "tool_results", "content": [{
+                "tool_use_id": item.get("call_id") or item.get("id"),
+                "is_error": bool(item.get("is_error")),
+                "content": item.get("output", ""),
+            }]}
+    if kind == "event_msg" and payload.get("type") in ("turn_aborted", "turn_failed"):
+        return {"type": "interrupted"}
+    return None
+
+
 # path -> (the size it was read at, the title found in it). Reading a tail is
 # cheap but not free, and a log that has not grown cannot have been retitled.
 _TITLES: dict = {}
@@ -153,6 +196,14 @@ class PaneChat:
         return self.pane.get("agent") == "claude"
 
     @property
+    def is_codex(self) -> bool:
+        return self.pane.get("agent") == "codex"
+
+    @property
+    def is_supported(self) -> bool:
+        return self.is_claude or self.is_codex
+
+    @property
     def title(self) -> str:
         return self.pane.get("terminal_title_stripped") or ""
 
@@ -188,9 +239,23 @@ class PaneChat:
         changes, or until a working pane's log has gone quiet for a while -
         which is what a `/clear` into a fresh session looks like from here.
         """
-        if not self.is_claude:
+        if not self.is_supported:
             if self.session or self.path:
                 self._adopt(None, None)
+            return
+
+        if self.is_codex:
+            session = self.pane.get("agent_session") or {}
+            sid = session.get("value") if session.get("kind") == "id" else None
+            if self.path and self.title == self.title_seen and not self._gone_quiet() \
+                    and (not sid or sid == self.session):
+                return
+            path = self._find_codex_log(sid)
+            if path != self.path:
+                self._adopt(sid or (path.stem if path else None), path)
+            elif path:
+                self.title_seen = self.title
+                self.grew_at = time.time()
             return
 
         session = self.pane.get("agent_session") or {}
@@ -239,6 +304,38 @@ class PaneChat:
                     return path
         return logs[0] if len(logs) == 1 else None
 
+    def _find_codex_log(self, session_id=None):
+        """Find a rollout for this pane, refusing ambiguous same-cwd matches."""
+        try:
+            candidates = sorted(
+                tokens.CODEX_HOME.glob("sessions/*/*/*/*.jsonl"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:40]
+        except OSError:
+            return None
+        matches = []
+        for path in candidates:
+            try:
+                with path.open("rb") as f:
+                    lines = [f.readline() for _ in range(4)]
+            except OSError:
+                continue
+            for raw in lines:
+                try:
+                    entry = json.loads(raw)
+                except (ValueError, TypeError):
+                    continue
+                if entry.get("type") != "session_meta":
+                    continue
+                meta = entry.get("payload") or {}
+                if session_id and meta.get("id") != session_id:
+                    continue
+                if meta.get("cwd") == self.cwd:
+                    matches.append(path)
+                break
+        return matches[0] if session_id and matches else matches[0] if len(matches) == 1 else None
+
     def _restart(self):
         self.offset, self.tail, self.events, self.model = 0, b"", [], ""
         self.unresolved, self.asks, self.answered, self.pending = {}, {}, set(), {}
@@ -266,13 +363,21 @@ class PaneChat:
                 entry = json.loads(line)
             except ValueError:
                 continue
-            event = slim_log(entry)
+            if self.is_codex:
+                meta = entry.get("payload") or {}
+                model = meta.get("model")
+                if isinstance(model, str) and model:
+                    self.model = model
+                event = slim_codex(entry)
+            else:
+                event = slim_log(entry)
             if not event:
                 continue
             if event["type"] == "assistant":
-                self.model = (entry.get("message") or {}).get("model") or self.model
+                if not self.is_codex:
+                    self.model = (entry.get("message") or {}).get("model") or self.model
                 for b in event["content"]:
-                    if b.get("type") == "tool_use":
+                    if b.get("type") == "tool_use" and b.get("id"):
                         self.unresolved[b.get("id")] = b
             elif event["type"] == "tool_results":
                 for r in event["content"]:
@@ -297,8 +402,10 @@ class PaneChat:
             tool = block.get("name") or ""
             ask = {"type": "ask", "request_id": tid, "tool": tool, "tool_use_id": tid,
                    "input": block.get("input") or {}, "description": "",
-                   # The TUI's second option is "yes, and don't ask again".
-                   "suggestions": [] if tool in ("AskUserQuestion", "ExitPlanMode") else ["2"]}
+                   # Claude exposes its second option as "always". Codex's
+                   # confirmation is a plain yes/no prompt.
+                   "suggestions": [] if self.is_codex or tool in
+                   ("AskUserQuestion", "ExitPlanMode") else ["2"]}
             self.asks[tid] = ask
             self.events.append(ask)
         self.pending = {tid: self.asks[tid]}
@@ -315,6 +422,7 @@ class PaneChat:
         return {"id": "pane:" + self.pane_id, "kind": "pane", "pane_id": self.pane_id,
                 "title": title, "cwd": self.cwd, "model": self.model, "mode": "",
                 "status": self.status, "claude": self.is_claude,
+                "supported": self.is_supported, "agent": self.pane.get("agent"),
                 "session": bool(self.session),
                 "running": self.status == "working", "pending": list(self.pending)}
 
@@ -354,8 +462,8 @@ class PaneChat:
         typed at it until the question is answered, which keeps the message
         rather than making somebody remember what they had written.
         """
-        if not self.is_claude:
-            raise ValueError("There is no Claude Code in this pane")
+        if not self.is_supported:
+            raise ValueError("There is no supported agent in this pane")
         if not self.session:
             raise ValueError("Found no session log for this pane yet")
         # An image goes as its path, which Claude Code reads like any file.
@@ -376,7 +484,9 @@ class PaneChat:
             ask = self.pending.get(request_id)
         if not ask:
             raise ValueError("That question is no longer open")
-        if behavior == "deny":
+        if self.is_codex:
+            keys = ["n" if behavior == "deny" else "y"]
+        elif behavior == "deny":
             keys = ["esc"]
         elif ask["tool"] == "AskUserQuestion":
             qs = ask["input"].get("questions") or []

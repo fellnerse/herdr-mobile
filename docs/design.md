@@ -622,20 +622,40 @@ If a rebuild seems to change nothing, note that the menu bar icon lives in the
 binary: a copy left running keeps drawing its own. `make -C menubar install`
 quits any running copy first.
 
+## The pane views
+
+The shared header keeps the **Chat / Normal / Console** switcher. Opening a
+pane from the flock starts in Console; Chat is an explicit choice when that
+pane has a resolvable session log. Normal shows the pane's screen as a verbatim
+transcript. It does not classify turns or hide status rows, so it remains a
+faithful reading of any agent or plain shell. The switcher changes the view of
+the selected pane without opening a second page.
+
+Chat reads Claude Code's session log and renders its structured messages,
+tools and permissions in the same app document. Codex panes use the same chat
+surface, reading their rollout log and mapping a blocked approval to the
+terminal's yes/no keys. Headless Codex chats are not part of this view. Console
+attaches to the pane's terminal and sends raw keystrokes. These views expose
+different sources: Chat shows recorded session events, Normal shows the latest
+screen, and Console is the live terminal.
+
 ## The console, and why it is not the transcript
 
-The transcript is a reading: the pane parsed into turns, the furniture taken
-off, a question lifted out and given its own card with keys under it. That
-reading is the whole point of the app, and it is also a guess - and a guess
-has failure modes. An agent that opens a full-screen editor, an installer
-drawing a progress bar, a TUI with its own layout: none of these are turns,
-and no parser makes them into any.
+Normal is a reading of the pane's screen, shown verbatim. A full-screen editor,
+an installer drawing a progress bar, or a TUI with its own layout stays exactly
+as the pane drew it; there is no parser trying to turn those rows into chat
+turns.
 
 So there is a second view that does not read anything. It attaches to the
 pane's terminal over Herdr's client socket and puts the bytes on screen with
 [xterm.js](https://xtermjs.org) - the same ANSI, the same colours, the same
 redraws, and keystrokes going back. Where the transcript is the app's opinion
 of the pane, the console is the pane.
+
+Console also has a small text composer for sending a line without opening the
+software keyboard over xterm. Its `@` suggestions come from the selected pane's
+working directory, and submit encodes the text as terminal bytes followed by a
+carriage return. The terminal itself still receives individual keys directly.
 
 The trade it makes is size. A terminal has a shape, the pane's shape is the
 one the desktop gave it, and a phone is narrower than any of them. Three
