@@ -122,7 +122,73 @@ def agent_rows() -> list:
     ws_list = call_herdr_rpc("workspace.list").get("result", {}).get("workspaces", [])
     panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
     tabs = call_herdr_rpc("tab.list").get("result", {}).get("tabs", [])
-    return build_agent_rows(ws_list, tabs, panes, agents_raw)
+    return build_agent_rows(with_worktrees(ws_list), tabs, panes, agents_raw)
+
+
+# Which repository each workspace has open, by workspace id. A workspace holds
+# one checkout for as long as it is open, so this is asked once per workspace
+# rather than on every poll of the flock - and dropped when the workspace is.
+_WORKTREE_BY_WS = {}
+
+
+def worktree_record(ws_id: str) -> dict:
+    """The `worktree` record for a workspace, asked for outright.
+
+    Herdr answers `workspace.list` without one - the field is there in some
+    versions and absent in others - and without it every row falls back to its
+    directory: worktrees cut off a project scatter into a project each, and no
+    heading offers to cut another, since nothing says there is a repository to
+    cut from. `worktree.list` knows, in every version, so ask it.
+
+    Shaped like the field it stands in for: `repo_root`, `repo_name`, and
+    whether this workspace is itself a linked worktree rather than the
+    project's own checkout. The entry for the workspace is what says which -
+    a repository whose main checkout is open elsewhere lists that one instead,
+    and a workspace missing from the list is not a linked worktree.
+    """
+    result = (call_herdr_rpc("worktree.list", {"workspace_id": ws_id}).get("result")
+              or {})
+    source = result.get("source") or {}
+    root = source.get("repo_root") or ""
+    if not root:
+        return {}
+    linked = False
+    for tree in result.get("worktrees") or []:
+        if tree.get("open_workspace_id") == ws_id:
+            linked = bool(tree.get("is_linked_worktree"))
+            break
+    return {
+        "repo_root": root,
+        "repo_name": source.get("repo_name") or "",
+        "is_linked_worktree": linked,
+    }
+
+
+def with_worktrees(ws_list: list) -> list:
+    """The workspaces, each carrying the repository it has open. A Herdr that
+    already fills the field in is left alone; the rest cost one call apiece,
+    the first time the workspace is seen."""
+    out = []
+    live = set()
+    for ws in ws_list:
+        ws_id = ws.get("workspace_id") or ""
+        live.add(ws_id)
+        if ws.get("worktree") or not ws_id:
+            out.append(ws)
+            continue
+        if ws_id not in _WORKTREE_BY_WS:
+            try:
+                _WORKTREE_BY_WS[ws_id] = worktree_record(ws_id)
+            except Exception:
+                # A repository the phone cannot name is still a workspace it
+                # has to list, so a failed lookup is not cached as "no repo".
+                out.append(ws)
+                continue
+        tree = _WORKTREE_BY_WS[ws_id]
+        out.append(dict(ws, worktree=tree) if tree else ws)
+    for gone in [k for k in _WORKTREE_BY_WS if k not in live]:
+        del _WORKTREE_BY_WS[gone]
+    return out
 
 
 def project_of(ws: dict, pane: dict) -> tuple:
