@@ -95,18 +95,15 @@ body:has(.sheet-backdrop:not(.hidden)) {
 .app-container {
   display: flex;
   flex-direction: column;
-  /* The flock, transcript, console and chat share one fixed app shell so the
-     document itself never scrolls when a view changes or the keyboard opens. */
-  position: fixed;
-  top: 0;
-  left: 0;
-  /* --app-height tracks the visual viewport (set in JS) so the keyboard
-     shrinks the transcript rather than pushing the header off screen. */
-  height: var(--app-height, 100dvh);
-  transform: translateY(var(--app-offset, 0px));
-  width: 100vw;
+  /* Keep the page in document flow so iOS can scroll the whole transcript and
+     collapse its browser chrome, as it does on the project list. */
+  position: relative;
+  min-height: 100dvh;
+  width: 100%;
   background-color: var(--bg-base);
 }
+
+.app-header { position: sticky; top: 0; }
 
 /* Warm, but not on screen. The flock is in the flow and the chat is fixed
    behind it, so the rubber-band at the end of the list slides the flock up
@@ -126,9 +123,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  background: rgba(18, 21, 29, 0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: var(--bg-surface);
   border-bottom: 1px solid var(--border-subtle);
   padding-top: var(--safe-top);
   padding-right: 8px;
@@ -1064,9 +1059,9 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 /* Scrollable History */
 .history-container {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  flex: 0 0 auto;
+  overflow-y: visible;
+  overflow-x: clip;
   -webkit-overflow-scrolling: touch;
   padding: 10px 12px 12px 12px;
   position: relative;
@@ -1153,10 +1148,9 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   flex-shrink: 0;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
-  /* No vertical padding: the input row sits flush against the bottom edge.
-     The home-indicator inset is reclaimed entirely - iOS keeps the indicator
-     legible over content on its own. */
-  padding: 0 10px 0 10px;
+  /* Leave breathing room below the input controls, including the home
+     indicator area when the PWA runs edge to edge. */
+  padding: 0 10px calc(var(--safe-bottom) + 10px);
   z-index: 10;
 }
 
@@ -2866,6 +2860,13 @@ footer.input-dock.chat-covered { display: none !important; }
     left: auto;
   }
 
+  /* On desktop the window stays fixed, so only the transcript column scrolls. */
+  .history-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
   /* The flock is always open here, and the chat is the column beside it
      rather than something behind it - nothing to hide. */
   body:has(.agent-picker:not(.hidden)) .app-container {
@@ -3044,17 +3045,16 @@ footer.input-dock.chat-covered { display: none !important; }
   --text: var(--text-primary); --text-2: var(--text-secondary); --text-3: var(--text-muted);
   --accent: var(--accent-primary); --ok: var(--status-idle); --err: var(--status-blocked);
   --work: var(--status-working); --border: var(--border-subtle);
-  position: fixed; z-index: 6;
-  top: var(--app-header-height, calc(var(--safe-top) + 52px)); bottom: var(--safe-bottom);
-  left: 0; right: 0; background: var(--bg-base); display: flex;
-  flex-direction: column; min-height: 0;
+  position: relative; z-index: 6;
+  background: var(--bg-base); display: flex;
+  flex-direction: column; min-height: 0; flex: 0 0 auto;
 }
 #chat-chat-view.hidden { display: none; }
 #chat-chat-view .hidden { display: none !important; }
 #chat-chat-view .bar { display: none !important; }
 @keyframes chat-pulse { 50% { opacity: 0.35; } }
-#chat-chat-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-#chat-chat-view .scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 14px; }
+#chat-chat-view { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
+#chat-chat-view .scroll { flex: 0 0 auto; overflow-y: visible; padding: 12px 14px; }
 #chat-chat-view .bar {
   display: flex; align-items: center; gap: 8px;
   padding: calc(env(safe-area-inset-top, 0px) + 8px) 10px 8px;

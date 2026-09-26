@@ -2453,14 +2453,19 @@
   }
 
   // Scroll to Bottom
+  function historyScroller() {
+    return wide.matches ? elHistoryContainer : document.scrollingElement;
+  }
+
   function scrollToBottom(smooth = false) {
+    const scroller = historyScroller();
     if (smooth) {
-      elHistoryContainer.scrollTo({
-        top: elHistoryContainer.scrollHeight,
+      scroller.scrollTo({
+        top: scroller.scrollHeight,
         behavior: "smooth",
       });
     } else {
-      scrollContainerToBottom(elHistoryContainer);
+      scrollContainerToBottom(scroller);
     }
     state.isUserScrolledUp = false;
     updateScrollButton();
@@ -2474,10 +2479,9 @@
   // Check scroll position
   function onHistoryScroll() {
     const threshold = 80;
+    const scroller = historyScroller();
     const distanceToBottom =
-      elHistoryContainer.scrollHeight -
-      elHistoryContainer.scrollTop -
-      elHistoryContainer.clientHeight;
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
 
     state.isUserScrolledUp = distanceToBottom > threshold;
     updateScrollButton();
@@ -4678,6 +4682,7 @@
   });
 
   elHistoryContainer.addEventListener("scroll", onHistoryScroll, { passive: true });
+  window.addEventListener("scroll", onHistoryScroll, { passive: true });
   elBtnScrollBottom.addEventListener("click", () => scrollToBottom(true));
 
   elPromptInput.addEventListener("input", () => {
