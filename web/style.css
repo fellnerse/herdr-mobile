@@ -1059,7 +1059,12 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 /* Scrollable History */
 .history-container {
-  flex: 0 0 auto;
+  /* Grows, not just sits: with no active agent or a short transcript, `0 0
+     auto` left the sticky input dock stranded right after this instead of at
+     the bottom of the screen, since nothing filled the rest of `min-height:
+     100dvh`. Growing costs nothing once the transcript is actually taller
+     than the viewport - there is no extra space left to hand out. */
+  flex: 1 0 auto;
   overflow-y: visible;
   overflow-x: clip;
   -webkit-overflow-scrolling: touch;
@@ -1574,7 +1579,9 @@ footer.input-dock.chat-covered { display: none !important; }
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
-  z-index: 20;
+  /* Full-screen views such as the console sit above the app chrome. A sheet
+     opened from the flock still needs to cover and dim those views too. */
+  z-index: 40;
 }
 
 .settings-sheet {
@@ -1582,7 +1589,7 @@ footer.input-dock.chat-covered { display: none !important; }
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 21;
+  z-index: 41;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-strong);
   border-radius: 16px 16px 0 0;
@@ -3064,14 +3071,21 @@ footer.input-dock.chat-covered { display: none !important; }
   --work: var(--status-working); --border: var(--border-subtle);
   position: relative; z-index: 6;
   background: var(--bg-base); display: flex;
-  flex-direction: column; min-height: 0; flex: 0 0 auto;
+  /* `1 0 auto`, same reason as `.history-container` above: an empty or brand
+     new chat is shorter than the screen, and without growth the composer
+     ends up stranded right under it instead of pinned to the bottom. */
+  flex-direction: column; min-height: 0; flex: 1 0 auto;
 }
 #chat-chat-view.hidden { display: none; }
 #chat-chat-view .hidden { display: none !important; }
 #chat-chat-view .bar { display: none !important; }
 @keyframes chat-pulse { 50% { opacity: 0.35; } }
-#chat-chat-view { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
-#chat-chat-view .scroll { flex: 0 0 auto; overflow-y: visible; padding: 12px 14px; }
+#chat-chat-view { flex: 1 0 auto; display: flex; flex-direction: column; min-height: 0; }
+/* Grows for the same reason `#chat-chat-view` itself does: a new or empty
+   chat's messages are shorter than the screen, and without this the composer
+   sits right under them instead of at the bottom the sticky input dock would
+   put it at on the plain transcript. */
+#chat-chat-view .scroll { flex: 1 0 auto; overflow-y: visible; padding: 12px 14px; }
 #chat-chat-view .bar {
   display: flex; align-items: center; gap: 8px;
   padding: calc(env(safe-area-inset-top, 0px) + 8px) 10px 8px;
