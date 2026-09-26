@@ -51,15 +51,33 @@
     if (!transfer) return [];
     const found = [];
     for (const item of transfer.items || []) {
-      if (item.kind !== "file" || !(item.type || "").startsWith("image/")) continue;
+      if (item.kind !== "file") continue;
       const file = item.getAsFile();
-      if (file) found.push(file);
+      // iOS sometimes leaves the MIME type empty on a pasted screenshot.
+      // The decoder in createAttachStrip checks those files before upload.
+      if (file && ((item.type || file.type || "").startsWith("image/")
+          || ["", "application/octet-stream"].includes(item.type || file.type || ""))) found.push(file);
     }
     if (found.length) return found;
     for (const file of transfer.files || []) {
-      if ((file.type || "").startsWith("image/")) found.push(file);
+      if ((file.type || "").startsWith("image/")
+          || !file.type || file.type === "application/octet-stream") found.push(file);
     }
     return found;
+  }
+
+  async function clipboardImages() {
+    if (!navigator.clipboard?.read) return [];
+    const images = [];
+    for (const item of await navigator.clipboard.read()) {
+      for (const type of item.types) {
+        if (type.startsWith("image/")) {
+          const blob = await item.getType(type);
+          images.push(blob.type ? blob : new Blob([blob], { type }));
+        }
+      }
+    }
+    return images;
   }
 
   /* Shared textarea sizing. Each view chooses its own height limit and owns
@@ -199,6 +217,7 @@
      into a request field, is each view's own job. */
   function createAttachStrip(el, upload, onError, onChange) {
     let attached = [];
+    let generation = 0;
 
     function draw() {
       el.classList.toggle("hidden", !attached.length);
@@ -212,15 +231,25 @@
       if (onChange) onChange(attached);
     }
 
-    async function add(files) {
+    async function add(files, scope) {
+      const started = generation;
       for (const file of files || []) {
-        if (!file.type.startsWith("image/")) continue;
+        if (started !== generation) return;
+        if (file.type && !file.type.startsWith("image/")
+            && file.type !== "application/octet-stream") continue;
         const blob = await shrinkImage(file);
+        if (started !== generation) return;
+        if (!blob.type.startsWith("image/")) {
+          if (onError) onError("The clipboard did not contain a readable photo");
+          continue;
+        }
         const entry = { name: null, url: URL.createObjectURL(blob) };
         attached.push(entry);
         draw();
         try {
-          entry.name = await upload(blob);
+          const name = await upload(blob, scope);
+          if (started !== generation) return;
+          entry.name = name;
           draw();
         } catch (err) {
           attached = attached.filter((a) => a !== entry);
@@ -232,6 +261,7 @@
     }
 
     function clear() {
+      generation++;
       attached.forEach((a) => URL.revokeObjectURL(a.url));
       attached = [];
       draw();
@@ -256,7 +286,7 @@
   }
 
   window.SheepItComposer = {
-    MAX_EDGE, KEEP_AS_IS, shrinkImage, imagesIn, resizeTextarea,
+    MAX_EDGE, KEEP_AS_IS, shrinkImage, imagesIn, clipboardImages, resizeTextarea,
     createDraftStore, createRecallHistory, createQueueStrip, bindSubmit, createAttachStrip,
   };
 })();

@@ -77,6 +77,7 @@
   const elTerminalInput = document.getElementById("terminal-input");
   const elCompleteBar = document.getElementById("complete-bar");
   const elBtnAttach = document.getElementById("btn-attach");
+  const elBtnPasteImage = document.getElementById("btn-paste-image");
   const elAttachInput = document.getElementById("attach-input");
   const elAttachStrip = document.getElementById("attach-strip");
   const elTerminalInputRow = document.getElementById("terminal-input-row");
@@ -2870,8 +2871,8 @@
 
   const attachStrip = SheepItComposer.createAttachStrip(
     elAttachStrip,
-    async (blob) => {
-      const res = await fetch(`/api/agents/${encodeURIComponent(state.activePaneId)}/attach`, {
+    async (blob, paneId) => {
+      const res = await fetch(`/api/agents/${encodeURIComponent(paneId)}/attach`, {
         method: "POST",
         headers: { "Content-Type": blob.type || "image/png" },
         body: blob,
@@ -2884,13 +2885,16 @@
     (images) => { elBtnSend.disabled = !elPromptInput.value.trim() && !images.length; }
   );
 
-  async function attachFiles(files) {
+  async function attachFiles(files, paneId = state.activePaneId) {
     if (!files || !files.length) return;
-    if (!state.activePaneId) return;
+    if (!paneId || state.activePaneId !== paneId) return;
     triggerHaptic();
     setAttachBusy(true);
-    await attachStrip.add(files);
-    setAttachBusy(false);
+    try {
+      await attachStrip.add(files, paneId);
+    } finally {
+      setAttachBusy(false);
+    }
   }
 
   function setAttachBusy(busy) {
@@ -2915,6 +2919,20 @@
     elAttachInput.click();
   });
 
+  elBtnPasteImage.addEventListener("click", async () => {
+    const paneId = state.activePaneId;
+    if (!paneId) return;
+    try {
+      const images = await SheepItComposer.clipboardImages();
+      if (state.activePaneId !== paneId) return;
+      if (images.length) attachFiles(images, paneId);
+      else showAttachError("No photo is available in the clipboard. Try the image button.");
+    } catch (err) {
+      if (state.activePaneId === paneId)
+        showAttachError("Could not read the clipboard photo. Try the image button.");
+    }
+  });
+
   /* Paste a screenshot straight in. iOS copies one to the clipboard the moment
      you take it, which makes this the shortest path there is between seeing
      something wrong and an agent looking at it - shorter than the photo
@@ -2924,15 +2942,52 @@
      whatever has focus, and on a phone that is as often the page as the
      textarea. Text pastes are left entirely alone. */
   document.addEventListener("paste", (e) => {
-    // The console has its own terminal to paste into, and it wants the text.
-    if (!elConsoleView.classList.contains("hidden") || state.chatVisible || state.activeChatId) return;
+    // Text belongs to xterm when the console is open; photos are uploaded to
+    // the pane and inserted as @path tokens for the terminal prompt.
+    if (!elConsoleView.classList.contains("hidden")) {
+      const images = imagesIn(e.clipboardData);
+      if (!images.length) return;
+      e.preventDefault();
+      // xterm stops paste events at its hidden textarea, so handle images in
+      // capture phase and keep its text-paste handler from seeing the image.
+      e.stopPropagation();
+      attachConsoleFiles(images);
+      return;
+    }
+    if (state.chatVisible || state.activeChatId) return;
     if (!state.activePaneId) return;
     const images = imagesIn(e.clipboardData);
-    if (!images.length) return;
-    e.preventDefault();
-    if (document.activeElement !== elPromptInput) elPromptInput.focus();
-    attachFiles(images);
-  });
+    if (images.length && images.every((image) => image.type.startsWith("image/"))) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (document.activeElement !== elPromptInput) elPromptInput.focus();
+      attachFiles(images);
+      return;
+    }
+    // Safari can advertise a screenshot on the pasteboard without exposing a
+    // File in this event. Read it directly while the paste gesture is active.
+    const types = [...(e.clipboardData?.types || [])];
+    const imageHint = types.some((type) => type === "Files" || type.startsWith("image/"));
+    const text = e.clipboardData?.getData("text/plain") || "";
+    if (text && !imageHint && !images.length) return;
+    const suspectedPhoto = images.length > 0 || imageHint || !types.length;
+    if (suspectedPhoto) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const paneId = state.activePaneId;
+    SheepItComposer.clipboardImages().then((fromClipboard) => {
+      if (state.activePaneId !== paneId || state.chatVisible || state.activeChatId) return;
+      const usable = fromClipboard.length ? fromClipboard : images;
+      if (usable.length) attachFiles(usable, paneId);
+      else if (suspectedPhoto) showAttachError("Safari did not provide the pasted photo. Try the image button.");
+    }).catch(() => {
+      if (state.activePaneId !== paneId) return;
+      if (images.length) attachFiles(images, paneId);
+      else if (suspectedPhoto)
+        showAttachError("Could not read the pasted photo. Try the image button.");
+    });
+  }, true);
 
   /* Dragging a file onto the composer, which is how the same thing happens on
      a laptop. `dragover` has to be refused for a drop to be offered at all -
@@ -5567,7 +5622,91 @@
 
   function sendConsole(bytes) {
     const ws = consoleState.ws;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(bytes);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(bytes);
+    return true;
+  }
+
+  async function sendConsoleWhenConnected(paneId, bytes) {
+    const deadline = Date.now() + 8000;
+    while (!elConsoleView.classList.contains("hidden")
+        && state.activePaneId === paneId
+        && (consoleState.paneId !== paneId || !consoleState.ws)
+        && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const ws = consoleState.ws;
+    if (!ws || consoleState.paneId !== paneId) return false;
+    if (ws.readyState === WebSocket.CONNECTING) {
+      const opened = await new Promise((resolve) => {
+        let timer;
+        const done = (ok) => {
+          clearTimeout(timer);
+          ws.removeEventListener("open", onOpen);
+          ws.removeEventListener("close", onClose);
+          resolve(ok);
+        };
+        const onOpen = () => done(true);
+        const onClose = () => done(false);
+        ws.addEventListener("open", onOpen, { once: true });
+        ws.addEventListener("close", onClose, { once: true });
+        timer = setTimeout(() => done(false), 8000);
+        if (ws.readyState === WebSocket.OPEN) done(true);
+        else if (ws.readyState !== WebSocket.CONNECTING) done(false);
+      });
+      if (!opened) return false;
+    }
+    if (elConsoleView.classList.contains("hidden")
+        || consoleState.paneId !== paneId
+        || consoleState.ws !== ws
+        || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(bytes);
+    return true;
+  }
+
+  async function attachConsoleFiles(files) {
+    const paneId = state.activePaneId;
+    if (!files?.length || !paneId) return;
+    setConsoleSub("uploading photo…");
+    try {
+      const paths = await Promise.all([...files].map(async (file) => {
+        const blob = await SheepItComposer.shrinkImage(file);
+        if (!blob.type.startsWith("image/")) throw new Error("the clipboard did not contain a readable photo");
+        const res = await fetch(`/api/agents/${encodeURIComponent(paneId)}/attach`, {
+          method: "POST",
+          headers: { "Content-Type": blob.type },
+          body: blob,
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "the gateway would not take it");
+        return data.path;
+      }));
+      if (!await sendConsoleWhenConnected(
+        paneId,
+        encoder.encode(paths.map((path) => `@${path}`).join(" ") + " "),
+      )) {
+        if (elConsoleView.classList.contains("hidden") || consoleState.paneId !== paneId) return;
+        setConsoleSub(`photo saved as @${paths.join(" @")}; terminal disconnected`);
+        return;
+      }
+      setConsoleSub(`ready: ${paths.map((path) => `@${path}`).join(" ")}`);
+    } catch (err) {
+      setConsoleSub(`could not attach photo: ${err.message}`);
+    }
+  }
+
+  async function pasteConsolePhotoFromClipboard() {
+    try {
+      // This is called directly from a tap so iOS can grant clipboard access.
+      const images = await SheepItComposer.clipboardImages();
+      if (!images.length) {
+        setConsoleSub("no photo in clipboard; use the attachment button to choose one");
+        return;
+      }
+      await attachConsoleFiles(images);
+    } catch (err) {
+      setConsoleSub(`could not read clipboard: ${err.message || "permission denied"}`);
+    }
   }
 
   // #console-keys: the fixed row's buttons, looked up in KEY_VOCAB rather
@@ -5785,6 +5924,7 @@
 
   async function openConsole() {
     if (!state.activePaneId) return;
+    const paneId = state.activePaneId;
     triggerHaptic();
     elConsoleView.classList.remove("hidden");
     elAppHeader.classList.add("console-open");
@@ -5796,7 +5936,7 @@
       return;
     }
     // Closed again while it was loading: do not attach behind their back.
-    if (elConsoleView.classList.contains("hidden")) return;
+    if (elConsoleView.classList.contains("hidden") || state.activePaneId !== paneId) return;
     const term = ensureTerminal();
     if (!term) {
       setConsoleSub("terminal unavailable");
@@ -5804,12 +5944,12 @@
     }
     // A different pane is a different terminal: drop what is on screen rather
     // than drawing the new pane's frames over the old pane's.
-    if (consoleState.paneId !== state.activePaneId) {
+    if (consoleState.paneId !== paneId) {
       term.reset();
       // Including anything held for a selection: it is the old pane's screen.
       consoleState.held = [];
       consoleState.heldBytes = 0;
-      consoleState.paneId = state.activePaneId;
+      consoleState.paneId = paneId;
     }
     // Focusing xterm opens the software keyboard on iOS. Keep the terminal
     // ready for typing on desktop, but let mobile users choose when to bring
@@ -5920,6 +6060,25 @@
   elConsoleKeys.addEventListener("click", (e) => {
     const btn = e.target.closest(".key-btn");
     if (btn && btn.dataset.key) sendConsoleKey(btn.dataset.key);
+  });
+  const elConsoleAttach = document.getElementById("console-attach");
+  const elConsoleAttachInput = document.getElementById("console-attach-input");
+  const elConsolePastePhoto = document.getElementById("console-paste-photo");
+  elConsoleAttach.addEventListener("click", () => elConsoleAttachInput.click());
+  elConsolePastePhoto.addEventListener("click", pasteConsolePhotoFromClipboard);
+  elConsoleAttachInput.addEventListener("change", () => {
+    const files = [...(elConsoleAttachInput.files || [])];
+    elConsoleAttachInput.value = "";
+    attachConsoleFiles(files);
+  });
+  elConsoleTerm.addEventListener("dragover", (e) => {
+    if ([...(e.dataTransfer?.types || [])].includes("Files")) e.preventDefault();
+  });
+  elConsoleTerm.addEventListener("drop", (e) => {
+    const files = imagesIn(e.dataTransfer);
+    if (!files.length) return;
+    e.preventDefault();
+    attachConsoleFiles(files);
   });
   window.addEventListener("resize", fitConsole);
   window.addEventListener("resize", keepConsoleInputVisible);

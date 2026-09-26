@@ -1362,6 +1362,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .prompt-form > .prompt-input { order: 5; }
 .prompt-actions > #btn-recall { order: 1; }
 .prompt-actions > #btn-attach { order: 2; }
+.prompt-actions > #btn-paste-image { order: 2; }
 .prompt-actions > #chat-btn-slash { order: 3; }
 .prompt-actions > #btn-keys { order: 3; }
 .prompt-actions > #composer-menu { order: 4; }
@@ -2318,7 +2319,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .console-keys {
   flex-shrink: 0;
   display: flex;
-  gap: 6px;
+  gap: 4px;
   /* The visual viewport already ends at the top of the software keyboard.
      Adding the home-indicator inset here too leaves an oversized gap and
      makes the row appear to jump upward when the keyboard opens. */
@@ -2329,7 +2330,27 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   background: var(--bg-surface);
 }
 
-.console-keys .key-btn { flex: 1 0 auto; min-width: 46px; }
+.console-keys .key-btn {
+  flex: 1 1 30px;
+  min-width: 30px;
+  height: 44px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.console-keys .console-attach-btn { flex: 0 0 40px; }
+
+.console-keys .key-btn svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
 /* The terminal key shortcuts are touch controls. */
 @media (min-width: 900px) {
