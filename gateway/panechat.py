@@ -5,8 +5,8 @@ readable as messages is that Claude Code writes every session down as it goes -
 `~/.claude/projects/<dir>/<session>.jsonl`, whose lines are the same user,
 assistant and tool-result messages the headless chat streams - and Herdr says
 which session a pane is in (`agent_session`). So the log is tailed into the
-event list chat.js already folds, and what goes back is Herdr's: a message is
-`agent.prompt`, Stop is Esc.
+event list the main app renderer folds, and what goes back is Herdr's: a
+message is `agent.prompt`, Stop is Esc.
 
 A permission prompt is not in the log; the TUI draws it. What is in the log
 is the tool call, written before Claude Code asks about it, so a tool with no

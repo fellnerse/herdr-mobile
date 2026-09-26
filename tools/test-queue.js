@@ -15,8 +15,8 @@ const fs = require("fs");
 const path = require("path");
 
 const SRC = path.join(__dirname, "..", "web", "app.js");
-const FROM = "  /* What is waiting to go to this chat";
-const TO = "  elChatQueue.addEventListener";
+const FROM = "  function queueSignature() {";
+const TO = "  const chatQueueStrip = SheepItComposer.createQueueStrip";
 
 function loadQueue(state) {
   const src = fs.readFileSync(SRC, "utf8");
@@ -31,6 +31,7 @@ function loadQueue(state) {
       add(name) { if (name === "hidden") el.hidden = true; },
       remove(name) { if (name === "hidden") el.hidden = false; },
       contains(name) { return name === "hidden" && el.hidden; },
+      toggle(name, on) { if (name === "hidden") el.hidden = on; },
     },
   };
   const composer = { value: "", focused: false, focus() { this.focused = true; } };
@@ -43,12 +44,19 @@ function loadQueue(state) {
     const autoResizeTextarea = () => {};
     const saveDraft = () => {};
     const fetchHistory = () => {};
+    const setTimeout = () => {};
     const elBtnSend = {};
     const fetch = async (url, opts) => {
       sent.push(url);
       return { json: async () => ({ ok: true }) };
     };
     const fetchQueue = async () => {};
+    const chatQueueStrip = {
+      render(rows, note = "") {
+        elChatQueue.classList.toggle("hidden", !(rows || []).length && !note);
+        elChatQueue.innerHTML = note + (rows || []).map(chatQueueRow).join("");
+      },
+    };
     const alert = (message) => { sent.push("alert: " + message); };
     const resetLabel = (iso) => (iso ? "19.9." : "");
   `;
@@ -140,7 +148,7 @@ function loadSettle(state) {
   check("another chat's is not",
         /somebody else/.test(q.el.innerHTML), false);
   check("with all three things you can do to it",
-        ["edit", "send", "delete"].map((a) => q.el.innerHTML.includes(`data-queue-${a}="7"`)),
+        ["edit", "send", "delete"].map((a) => q.el.innerHTML.includes(`data-composer-action="${a}" data-composer-id="7"`)),
         [true, true, true]);
   check("and what it is waiting as", />queued</.test(q.el.innerHTML), true);
   check("the strip is showing", q.el.hidden, false);

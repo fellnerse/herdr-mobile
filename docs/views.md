@@ -111,7 +111,7 @@ and only merge the views once nothing about their behaviour still differs.
   the title arrives within a turn or two. A directory with one log has no tie.
 - [x] Split the error string three ways — no Claude Code, no log found yet,
   nothing in the session — in `summary()` (`claude` and `session` are now
-  separate) and in `paneEmpty` in `chat.js`.
+  separate) and in `paneEmpty` in the app renderer.
 - [x] Covered in `tools/test-gateway.py`: the slug, the tail read with a quoted
   title, the title picking between two logs in one cwd, a retitle switching
   sessions, the refused tie, and the single-log case. Passes under 3.9.
@@ -142,8 +142,8 @@ Two things found on the way, both outside this phase:
   is `("idle", "done")`, so the queue simply holds the text until the question
   is answered and delivers it then.
 - [x] The strip came with it. A pane chat draws what the queue is holding for
-  its pane above the composer (`#queue-strip` in `chat.html`, `drawQueue` in
-  `chat.js`), with Edit, Send now and Delete — the same three the transcript
+  its pane above the composer (`#chat-queue-strip` in `index.html`, rendered
+  by `app.js`), with Edit, Send now and Delete — the same three the transcript
   offers, against the same routes. It polls only while something is outstanding,
   so an idle chat costs no requests, and a freshly sent prompt is held back for
   1.5s exactly as the transcript's is: the ordinary case delivers inside that
@@ -190,7 +190,7 @@ is its own piece of work, and it is not a view problem.
 
 - [x] Start with the shared mechanics that do not depend on a view's send
   contract: textarea sizing, image shrinking and `imagesIn`, plus one
-  attachment strip holding `{name, url}` entries. `chat.js` supplies
+  attachment strip holding `{name, url}` entries. The chat renderer supplies
   `images[]`; the plain view folds the same strip's paths into `@path` tokens
   when it queues a prompt. Image-only prompts work in both.
 - [x] Extract scoped draft persistence, recall history, queue-strip rendering
@@ -207,13 +207,15 @@ is its own piece of work, and it is not a view problem.
 - [x] Verify `tools/test-drafts.js` after the extraction; all draft tests pass.
   Completion coverage is deferred with the completion work.
 
-### Phase 4 — fold the chat renderer in, drop the transcript's guess, retire the second page
+### Phase 4 — fold the chat renderer in, drop the transcript's guess, retire the second page — **done**
 
-- [ ] Move the pane chat renderer into `app.js` beside the verbatim transcript
-  renderer, with chat's structured events used when available.
-- [ ] Unify the shared view header while folding the chat page into the main
-  shell: pane/project-tab title, Console context, keyboard fit/close controls,
-  and Files button behavior should be consistent across views.
+- [x] Move the pane and headless chat renderer into `app.js` beside the
+  verbatim transcript renderer. Both chat kinds use structured events in the
+  main app document on phones and wide screens.
+- [x] Unify the shared view header: it shows the project and tab title with a
+  segmented Chat/Normal/Console switcher. Console fits on attach and when its
+  viewport resizes; the touch shortcut row remains mobile-only. Changed Files
+  stays in the shared header.
 - [x] Removed transcript block classification, turn splitting, composer
   framing, status-bar hiding, and the `RE_RULE_GLYPH` machinery. The pane
   transcript is now always verbatim; status lines remain visible. The
@@ -221,12 +223,11 @@ is its own piece of work, and it is not a view problem.
   ANSI colors, live-input mirroring, mode detection and keypad sizing remain.
 - [x] Replaced the per-agent glyph fixtures in `tools/test-transcript.js` with
   focused checks for verbatim rows, ANSI colors, live input, mode and keypad.
-- [ ] Delete `chat.html`, `chat.js`, `chat.css`, `renderPaneChat`, the
-  `postMessage` protocol, the second `visualViewport` handler, the second
-  escaper and the second scroll-to-bottom; drop `frame-ancestors 'self'` from
-  the CSP if nothing else wants it.
-- [ ] Re-anchor the sliced suites and add `tools/test-chat.js` with real event
-  fixtures — what `test-transcript.js` used to be for pane glyphs.
+- [x] Delete `chat.html`, `chat.js` and `chat.css`; remove the iframe and
+  `postMessage` protocol. The app shares viewport sizing, escaping and
+  scroll-to-bottom helpers, and the CSP no longer permits framing.
+- [x] Re-anchor the flock and queue suites and add `tools/test-chat.js` with
+  prompt, assistant, tool, permission, result and blocked-pane event fixtures.
 
 ### Phase 5 — the view model
 
@@ -235,11 +236,15 @@ is its own piece of work, and it is not a view problem.
   verbatim; it is offered for every pane, and chat only where a log resolves.
 - [ ] Source follows renderer: the log where there is one, the screen
   otherwise.
-- [ ] Update `docs/design.md` and the architecture notes in `CLAUDE.md`, which
-  describe the iframe and the two-page split as current design.
+- [ ] Update `docs/design.md` to describe the in-page chat and view model.
+- [x] Updated the `CLAUDE.md` architecture note to remove the iframe and
+  two-page design.
 
 ### Phase 6 — once that is stable
 
+- [ ] Ensure console scrolling works after the view rework. Wheel and touch
+  scrolling currently do not move the console scrollback; verify both and fix
+  the broken path.
 - [ ] A composer over the console, in its "bytes" send mode. This is what
   actually delivers `@`-completion in the console, and it is a feature rather
   than a merge.

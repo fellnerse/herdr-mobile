@@ -11,6 +11,7 @@
     activePaneId: null,
     // Which headless chat the wide layout's right column is showing, if any.
     activeChatId: null,
+    chatVisible: false,
     historyText: "",
     linesCount: 400,
     // What a desktop's right column shows of a Claude Code pane.
@@ -59,7 +60,6 @@
   };
 
   // DOM Elements
-  const elConn = document.getElementById("conn-indicator");
   const elBtnRefresh = document.getElementById("btn-refresh");
   const elAgentSelect = document.getElementById("agent-select");
   const elAgentSelectDot = document.getElementById("agent-select-dot");
@@ -114,17 +114,30 @@
   const elHeartbeatsList = document.getElementById("heartbeats-list");
   const elPickerQuota = document.getElementById("picker-quota");
   const elChatQueue = document.getElementById("chat-queue");
+  const elViewSwitcher = document.getElementById("view-switcher");
   const elBtnConsole = document.getElementById("btn-console");
+  const elBtnViewNormal = document.getElementById("btn-view-normal");
   const elConsoleView = document.getElementById("console-view");
+  const elAppHeader = document.querySelector(".app-header");
+  const syncAppHeaderHeight = () => {
+    document.documentElement.style.setProperty(
+      "--app-header-height",
+      `${elAppHeader.getBoundingClientRect().height}px`,
+    );
+  };
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncAppHeaderHeight).observe(elAppHeader);
+  } else {
+    window.addEventListener("resize", syncAppHeaderHeight);
+  }
+  syncAppHeaderHeight();
   const elConsoleTerm = document.getElementById("console-term");
   const elConsoleSub = document.getElementById("console-sub");
-  const elBtnCloseConsole = document.getElementById("btn-close-console");
-  const elBtnConsoleKeyboard = document.getElementById("btn-console-keyboard");
-  const elBtnConsoleFit = document.getElementById("btn-console-fit");
   const elConsoleKeys = document.getElementById("console-keys");
   const elBtnChanges = document.getElementById("btn-changes");
   const elBtnPaneChat = document.getElementById("btn-pane-chat");
-  const elPaneChatFrame = document.getElementById("pane-chat-frame");
+  const elChatView = document.getElementById("chat-chat-view");
+  let chatTarget = "";
   const elChangesView = document.getElementById("changes-view");
   const elChangesList = document.getElementById("changes-list");
   const elChangesSub = document.getElementById("changes-sub");
@@ -220,12 +233,6 @@
       if (type === "warning") navigator.vibrate([30, 50, 30]);
       else navigator.vibrate(12);
     }
-  }
-
-  // Set Connection Status
-  function setConnected(connected) {
-    elConn.classList.toggle("connected", connected);
-    elConn.classList.toggle("disconnected", !connected);
   }
 
   /* ---------------------------------------------------------------------
@@ -490,8 +497,6 @@
       const res = await fetch("/api/agents");
       if (!res.ok) throw new Error("Failed to fetch agents");
       const data = await res.json();
-      setConnected(true);
-
       state.agents = data.agents || [];
       state.chats = data.chats || [];
       // Deleted from another phone, or reaped: the column cannot keep showing it.
@@ -511,13 +516,8 @@
       ) {
         // The first agent on screen, or failing that the first row there is:
         // a project whose tabs are all plain shells is still worth opening.
-        // Back from the chat view, which names the pane it was showing.
-        const back = location.hash.startsWith("#pane:") ? decodeURIComponent(location.hash.slice(6)) : "";
-        if (back) history.replaceState(null, "", location.pathname);
-        const returned = back && state.agents.find((a) => a.pane_id === back);
-        const first = returned || state.agents.find((a) => a.has_agent) || state.agents[0];
-        if (returned) selectAgent(returned.pane_id, true);
-        else if (first) {
+        const first = state.agents.find((a) => a.has_agent) || state.agents[0];
+        if (first) {
           /* Chosen, not opened, while the flock is on screen: the chat behind
              it is loaded and ready, but nothing drags you into it. A workspace
              closed from a chat still lands you in the next one. */
@@ -534,7 +534,6 @@
       }
     } catch (err) {
       console.warn("fetchAgents error:", err);
-      setConnected(false);
     }
   }
 
@@ -565,25 +564,25 @@
     });
   }
 
-  /* The worktree, and nothing else: which of its tabs you are in is the strip
-     directly underneath, and the header has no width to spare saying it
-     twice. */
+  /* Keep the project selector on the worktree name; the tab strip and view
+     switcher already say which tab and surface are open. */
   function agentBarName(row) {
     return row.workspace_label || row.name || row.pane_id;
   }
 
   // Header button showing the current project
   function renderAgentBar() {
-    /* A headless chat the wide layout is showing has the column to itself. It
-       is not a pane, so there is no transcript behind it to toggle back to and
-       no strip of tabs to switch between - the frame is the whole of it. */
+    /* A headless chat has no pane, transcript, Console or Changed Files view;
+       its conversation occupies the app's main content area. */
     const chat = state.activeChatId
       && state.chats.find((c) => c.id === state.activeChatId);
     if (chat) {
       elAgentSelectName.textContent = chat.title || "New chat";
       elAgentSelectDot.className = `agent-dot ${chatStatus(chat)}`;
-      elBtnPaneChat.classList.add("hidden");
-      renderPaneChat(encodeURIComponent(chat.id));
+      elViewSwitcher.classList.add("hidden");
+      elBtnChanges.classList.add("hidden");
+      document.getElementById("chat-btn-delete").classList.remove("hidden");
+      renderChatSurface(encodeURIComponent(chat.id));
       /* The strip is compared against what it last drew before it is replaced,
          so hiding it here has to forget that - otherwise coming back to a pane
          whose tabs have not changed leaves the strip hidden. */
@@ -594,17 +593,25 @@
     }
 
     const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
-    elAgentSelectName.textContent = agent
-      ? agentBarName(agent)
-      : state.agents.length
-      ? "Select project"
-      : "No agents";
+    elViewSwitcher.classList.toggle("hidden", !agent);
+    elBtnChanges.classList.remove("hidden");
+    document.getElementById("chat-btn-delete").classList.add("hidden");
+    const chattable = !!(agent && agent.agent === "claude");
+    const chatShowing = chattable && (state.chatVisible || (wide.matches && state.paneView === "chat"));
+    if (agent) {
+      const name = agentBarName(agent);
+      elAgentSelectName.textContent = chatShowing ? `${name} · ${tabChipLabel(agent)}` : name;
+    } else {
+      elAgentSelectName.textContent = state.agents.length ? "Select project" : "No agents";
+    }
     elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
     // Only Claude Code writes the session log the chat view reads.
-    const chattable = !!(agent && agent.agent === "claude");
     elBtnPaneChat.classList.toggle("hidden", !chattable);
-    if (chattable) elBtnPaneChat.href = "/chat.html#pane:" + agent.pane_id;
-    renderPaneChat(chattable && "pane:" + agent.pane_id);
+    const consoleShowing = !elConsoleView.classList.contains("hidden");
+    elBtnPaneChat.setAttribute("aria-pressed", String(!consoleShowing && chatShowing));
+    elBtnViewNormal.setAttribute("aria-pressed", String(!consoleShowing && !chatShowing));
+    elBtnConsole.setAttribute("aria-pressed", String(consoleShowing));
+    renderChatSurface(chattable ? "pane:" + agent.pane_id : "");
 
     renderTabStrip();
     if (pickerVisible()) renderAgentList();
@@ -2224,6 +2231,7 @@
     // A pane takes the column back off whatever headless chat had it.
     const hadChat = state.activeChatId;
     state.activeChatId = null;
+    state.chatVisible = false;
     if (state.activePaneId === paneId) {
       if (hadChat) renderAgentBar();
       if (open) closePicker();
@@ -2402,8 +2410,6 @@
       const res = await fetch(url);
       if (!res.ok) throw new Error("Failed to fetch history");
       const data = await res.json();
-      setConnected(true);
-
       const newText = data.text || "";
       if (forceRender || newText !== state.historyText) {
         // Something in it is selected: hold the redraw. See releaseHeld.
@@ -2421,7 +2427,6 @@
       }
     } catch (err) {
       console.warn("fetchHistory error:", err);
-      setConnected(false);
     }
   }
 
@@ -2433,11 +2438,16 @@
         behavior: "smooth",
       });
     } else {
-      elHistoryContainer.scrollTop = elHistoryContainer.scrollHeight;
+      scrollContainerToBottom(elHistoryContainer);
     }
     state.isUserScrolledUp = false;
     updateScrollButton();
   }
+
+  function scrollContainerToBottom(container) {
+    container.scrollTop = container.scrollHeight;
+  }
+  window.SheepItScrollToBottom = scrollContainerToBottom;
 
   // Check scroll position
   function onHistoryScroll() {
@@ -3456,6 +3466,7 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
+  window.SheepItEscapeHtml = escapeHtml;
 
   /* Preferences that should survive a reload. The keys were "herdr.*" before
      the app was called Sheep It, and an install that has been on a home screen
@@ -4013,7 +4024,13 @@
   }
 
   // Event Listeners
-  elAgentSelect.addEventListener("click", openPicker);
+  elAgentSelect.addEventListener("click", () => {
+    if (!wide.matches && state.chatVisible) {
+      document.dispatchEvent(new CustomEvent("sheepit:chat-dismiss"));
+      return;
+    }
+    openPicker();
+  });
   elBtnClosePicker.addEventListener("click", closePicker);
 
   /* The strip: a tap switches tabs, and the two things a chip can do to itself
@@ -4119,15 +4136,13 @@
   function openChat(chatId) {
     if (!chatId) return;
     triggerHaptic();
-    if (!wide.matches) {
-      rememberDraft(state.activePaneId);
-      location.href = "/chat.html#" + encodeURIComponent(chatId);
-      return;
-    }
+    rememberDraft(state.activePaneId);
     state.activeChatId = chatId;
+    state.chatVisible = true;
     // Neither the console nor the diff has a pane to read here.
     closePaneViews();
     renderAgentBar();
+    if (!wide.matches) closePicker();
   }
 
   /* The only thing the drawer on a chat row offers. It used to be two taps on
@@ -4159,55 +4174,81 @@
     }
   }
 
-  /* A Claude Code pane is shown as its chat, and the transcript is the button
-     in the chat's header. On a phone that is chat.html; past 900px, where the
-     flock is a column beside it, it is the same page in a frame over the
-     transcript, and which of the two the right column shows is remembered. */
+  /* A pane's chat and transcript share this page and its header. On a phone
+     chat covers the transcript; on a wide screen the pane view is remembered
+     alongside the flock. */
   function setPaneView(view) {
     state.paneView = view;
+    state.chatVisible = view === "chat";
     savePref("sheepit.view", view);
     renderAgentBar();
   }
 
-  /* `target` is what goes after the hash: `pane:<id>` for a Claude Code pane
-     read as a chat, or a headless chat's own id. A chat with no pane behind it
-     is not something the transcript toggle can turn off, so it ignores it. */
-  function renderPaneChat(target) {
-    const show = wide.matches && !!target
-      && (state.paneView === "chat" || !!state.activeChatId);
-    const src = show ? "/chat.html#" + target : "";
-    if (elPaneChatFrame.dataset.src !== src) {
-      elPaneChatFrame.dataset.src = src;
-      // about:blank rather than no src: a hidden chat must stop its poll.
-      elPaneChatFrame.src = src || "about:blank";
+  /* The pane chat lives in this document. The same event stream drives the
+     wide right column and the phone's full screen. */
+  function renderChatSurface(target) {
+    const show = !!target && (state.activeChatId
+      || (wide.matches ? state.paneView === "chat" : state.chatVisible));
+    const targetId = show ? (state.activeChatId || target) : "";
+    elChatView.classList.toggle("hidden", !show);
+    elPromptForm.parentElement.classList.toggle("chat-covered", show);
+    if (targetId !== chatTarget) {
+      chatTarget = targetId;
+      document.dispatchEvent(new CustomEvent("sheepit:chat-target", { detail: targetId }));
     }
-    elPaneChatFrame.classList.toggle("hidden", !show);
   }
 
-  elBtnPaneChat.addEventListener("click", (e) => {
-    if (!wide.matches) return; // a phone follows the link
-    e.preventDefault();
-    setPaneView("chat");
+  elViewSwitcher.addEventListener("click", (event) => {
+    const view = event.target.closest("[data-view]")?.dataset.view;
+    if (!view) return;
+    if (view === "console") {
+      if (!elConsoleView.classList.contains("hidden")) return;
+      // On a phone the console has the whole screen; on desktop the flock
+      // remains active alongside it.
+      if (!wide.matches) stopPolling();
+      openConsole();
+      return;
+    }
+    if (!elConsoleView.classList.contains("hidden")) closeConsole();
+    setPaneView(view === "chat" ? "chat" : "transcript");
   });
-  window.addEventListener("message", (e) => {
-    if (e.origin !== location.origin || !e.data) return;
-    if (e.data.sheepit === "transcript") setPaneView("transcript");
-    /* The chat in the frame is done with - deleted, or backed out of. Only a
-       headless one can say this; a pane's chat has a transcript to fall back
-       to and says that instead. */
-    if (e.data.sheepit === "closed" && state.activeChatId) {
+  document.addEventListener("sheepit:chat-open", (event) => {
+    const chat = event.detail;
+    if (chat && chat.kind === "pane") {
       state.activeChatId = null;
-      fetchAgents();
+      state.activePaneId = chat.pane_id || state.activePaneId;
+      closePicker();
+      setPaneView("chat");
+    } else if (chat) {
+      state.activeChatId = chat.id;
+      state.chatVisible = true;
+      closePicker();
       renderAgentBar();
+    }
+  });
+  document.addEventListener("sheepit:chat-close", () => {
+    const headless = !!state.activeChatId;
+    state.activeChatId = null;
+    state.chatVisible = false;
+    if (!headless) state.paneView = "transcript";
+    elChatView.classList.add("hidden");
+    elPromptForm.parentElement.classList.remove("chat-covered");
+    chatTarget = "";
+    renderAgentBar();
+    if (headless) {
+      fetchAgents();
+      if (!wide.matches) openPicker();
     }
   });
   wide.addEventListener("change", () => renderAgentBar());
 
   function openAsChat(paneId) {
     const agent = state.agents.find((a) => a.pane_id === paneId);
-    if (wide.matches || !agent || agent.agent !== "claude") return false;
+    if (!agent || agent.agent !== "claude") return false;
     rememberDraft(state.activePaneId);
-    location.href = "/chat.html#pane:" + paneId;
+    selectAgent(paneId, false);
+    if (!wide.matches) closePicker();
+    setPaneView("chat");
     return true;
   }
 
@@ -5300,6 +5341,7 @@
   const consoleState = {
     term: null, ws: null, paneId: null, scrollAcc: 0, cols: 80, rows: 24,
     loading: null, cellHeight: CELL_HEIGHT, held: [], heldBytes: 0,
+    fitPending: false, fitTarget: null, fitRetryCount: 0,
   };
   const encoder = new TextEncoder();
 
@@ -5448,7 +5490,6 @@
     const size = Math.max(MIN_FONT, Math.min(MAX_FONT, Math.min(byWidth, byHeight)));
     term.options.fontSize = Math.round(size * 10) / 10;
     if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
-    setConsoleSub(`${cols}×${rows} · ${term.options.fontSize}px`);
     /* The numbers above are an estimate of a cell from the font size, and an
        estimate is not what the terminal then draws: xterm rounds every row's
        height up, so a tall pane overflows by those roundings added together -
@@ -5474,7 +5515,6 @@
     const rounded = Math.floor(size * 10) / 10;
     if (rounded >= term.options.fontSize) return;
     term.options.fontSize = rounded;
-    setConsoleSub(`${cols}×${rows} · ${rounded}px`);
     requestAnimationFrame(() => correctConsoleOverflow(cols, rows, pass + 1));
   }
 
@@ -5497,9 +5537,49 @@
   }
 
   // After a rotation, or once the keyboard has given the screen back.
+  let consoleFitTimer = null;
+  let consoleFitRetryTimer = null;
+  function clearConsoleFitRetry() {
+    if (consoleFitRetryTimer) clearTimeout(consoleFitRetryTimer);
+    consoleFitRetryTimer = null;
+  }
+
+  function retryConsoleFit() {
+    clearConsoleFitRetry();
+    consoleFitRetryTimer = setTimeout(() => {
+      consoleFitRetryTimer = null;
+      const target = consoleState.fitTarget;
+      if (!target || elConsoleView.classList.contains("hidden") || keyboardOpen()) return;
+      if (consoleState.cols === target.cols && consoleState.rows === target.rows) {
+        consoleState.fitTarget = null;
+        return;
+      }
+      if (!consoleState.ws || consoleState.ws.readyState !== WebSocket.OPEN) return;
+      if (consoleState.fitRetryCount >= 3) {
+        consoleState.fitTarget = null;
+        return;
+      }
+      consoleState.fitRetryCount++;
+      sendConsoleControl({ type: "resize", ...target });
+      retryConsoleFit();
+    }, 350);
+  }
+
   function requestFit() {
+    if (elConsoleView.classList.contains("hidden") || keyboardOpen()) return false;
     const size = phoneSize();
-    if (size) sendConsoleControl({ type: "resize", ...size });
+    const ws = consoleState.ws;
+    if (!size || !ws || ws.readyState !== WebSocket.OPEN) return false;
+    clearConsoleFitRetry();
+    if (consoleState.cols === size.cols && consoleState.rows === size.rows) {
+      consoleState.fitTarget = null;
+      return true;
+    }
+    consoleState.fitTarget = size;
+    consoleState.fitRetryCount = 0;
+    sendConsoleControl({ type: "resize", ...size });
+    retryConsoleFit();
+    return true;
   }
 
   /* The keyboard takes half the screen, and re-fitting a 43-row pane into what
@@ -5518,20 +5598,30 @@
   function fitConsole() {
     if (elConsoleView.classList.contains("hidden")) return;
     if (keyboardOpen()) {
+      if (consoleFitTimer) clearTimeout(consoleFitTimer);
+      consoleFitTimer = null;
       pinConsoleBottom();
       return;
     }
-    showPaneSize(consoleState.cols, consoleState.rows);
+    if (consoleFitTimer) clearTimeout(consoleFitTimer);
+    consoleFitTimer = setTimeout(() => {
+      consoleFitTimer = null;
+      if (requestFit()) consoleState.fitPending = false;
+    }, 180);
   }
 
   function setConsoleSub(text) {
     elConsoleSub.textContent = text;
+    elConsoleSub.classList.remove("hidden");
   }
 
   async function openConsole() {
     if (!state.activePaneId) return;
     triggerHaptic();
     elConsoleView.classList.remove("hidden");
+    elAppHeader.classList.add("console-open");
+    elConsoleSub.classList.remove("hidden");
+    renderAgentBar();
     setConsoleSub("loading…");
     if (!(await loadTerminalLibrary())) {
       setConsoleSub("could not load the terminal");
@@ -5553,7 +5643,6 @@
       consoleState.heldBytes = 0;
       consoleState.paneId = state.activePaneId;
     }
-    fitConsole();
     term.focus();
     connectConsole();
   }
@@ -5567,6 +5656,7 @@
     const size = phoneSize() || { cols: term.cols, rows: term.rows };
     const url = `${scheme}://${location.host}/ws/terminal/${encodeURIComponent(paneId)}` +
       `?cols=${size.cols}&rows=${size.rows}`;
+    consoleState.fitPending = true;
     setConsoleSub("connecting…");
     let ws;
     try {
@@ -5577,14 +5667,29 @@
     }
     ws.binaryType = "arraybuffer";
     consoleState.ws = ws;
-    ws.onopen = () => setConsoleSub("attached");
+    ws.onopen = () => {
+      elConsoleSub.classList.add("hidden");
+      if (consoleFitTimer) clearTimeout(consoleFitTimer);
+      consoleFitTimer = null;
+    };
     ws.onmessage = (event) => {
       if (typeof event.data === "string") {
         // The only text the gateway sends is a failure it could not report as
         // a status code, the socket having already been upgraded.
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === "size") showPaneSize(msg.cols, msg.rows);
+          if (msg.type === "size") {
+            showPaneSize(msg.cols, msg.rows);
+            if (consoleState.fitTarget
+              && msg.cols === consoleState.fitTarget.cols
+              && msg.rows === consoleState.fitTarget.rows) {
+              consoleState.fitTarget = null;
+              clearConsoleFitRetry();
+            }
+            // The first size report confirms the pane has started drawing;
+            // the socket's open event alone is too early to resize it.
+            if (consoleState.fitPending && requestFit()) consoleState.fitPending = false;
+          }
           else if (msg.type === "error") setConsoleSub(msg.message || "error");
         } catch (err) {
           /* not ours */
@@ -5622,32 +5727,31 @@
 
   function closeConsole() {
     elConsoleView.classList.add("hidden");
+    elAppHeader.classList.remove("console-open");
+    elConsoleSub.classList.add("hidden");
+    consoleState.fitPending = false;
+    consoleState.fitTarget = null;
+    clearConsoleFitRetry();
+    if (consoleFitTimer) clearTimeout(consoleFitTimer);
+    consoleFitTimer = null;
     closeConsoleSocket();
+    renderAgentBar();
     // The transcript was left out of the loop while the console was up, and on
     // a phone the loop was stopped outright; it is its turn again either way.
     startPolling();
     loop();
   }
 
-  elBtnConsole.addEventListener("click", () => {
-    // On a phone the console has the whole screen and nothing behind it is
-    // worth keeping up to date. Past 900px the flock is still the left column,
-    // so the loop keeps running and only leaves the transcript alone.
-    if (!wide.matches) stopPolling();
-    openConsole();
-  });
-  elBtnCloseConsole.addEventListener("click", closeConsole);
-  elBtnConsoleKeyboard.addEventListener("click", () => {
-    if (consoleState.term) consoleState.term.focus();
-  });
   elConsoleKeys.addEventListener("click", (e) => {
     const btn = e.target.closest(".key-btn");
     if (btn && btn.dataset.key) sendConsoleKey(btn.dataset.key);
   });
-  elBtnConsoleFit.addEventListener("click", requestFit);
   window.addEventListener("resize", fitConsole);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", fitConsole);
+  }
+  if (window.ResizeObserver) {
+    new ResizeObserver(fitConsole).observe(elConsoleTerm);
   }
 
   /* ----------------------------------------------------------------------
@@ -5684,6 +5788,7 @@
 
   async function openChanges() {
     if (!state.activePaneId) return;
+    if (state.chatVisible && !state.activeChatId) setPaneView("transcript");
     triggerHaptic();
     elChangesView.classList.remove("hidden");
     elChangesList.innerHTML = '<div class="history-empty">Reading the working tree…</div>';
@@ -6509,4 +6614,650 @@
   autoResizeTextarea();
   loop();
   startPolling();
+})();
+
+
+/* Structured pane and headless chat renderer, hosted in the main app document. */
+/* Chat: talk to Claude Code as messages rather than as a terminal.
+ *
+ * The gateway (gateway/chat.py) keeps one headless `claude` per chat and hands
+ * back its stream as a list of events; this page long-polls that list by index
+ * and folds it into a conversation. The fold is redone from the top on every
+ * batch - chats are short - but only the messages whose markup changed are
+ * put back into the page, so a streaming answer does not redraw the image
+ * above it or fold up a tool card somebody opened.
+ */
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById("chat-" + id);
+  const elChat = $("chat-view");
+  const elMessages = $("messages"), elInput = $("input");
+  const elSend = $("btn-send"), elStop = $("btn-stop");
+  const elStrip = $("attach-strip"), elAttachInput = $("attach-input");
+
+  let current = null;          // the open chat's summary
+  let events = [];
+  let epoch = "";
+  let poll = null;             // AbortController of the running long poll
+  let drawn = [];              // the markup of each message now on the page
+  const openTools = new Set(); // tool cards somebody unfolded
+  const picks = new Map();     // request_id -> {question: Set(labels)}
+  let commands = null;         // [{name, description, hint}] for the open chat's project
+  let queued = [];             // what the queue is still holding for this pane
+  let queueTimer = null;
+  const settling = new Map();  // queue id -> when it stops being "just sent"
+
+  async function api(path, body) {
+    const res = await fetch(path, body === undefined ? { cache: "no-store" } : {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+    return data;
+  }
+
+  const esc = window.SheepItEscapeHtml;
+  const shortDir = (p) => (p || "").split("/").slice(-2).join("/");
+  const imageUrl = (name) => `/api/chat/image?id=${encodeURIComponent(current.id)}&name=${encodeURIComponent(name)}`;
+
+  /* ---- A little markdown: fences, headings, bullets, tables, `code`, **bold**, links. */
+  // Code spans and links are set aside as \u0000n\u0000 while the rest is
+  // rewritten, so a URL inside a sentence in backticks stays text and one
+  // inside a link is not linked twice. Only http(s): the href comes from the agent.
+  const link = (href, text) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  function inline(s) {
+    const held = [];
+    const hold = (html) => "\u0000" + (held.push(html) - 1) + "\u0000";
+    return esc(s)
+      // ...unless the code is nothing but a URL, which is there to be opened.
+      .replace(/`([^`\n]+)`/g, (_, c) => hold(/^https?:\/\/[\w-]+(\.[\w-]+)+(:\d+)?(\/[^\s…]*)?$/.test(c) ? link(c, "<code>" + c + "</code>") : "<code>" + c + "</code>"))
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(u, t)))
+      .replace(/https?:\/\/[^\s<]+/g, (u) => {
+        const tail = u.match(/[.,;:!?)\]]*$/)[0];
+        u = u.slice(0, u.length - tail.length);
+        return hold(link(u, u)) + tail;
+      })
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\u0000(\d+)\u0000/g, (_, i) => held[i]);
+  }
+  function markdown(text) {
+    const out = [];
+    const parts = String(text).split(/^```[^\n]*\n?/m);
+    parts.forEach((part, i) => {
+      if (i % 2) { out.push("<pre><code>" + esc(part.replace(/\n$/, "")) + "</code></pre>"); return; }
+      let para = [], list = [], rows = [];
+      const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const flush = () => {
+        if (para.length) out.push("<p>" + para.map(inline).join("<br>") + "</p>");
+        if (list.length) out.push("<ul>" + list.map((l) => "<li>" + inline(l) + "</li>").join("") + "</ul>");
+        if (rows.length) {
+          // The |---| line under the head says which row the head is.
+          const body = rows.filter((r) => !/^\s*\|?[\s:|-]+\|?\s*$/.test(r));
+          const head = rows.length > 1 && /^\s*\|?[\s:|-]+\|?\s*$/.test(rows[1]) ? body.shift() : null;
+          out.push(`<div class="table"><table>` +
+            (head ? "<thead><tr>" + cells(head).map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead>" : "") +
+            "<tbody>" + body.map((r) => "<tr>" + cells(r).map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("") +
+            "</tbody></table></div>");
+        }
+        para = []; list = []; rows = [];
+      };
+      for (const line of part.split("\n")) {
+        const h = line.match(/^(#{1,3})\s+(.*)/);
+        const li = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)/);
+        if (/^\s*\|.*\|\s*$/.test(line)) { if (para.length || list.length) flush(); rows.push(line); continue; }
+        if (rows.length) flush();
+        if (!line.trim()) flush();
+        else if (h) { flush(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); }
+        else if (li) { if (para.length) flush(); list.push(li[1]); }
+        else { if (list.length) flush(); para.push(line); }
+      }
+      flush();
+    });
+    return out.join("");
+  }
+
+  /* ---- Tools: one line saying what, unfolding to the input and the result. */
+  function toolArg(name, input) {
+    input = input || {};
+    const pick = input.command || input.file_path || input.pattern || input.url ||
+      input.description || input.query || input.path;
+    if (pick) return String(pick);
+    const first = Object.values(input).find((v) => typeof v === "string");
+    return first || "";
+  }
+  function resultText(content) {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) return content.map((b) => b.text || (b.type ? `[${b.type}]` : "")).join("\n");
+    return content == null ? "" : JSON.stringify(content, null, 2);
+  }
+
+  /* ---- The conversation, folded out of the event list. */
+  function build(evts, chat) {
+    const running = !!(chat && chat.running);
+    const pending = new Set((chat && chat.pending) || []);
+    const items = [];
+    const tools = {};
+    const asks = {};
+    let live = "";
+    for (const ev of evts) {
+      switch (ev.type) {
+        case "prompt": items.push({ kind: "user", text: ev.text, images: ev.images || [] }); break;
+        case "delta": live += ev.text; break;
+        case "assistant":
+          for (const b of ev.content || []) {
+            if (b.type === "text") { items.push({ kind: "assistant", text: b.text }); live = ""; }
+            // A question is drawn as the ask below, not as a tool call.
+            else if (b.type === "tool_use" && b.name !== "AskUserQuestion") {
+              const t = { kind: "tool", id: b.id, name: b.name, input: b.input };
+              tools[b.id] = t; items.push(t);
+            }
+          }
+          break;
+        case "tool_results":
+          for (const r of ev.content || []) {
+            const t = tools[r.tool_use_id];
+            if (t) { t.result = resultText(r.content); t.error = r.is_error; }
+          }
+          break;
+        case "ask": {
+          const a = { kind: "ask", id: ev.request_id, tool: ev.tool, input: ev.input || {},
+            description: ev.description, always: (ev.suggestions || []).length > 0,
+            open: pending.has(ev.request_id) };
+          asks[ev.request_id] = a; items.push(a);
+          break;
+        }
+        case "answered": {
+          const a = asks[ev.request_id];
+          if (a) { a.answered = ev.behavior; a.answers = ev.answers; }
+          break;
+        }
+        case "result": {
+          if (ev.is_error && ev.text) items.push({ kind: "error", text: ev.text });
+          const bits = [];
+          if (ev.duration_ms) bits.push((ev.duration_ms / 1000).toFixed(1) + "s");
+          if (ev.cost) bits.push("$" + ev.cost.toFixed(3));
+          if (bits.length) items.push({ kind: "meta", text: bits.join(" · ") });
+          live = "";
+          break;
+        }
+        case "interrupted": items.push({ kind: "meta", text: "interrupted" }); live = ""; break;
+        case "exit": items.push({ kind: ev.code ? "error" : "meta", text: ev.text }); live = ""; break;
+        case "error": items.push({ kind: "error", text: ev.text }); break;
+      }
+    }
+    // A pane stopped on something the log does not show: a trust prompt, a menu.
+    if (chat && chat.kind === "pane" && chat.status === "blocked" && !pending.size) {
+      items.push({ kind: "meta", text: "waiting on something in the terminal" });
+    }
+    if (live) items.push({ kind: "assistant", text: live, live: true });
+    else if (running && !pending.size && items.length && items[items.length - 1].kind !== "tool") items.push({ kind: "typing" });
+    for (const t of Object.values(tools)) t.state = t.result === undefined ? (running ? "" : "stale") : (t.error ? "err" : "ok");
+    return items;
+  }
+
+  /* A message that starts with a command reads as one: the command is a chip. */
+  function userText(text) {
+    const m = text.match(/^\/([\w:.-]+)(\s[\s\S]*)?$/);
+    return m ? `<span class="cmd">/${esc(m[1])}</span>${esc(m[2] || "")}` : esc(text);
+  }
+
+  function askHtml(it) {
+    if (it.tool === "AskUserQuestion") {
+      const chosen = picks.get(it.id) || {};
+      const qs = it.input.questions || [];
+      const body = qs.map((q, qi) => {
+        const answer = it.answers && it.answers[q.question];
+        const opts = (q.options || []).map((o) => {
+          const on = answer ? answer.split(", ").includes(o.label) : (chosen[q.question] || new Set()).has(o.label);
+          return `<button type="button" class="opt${on ? " on" : ""}" data-ask="${esc(it.id)}" data-q="${qi}" data-label="${esc(o.label)}"${it.open ? "" : " disabled"}>` +
+            `<b>${esc(o.label)}</b>${o.description ? `<span>${esc(o.description)}</span>` : ""}</button>`;
+        }).join("");
+        return `<div class="q"><div class="q-text">${esc(q.question)}${q.multiSelect ? " <em>(pick any)</em>" : ""}</div>${opts}</div>`;
+      }).join("");
+      // One single-choice question answers itself on tap; anything more needs a send.
+      const needsSend = qs.length > 1 || qs.some((q) => q.multiSelect);
+      const foot = it.open
+        ? (needsSend ? `<div class="ask-actions"><button type="button" class="btn primary" data-act="answers" data-ask="${esc(it.id)}">Send answers</button>` +
+          `<button type="button" class="btn" data-act="deny" data-ask="${esc(it.id)}">Skip</button></div>` : "")
+        : `<div class="ask-state">${it.answered === "deny" ? "skipped" : it.answered ? "answered" : "no longer open"}</div>`;
+      return `<div class="ask">${body}${foot}</div>`;
+    }
+    const arg = toolArg(it.tool, it.input);
+    const detail = it.tool === "ExitPlanMode" ? markdown(it.input.plan || "") :
+      `<pre>${esc(it.input.command || it.input.content || JSON.stringify(it.input, null, 2))}</pre>`;
+    const foot = it.open
+      ? `<div class="ask-actions"><button type="button" class="btn primary" data-act="allow" data-ask="${esc(it.id)}">Allow</button>` +
+        (it.always ? `<button type="button" class="btn" data-act="always" data-ask="${esc(it.id)}">Always</button>` : "") +
+        `<button type="button" class="btn danger" data-act="deny" data-ask="${esc(it.id)}">Deny</button></div>`
+      : `<div class="ask-state">${{ allow: "allowed", always: "allowed for this session", deny: "denied" }[it.answered] || "no longer open"}</div>`;
+    return `<div class="ask${it.open ? " open" : ""}"><div class="ask-head">${it.tool === "ExitPlanMode" ? "Proceed with this plan?" : `Allow <b>${esc(it.tool)}</b>?`}</div>` +
+      (arg && it.tool !== "ExitPlanMode" ? `<div class="ask-arg">${esc(it.description || arg)}</div>` : "") +
+      `<details><summary>details</summary>${detail}</details>${foot}</div>`;
+  }
+
+  function itemHtml(it) {
+    switch (it.kind) {
+      case "user":
+        return `<div class="msg user">` +
+          (it.images.length ? `<div class="imgs">${it.images.map((n) => `<img src="${esc(imageUrl(n))}" alt="">`).join("")}</div>` : "") +
+          (it.text ? userText(it.text) : "") + `</div>`;
+      case "assistant": return `<div class="msg assistant">${markdown(it.text)}</div>`;
+      case "error": return `<div class="msg error">${esc(it.text)}</div>`;
+      case "meta": return `<div class="msg meta">${esc(it.text)}</div>`;
+      case "typing": return `<div class="msg"><span class="typing"><i></i><i></i><i></i></span></div>`;
+      case "ask": return `<div class="msg">${askHtml(it)}</div>`;
+      case "tool": {
+        const input = JSON.stringify(it.input || {}, null, 2);
+        return `<details class="msg tool ${it.state}" data-id="${esc(it.id)}"${openTools.has(it.id) ? " open" : ""}>` +
+          `<summary><span class="state"></span><span class="name">${esc(it.name)}</span>` +
+          `<span class="arg">${esc(toolArg(it.name, it.input))}</span></summary>` +
+          `<pre>${esc(input)}</pre>` +
+          (it.result !== undefined ? `<pre>${esc(it.result)}</pre>` : "") +
+          `</details>`;
+      }
+    }
+    return "";
+  }
+
+  /* Why a pane's chat is empty. Three different reasons read as one blank
+     screen otherwise, and only the last of them is worth waiting through. */
+  function paneEmpty(chat) {
+    if (!chat.claude) return "There is no Claude Code in this pane.";
+    if (!chat.session) return "Found no session log for this pane yet — it appears once Claude Code has named the session.";
+    return "Nothing in this session yet.";
+  }
+
+  function render() {
+    const running = !!(current && current.running);
+    const nearBottom = elMessages.scrollHeight - elMessages.scrollTop - elMessages.clientHeight < 80;
+    const html = build(events, current).map(itemHtml);
+    if (!html.length) html.push(current && current.kind === "pane"
+      ? `<div class="empty">${paneEmpty(current)}</div>`
+      : `<div class="empty">Ask Claude anything about ${esc(shortDir(current && current.cwd))}.</div>`);
+    // Put back only what changed: the rest keeps its node, its image, its scroll.
+    html.forEach((h, i) => {
+      if (drawn[i] === h) return;
+      const tpl = document.createElement("template");
+      tpl.innerHTML = h;
+      const node = tpl.content.firstElementChild;
+      const old = elMessages.children[i];
+      old ? elMessages.replaceChild(node, old) : elMessages.appendChild(node);
+    });
+    while (elMessages.children.length > html.length) elMessages.lastElementChild.remove();
+    drawn = html;
+    if (nearBottom) window.SheepItScrollToBottom(elMessages);
+    elStop.classList.toggle("hidden", !running);
+  }
+
+  elMessages.addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (d.matches && d.matches("details.tool")) d.open ? openTools.add(d.dataset.id) : openTools.delete(d.dataset.id);
+  }, true);
+
+  /* ---- Answering: permission buttons and AskUserQuestion's options. */
+  function askEvent(id) { return events.find((e) => e.type === "ask" && e.request_id === id); }
+
+  async function answer(id, behavior, answers) {
+    try {
+      const data = await api("/api/chat/answer", { id: current.id, request_id: id, behavior, answers });
+      current = data.chat;
+      render();
+    } catch (err) { alert(err.message); }
+  }
+
+  elMessages.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-ask]");
+    if (!btn || btn.disabled) return;
+    const id = btn.dataset.ask;
+    if (btn.dataset.act === "answers") {
+      const chosen = picks.get(id) || {};
+      const answers = {};
+      for (const [q, set] of Object.entries(chosen)) if (set.size) answers[q] = [...set].join(", ");
+      answer(id, "allow", answers);
+      return;
+    }
+    if (btn.dataset.act) { answer(id, btn.dataset.act); return; }
+    // An option.
+    const ev = askEvent(id);
+    const qs = (ev && ev.input.questions) || [];
+    const q = qs[+btn.dataset.q];
+    if (!q) return;
+    const chosen = picks.get(id) || {};
+    const set = chosen[q.question] || new Set();
+    if (q.multiSelect) set.has(btn.dataset.label) ? set.delete(btn.dataset.label) : set.add(btn.dataset.label);
+    else { set.clear(); set.add(btn.dataset.label); }
+    chosen[q.question] = set;
+    picks.set(id, chosen);
+    if (qs.length === 1 && !q.multiSelect) answer(id, "allow", { [q.question]: btn.dataset.label });
+    else render();
+  });
+
+  /* ---- The long poll: ask for what is past our index, wait if nothing is. */
+  async function follow(chatId) {
+    const ctrl = new AbortController();
+    poll = ctrl;
+    let since = 0;
+    while (!ctrl.signal.aborted) {
+      try {
+        const qs = `id=${encodeURIComponent(chatId)}&since=${since}&epoch=${epoch}&wait=${since ? 1 : 0}`;
+        const res = await fetch("/api/chat/events?" + qs, { cache: "no-store", signal: ctrl.signal });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error);
+        if (data.from === 0) events = [];
+        events = events.concat(data.events);
+        epoch = data.epoch;
+        since = data.next;
+        current = data.chat;
+        render();
+      } catch (e) {
+        if (ctrl.signal.aborted) return;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+
+  /* Coming back to a page iOS froze: the poll in flight may be long dead. */
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && current) { const c = current; if (poll) poll.abort(); events = []; epoch = ""; follow(c.id); }
+  });
+
+  function openChat(chat) {
+    if (poll) poll.abort();
+    current = chat; events = []; epoch = ""; drawn = []; openTools.clear(); picks.clear();
+    commands = null; hideMenu();
+    queued = []; settling.clear(); drawQueue();
+    loadCommands(chat.id);
+    elMessages.innerHTML = "";
+    attachStrip.clear();
+    const pane = chat.kind === "pane";
+    $("btn-delete").classList.toggle("hidden", pane);
+    elChat.classList.remove("hidden");
+    document.dispatchEvent(new CustomEvent("sheepit:chat-open", { detail: chat }));
+    if (location.hash !== "#" + chat.id) history.replaceState(null, "", "#" + chat.id);
+    render();
+    fetchQueue();
+    follow(chat.id);
+  }
+
+  document.addEventListener("sheepit:chat-target", (event) => {
+    const id = event.detail;
+    if (id) openById(id);
+    else backToFlock();
+  });
+
+  /* There is nothing else on this page. The chats are rows in the flock now,
+     alongside the panes - a list of them here was a second place to look,
+     which is how a chat left holding a question went unanswered for a day. */
+  function backToFlock() {
+    if (poll) poll.abort();
+    poll = null; current = null;
+    elChat.classList.add("hidden");
+    if (location.hash) history.replaceState(null, "", location.pathname);
+    document.dispatchEvent(new CustomEvent("sheepit:chat-close"));
+  }
+
+  document.addEventListener("sheepit:chat-dismiss", backToFlock);
+
+  /* A push names the chat in the hash; the page may already be open. */
+  window.addEventListener("hashchange", () => {
+    const id = decodeURIComponent(location.hash.slice(1));
+    if (current && current.id === id) return;
+    if (id) openById(id);
+    else backToFlock();
+  });
+
+  /* Everything this page shows is fetched by id - a headless chat's own, or
+     `pane:<pane id>` for a Herdr pane read as a chat. `chat.get` resolves
+     both, so there is one way in. */
+  async function openById(id) {
+    try { openChat((await api(`/api/chat/events?id=${encodeURIComponent(id)}`)).chat); }
+    catch (e) { alert(e.message); backToFlock(); }
+  }
+
+  /* ---- Images: scaled down on the phone, kept by the gateway, sent inline.
+     The strip and its hidden [{name, url}] array are composer.js, shared with
+     the plain view - only how an upload happens is chat's own. */
+  const attachStrip = SheepItComposer.createAttachStrip(
+    elStrip,
+    async (blob) => {
+      const res = await fetch(`/api/chat/upload?id=${encodeURIComponent(current.id)}`, {
+        method: "POST", headers: { "Content-Type": blob.type || "image/jpeg" }, body: blob,
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error);
+      return data.name;
+    },
+    (message) => alert("Could not attach it — " + message)
+  );
+
+  function attachFiles(files) {
+    if (!current) return;
+    return attachStrip.add(files);
+  }
+
+  $("btn-attach").addEventListener("click", () => elAttachInput.click());
+  elAttachInput.addEventListener("change", () => { attachFiles([...elAttachInput.files]); elAttachInput.value = ""; });
+  elInput.addEventListener("paste", (e) => {
+    const files = [...(e.clipboardData ? e.clipboardData.files : [])].filter((f) => f.type.startsWith("image/"));
+    if (files.length) { e.preventDefault(); attachFiles(files); }
+  });
+
+  /* ---- Skills and slash commands. Claude Code runs them itself when a message
+     starts with one, so all this does is help type the name: `/` opens the
+     list, what follows filters it, a tap puts `/name ` into the composer. */
+  const elMenu = $("slash-menu");
+  let browsing = false; // opened from the button, over text already typed
+
+  async function loadCommands(id) {
+    try {
+      const data = await api(`/api/chat/commands?id=${encodeURIComponent(id)}`);
+      if (current && current.id === id) { commands = data.commands; updateMenu(); }
+    } catch (e) { commands = []; }
+  }
+
+  // The name being typed, or null when the composer is not starting a command.
+  function slashQuery() {
+    if (browsing) return "";
+    const before = elInput.value.slice(0, elInput.selectionEnd == null ? elInput.value.length : elInput.selectionEnd);
+    const m = before.match(/^\/([^\s]*)$/);
+    return m ? m[1].toLowerCase() : null;
+  }
+
+  function matches(q) {
+    const all = commands || [];
+    if (!q) return all;
+    const starts = all.filter((c) => c.name.toLowerCase().startsWith(q));
+    const within = all.filter((c) => !c.name.toLowerCase().startsWith(q) && c.name.toLowerCase().includes(q));
+    return starts.concat(within);
+  }
+
+  function hideMenu() { browsing = false; elMenu.classList.add("hidden"); }
+
+  function updateMenu() {
+    const q = slashQuery();
+    if (q === null) { hideMenu(); return; }
+    const found = commands ? matches(q) : null;
+    elMenu.classList.remove("hidden");
+    if (!found) { elMenu.innerHTML = `<div class="slash-empty">Loading skills…</div>`; return; }
+    if (!found.length) { elMenu.innerHTML = `<div class="slash-empty">No skill or command called /${esc(q)}</div>`; return; }
+    elMenu.innerHTML = found.map((c) => {
+      const src = c.description.match(/\s*\(([^()]+)\)\s*$/);
+      const desc = src ? c.description.slice(0, src.index) : c.description;
+      return `<button type="button" class="slash-item" data-cmd="${esc(c.name)}">` +
+        `<span class="slash-name">/${esc(c.name)}${c.hint ? ` <i>${esc(c.hint)}</i>` : ""}` +
+        (src ? `<em>${esc(src[1])}</em>` : "") + `</span>` +
+        (desc ? `<span class="slash-desc">${esc(desc)}</span>` : "") + `</button>`;
+    }).join("");
+    elMenu.scrollTop = 0;
+  }
+
+  function pickCommand(name) {
+    const value = elInput.value;
+    elInput.value = browsing ? `/${name} ${value}` : `/${name} ` + value.replace(/^\/\S*\s?/, "");
+    hideMenu();
+    elInput.focus();
+    const caret = name.length + 2;
+    try { elInput.setSelectionRange(caret, caret); } catch (_) {}
+    grow();
+  }
+
+  elMenu.addEventListener("mousedown", (e) => e.preventDefault()); // keep the keyboard up
+  elMenu.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-cmd]");
+    if (b) pickCommand(b.dataset.cmd);
+  });
+  $("btn-slash").addEventListener("click", () => {
+    if (!elMenu.classList.contains("hidden")) { hideMenu(); return; }
+    if (!elInput.value.trim()) { elInput.value = "/"; elInput.focus(); updateMenu(); return; }
+    browsing = true;
+    updateMenu();
+  });
+  elInput.addEventListener("input", () => { browsing = false; updateMenu(); });
+  elInput.addEventListener("click", () => { if (!browsing) updateMenu(); });
+
+  /* ---- The queue. A pane's prompt does not go to the pane: it goes to
+     /api/queue, and the dispatcher delivers it once the pane is free and the
+     subscription has room. That is the whole reason this strip exists - what
+     was sent into a spent window used to vanish between the composer and the
+     log, because nothing on this page was holding it. */
+  const elQueue = $("queue-strip");
+  const QUEUE_EVERY = 5000;
+  // Long enough for the ordinary case - a free pane in an open window - to
+  // deliver without ever drawing a chip that is taken away again.
+  const SETTLE_MS = 1500;
+
+  function owed(prompts) {
+    const now = Date.now();
+    return prompts.filter((p) => {
+      if (p.state === "sent") return false;
+      const until = settling.get(p.id);
+      if (until && now >= until) settling.delete(p.id);
+      return !(settling.has(p.id) && p.state === "waiting");
+    });
+  }
+
+  async function fetchQueue() {
+    if (!current || current.kind !== "pane") { queued = []; drawQueue(); return; }
+    const pane = current.pane_id;
+    try {
+      const data = await api("/api/queue");
+      if (!current || current.pane_id !== pane) return;
+      queued = owed((data.prompts || []).filter((p) => p.pane_id === pane));
+    } catch (e) {
+      return; // the poll's own error line already says the gateway is away
+    }
+    drawQueue();
+  }
+
+  /* Only while there is something to watch: an empty queue costs no requests. */
+  function keepWatching() {
+    if (queueTimer) clearInterval(queueTimer);
+    queueTimer = null;
+    if (!queued.length || !current || current.kind !== "pane") return;
+    queueTimer = setInterval(fetchQueue, QUEUE_EVERY);
+  }
+
+  function drawQueue() {
+    queueStrip.render(queued);
+    keepWatching();
+  }
+
+  function queueRow(p) {
+      const failed = p.state === "failed";
+      return `<div class="queued${failed ? " failed" : ""}">
+        <span class="queued-state">${esc(failed ? "failed" : "queued")}</span>
+        <span class="queued-text">${esc(p.prompt || "")}</span>
+        ${failed && p.last_error ? `<span class="queued-why">${esc(p.last_error)}</span>` : ""}
+        <span class="queued-acts">
+          <button type="button" class="queued-act" data-composer-action="edit" data-composer-id="${p.id}">Edit</button>
+          <button type="button" class="queued-act accent" data-composer-action="send" data-composer-id="${p.id}">Send now</button>
+          <button type="button" class="queued-act danger" data-composer-action="delete" data-composer-id="${p.id}">Delete</button>
+        </span>
+      </div>`;
+  }
+
+  async function queueAct(id, action) {
+    try {
+      await api(`/api/queue/${id}/${action}`, {});
+    } catch (e) {
+      alert(`Could not ${action} the prompt — ${e.message}`);
+    }
+    await fetchQueue();
+  }
+
+  function onQueueAction(action, id) {
+    if (action === "send") { queueAct(id, "send"); return; }
+    if (action === "delete") { queueAct(id, "delete"); return; }
+    // Editing takes it back: the text lands in the box it was typed in, where
+    // the keyboard is already open, and sending it queues it again.
+    const row = queued.find((p) => String(p.id) === String(id));
+    if (!row) return;
+    elInput.value = row.prompt || "";
+    grow();
+    elInput.focus();
+    queueAct(id, "delete");
+  }
+  const queueStrip = SheepItComposer.createQueueStrip(elQueue, queueRow, onQueueAction);
+
+  /* ---- Composer. A pane's message waits for the window in the queue; a
+     headless chat's goes to its own process, where one sent mid-answer waits
+     its turn inside Claude Code the way typing ahead in the terminal does. */
+  function grow() {
+    SheepItComposer.resizeTextarea(elInput);
+  }
+  elInput.addEventListener("input", grow);
+  elInput.addEventListener("keydown", (e) => {
+    if (!elMenu.classList.contains("hidden")) {
+      const first = elMenu.querySelector("button[data-cmd]");
+      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && first) {
+        e.preventDefault();
+        pickCommand(first.dataset.cmd);
+        return;
+      }
+      if (e.key === "Escape") { hideMenu(); return; }
+    }
+    // Enter sends on a keyboard with a shift key; the phone's return is a newline.
+    if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) {
+      e.preventDefault();
+      $("composer").requestSubmit();
+    }
+  });
+  async function submitMessage() {
+    const text = elInput.value;
+    if (attachStrip.list.some((a) => !a.name)) return; // still uploading
+    const images = attachStrip.list.map((a) => a.name);
+    if ((!text.trim() && !images.length) || !current) return;
+    elSend.disabled = true;
+    try {
+      const data = await api("/api/chat/send", { id: current.id, text, images });
+      current = data.chat;
+      elInput.value = ""; grow();
+      hideMenu();
+      attachStrip.clear();
+      window.SheepItScrollToBottom(elMessages);
+      render();
+      // A pane's prompt is a queue row now. Held back for as long as delivery
+      // takes, then shown: one that is still waiting when the grace is up is
+      // waiting on something, and that is worth a line on the screen.
+      if (data.queued) {
+        settling.set(data.queued, Date.now() + SETTLE_MS);
+        setTimeout(fetchQueue, SETTLE_MS + 50);
+      }
+      fetchQueue();
+    } catch (err) { alert(err.message); }
+    elSend.disabled = false;
+  }
+  SheepItComposer.bindSubmit($("composer"), submitMessage);
+  elStop.addEventListener("click", () => current && api("/api/chat/stop", { id: current.id }).catch(() => {}));
+  $("btn-delete").addEventListener("click", async () => {
+    if (!current || !confirm("Delete this chat? The Claude Code session itself stays.")) return;
+    await api("/api/chat/delete", { id: current.id }).catch(() => {});
+    backToFlock();
+  });
+
+  /* Opened with no chat named - a stale bookmark of the list that used to be
+     here, or a hash that pointed at something since deleted. */
+  const opening = decodeURIComponent(location.hash.slice(1));
+  if (opening) openById(opening);
 })();

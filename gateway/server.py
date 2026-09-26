@@ -749,8 +749,6 @@ CSP = "; ".join([
     "media-src 'self'",
     "worker-src 'self'",
     "manifest-src 'self'",
-    # Only the app itself: on a desktop it shows a pane's chat in a frame.
-    "frame-ancestors 'self'",
     "base-uri 'none'",
     "form-action 'none'",
 ])

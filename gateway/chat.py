@@ -416,7 +416,7 @@ class Chat:
                         break
             body = " ".join(body.split())[:140] or "Finished."
         try:
-            _notify(title, body, f"/chat.html#{self.meta['id']}")
+            _notify(title, body, f"/#{self.meta['id']}")
         except Exception as e:  # a push that fails must not take the chat with it
             print(f"chat push failed: {e}")
 

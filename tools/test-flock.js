@@ -70,7 +70,7 @@ function loadRows() {
 function loadStrip() {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf("  // In the order the laptop's tab bar has them");
-  const to = src.indexOf("  // Render Metadata (lives in the settings sheet)");
+  const to = src.indexOf("  // Redrawn from the poll, so it is compared before it is replaced", from);
   if (from < 0 || to < 0) throw new Error(`strip anchors moved in ${SRC}`);
   const { tabName, tabNumber, bornAt } = loadFlock();
   const PRELUDE = `

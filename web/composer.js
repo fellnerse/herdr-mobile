@@ -1,5 +1,5 @@
 /* Shared composer pieces: the attachment strip, used identically by the plain
-   view's composer (index.html/app.js) and a chat's (chat.html/chat.js). Both
+   view's composer and the in-page chat renderer in app.js. Both
    keep attachments as a hidden [{name, url}] array and a strip of thumbnails -
    never a path spliced into the visible text - so what the strip shows and
    what gets sent can never disagree. What differs between the two views is
