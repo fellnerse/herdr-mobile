@@ -1092,7 +1092,7 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 pane_id = unquote(parts[3])
                 # A wrong number is tolerated, so a value that is not a
                 # number should not drop the connection either.
-                lines = clamp_int(qs.get("lines", ["100"])[0], 10, 1000, 100)
+                lines = clamp_int(qs.get("lines", ["400"])[0], 10, 1000, 400)
                 source = qs.get("source", ["recent_unwrapped"])[0]
                 # "ansi" keeps the SGR sequences so the client can mirror the
                 # terminal's own colours; "text" is the plain fallback.
@@ -1105,11 +1105,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
                     "strip_ansi": fmt != "ansi",
                 }
 
-                res = call_herdr_rpc("agent.read", dict(read_params, target=pane_id))
-
-                if "error" in res:
-                    # fallback to pane.read if agent.read fails
-                    res = call_herdr_rpc("pane.read", dict(read_params, pane_id=pane_id))
+                # This endpoint displays the terminal's own scrollback. Read
+                # it through pane.read so the requested line count and source
+                # apply to the pane buffer; agent.read can return the agent's
+                # shorter output snapshot instead.
+                res = call_herdr_rpc("pane.read", dict(read_params, pane_id=pane_id))
 
                 if "error" in res:
                     self.send_json(res, 400)

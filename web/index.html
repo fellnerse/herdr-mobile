@@ -37,6 +37,7 @@
         <span id="agent-select-dot" class="agent-dot unknown"></span>
         <span id="agent-select-name" class="agent-select-name">Loading…</span>
       </button>
+      <span class="conn-indicator"><span id="conn-indicator" class="conn-dot connected" title="Connection status"></span></span>
       <button type="button" id="btn-console" class="icon-btn" aria-label="Console" title="Console">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="2.5" y="4" width="19" height="16" rx="2"></rect>
@@ -60,23 +61,7 @@
         </svg>
         <span id="changes-count" class="changes-count hidden"></span>
       </button>
-      <button type="button" id="btn-keys" class="icon-btn header-keys" aria-label="Key palette" title="Key palette">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="6" width="20" height="12" rx="2"></rect>
-          <line x1="6" y1="10" x2="6" y2="10"></line>
-          <line x1="10" y1="10" x2="10" y2="10"></line>
-          <line x1="14" y1="10" x2="14" y2="10"></line>
-          <line x1="18" y1="10" x2="18" y2="10"></line>
-          <line x1="8" y1="14" x2="16" y2="14"></line>
-        </svg>
-      </button>
-      <button id="btn-settings" class="icon-btn header-gear" aria-label="Settings" title="Settings">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-        </svg>
-        <span id="conn-indicator" class="conn-dot connected" title="Connection status"></span>
-      </button>
+
     </header>
 
     <!-- The tabs of the worktree you are in. The overview lists worktrees, so
@@ -173,6 +158,24 @@
               <path d="M21.4 11.1 12.3 20.2a5.5 5.5 0 0 1-7.8-7.8l9.2-9.1a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.1a1.8 1.8 0 0 1-2.6-2.6l8.5-8.4"></path>
             </svg>
           </button>
+          <div id="composer-menu" class="composer-menu">
+            <button type="button" id="btn-more" class="btn-attach btn-more" aria-label="More composer actions" title="More" aria-haspopup="menu" aria-expanded="false">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></svg>
+            </button>
+            <div id="composer-menu-panel" class="composer-menu-panel hidden" role="menu" aria-label="Composer actions">
+              <button type="button" id="btn-keys" class="composer-menu-item" role="menuitem">Keyboard keys</button>
+              <button type="button" id="btn-cycle-mode" class="composer-menu-item" role="menuitem">Agent mode: <span id="mode-current">unknown</span></button>
+              <button type="button" id="btn-refresh" class="composer-menu-item" role="menuitem">Refresh transcript</button>
+              <button type="button" id="btn-copy" class="composer-menu-item" role="menuitem">Copy transcript</button>
+              <label class="composer-menu-setting" for="lines-select">Scrollback</label>
+              <select id="lines-select" class="composer-menu-select">
+                <option value="200">200 lines</option>
+                <option value="400" selected>400 lines</option>
+                <option value="600">600 lines</option>
+                <option value="800">800 lines</option>
+              </select>
+            </div>
+          </div>
           <!-- iOS turns this into Photo Library / Take Photo / Choose File. -->
           <input type="file" id="attach-input" class="attach-input" accept="image/*" multiple>
           <button type="submit" id="btn-send" class="btn-send" aria-label="Send prompt" disabled>
@@ -370,60 +373,7 @@
     <button id="btn-close-new-sheet" class="sheet-btn sheet-close">Cancel</button>
   </section>
 
-  <section id="settings-sheet" class="settings-sheet hidden" aria-label="Settings">
-    <div class="sheet-grip"></div>
 
-    <div class="sheet-row sheet-agent">
-      <div class="sheet-agent-text">
-        <span id="agent-title-text" class="sheet-title">No agent selected</span>
-        <span id="agent-cwd-text" class="sheet-cwd"></span>
-      </div>
-      <span id="agent-status-badge" class="status-badge status-unknown">--</span>
-    </div>
-
-    <div class="sheet-row">
-      <label for="lines-select">Scrollback</label>
-      <select id="lines-select">
-        <option value="50">50 lines</option>
-        <option value="100" selected>100 lines</option>
-        <option value="200">200 lines</option>
-        <option value="400">400 lines</option>
-      </select>
-    </div>
-
-    <div class="sheet-row">
-      <label for="toggle-plain">
-        Plain view
-        <span class="sheet-hint">the pane verbatim, nothing parsed away</span>
-      </label>
-      <input type="checkbox" id="toggle-plain">
-    </div>
-
-    <div class="sheet-row">
-      <label for="toggle-statusbar">Show agent status bar</label>
-      <input type="checkbox" id="toggle-statusbar">
-    </div>
-
-    <div class="sheet-row">
-      <button type="button" id="btn-open-global-settings" class="sheet-btn">Global Settings & Heartbeats →</button>
-    </div>
-    <div class="sheet-row">
-      <label>Agent mode</label>
-      <button id="btn-cycle-mode" class="mode-btn" title="Send shift+tab">
-        <span id="mode-current">unknown</span>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-        </svg>
-      </button>
-    </div>
-
-    <div class="sheet-actions">
-      <button id="btn-refresh" class="sheet-btn">Refresh</button>
-      <button id="btn-copy" class="sheet-btn">Copy transcript</button>
-    </div>
-
-    <button id="btn-close-sheet" class="sheet-btn sheet-close">Done</button>
-  </section>
 
   <script src="/composer.js"></script>
   <script src="/app.js"></script>

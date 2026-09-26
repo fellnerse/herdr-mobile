@@ -14,18 +14,33 @@
 
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 
 const SRC = path.join(__dirname, "..", "web", "app.js");
+const COMPOSER = path.join(__dirname, "..", "web", "composer.js");
+const composerContext = { window: {} };
+vm.runInNewContext(fs.readFileSync(COMPOSER, "utf8"), composerContext);
+const SheepItComposer = composerContext.window.SheepItComposer;
 const FROM = "  const DRAFTS_KEY";
 const TO = "  /* Stamp anything whose sequence moved";
 
 const PRELUDE = `
+  const SheepItComposer = __SheepItComposer;
   const store = {};
   function readPref(name) { return store["sheepit." + name] ?? null; }
   function savePref(key, value) { store[key] = value; }
   const elPromptInput = { value: "", selectionStart: 0, setSelectionRange(a) { this.selectionStart = a; } };
   function autoResizeTextarea() {}
   const state = { activePaneId: null, drafts: {} };
+  const draftStore = SheepItComposer.createDraftStore({
+    getDrafts: () => state.drafts,
+    setDrafts: (drafts) => { state.drafts = drafts; },
+    read: () => readPref("drafts"),
+    write: (value) => savePref("sheepit.drafts", value),
+    input: elPromptInput,
+    resize: autoResizeTextarea,
+    limit: 40,
+  });
 `;
 
 function loadDrafts_() {
@@ -33,11 +48,11 @@ function loadDrafts_() {
   const from = src.indexOf(FROM);
   const to = src.indexOf(TO);
   if (from < 0 || to < 0) throw new Error(`anchors moved in ${SRC}`);
-  return new Function(
+  return new Function("__SheepItComposer",
     `${PRELUDE}${src.slice(from, to)}
      return { loadDrafts, saveDrafts, rememberDraft, restoreDraft, clearDraft,
               state, store, elPromptInput, MAX_DRAFTS };`
-  )();
+  )(SheepItComposer);
 }
 
 const d = loadDrafts_();
@@ -68,6 +83,7 @@ function loadRecall() {
   const to = src.indexOf(RECALL_TO);
   if (from < 0 || to < 0) throw new Error(`recall anchors moved in ${SRC}`);
   const RECALL_PRELUDE = `
+    const SheepItComposer = __SheepItComposer;
     const store = {};
     function readPref(name) { return store["sheepit." + name] ?? null; }
     function savePref(key, value) { store[key] = value; }
@@ -82,12 +98,28 @@ function loadRecall() {
     function renderAttachments() {}
     function triggerHaptic() {}
     const state = { activePaneId: "w1:p1", history: {}, recall: { at: -1, text: null } };
+    const recallHistory = SheepItComposer.createRecallHistory({
+      getHistory: () => state.history,
+      setHistory: (history) => { state.history = history; },
+      read: () => readPref("history"),
+      write: (value) => savePref("sheepit.history", value),
+      input: elPromptInput,
+      getScope: () => state.activePaneId,
+      getRecall: () => state.recall,
+      setRecall: (recall) => { state.recall = recall; },
+      maxEntries: 20,
+      maxScopes: 40,
+      resize: autoResizeTextarea,
+      rememberDraft,
+      haptic: triggerHaptic,
+      showButton: (show) => elBtnRecall.classList.toggle("hidden", !show),
+    });
   `;
-  return new Function(
+  return new Function("__SheepItComposer",
     `${RECALL_PRELUDE}${src.slice(from, to)}
      return { rememberSent, recallPrev, syncRecall, resetRecall, historyFor,
               loadHistory, state, store, shown, elPromptInput, MAX_HISTORY };`
-  )();
+  )(SheepItComposer);
 }
 
 // -- walking back through what was sent -------------------------------------

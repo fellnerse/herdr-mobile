@@ -12,9 +12,7 @@
     // Which headless chat the wide layout's right column is showing, if any.
     activeChatId: null,
     historyText: "",
-    linesCount: 100,
-    showStatusBar: false,
-    plainView: false,
+    linesCount: 400,
     // What a desktop's right column shows of a Claude Code pane.
     paneView: "chat",
     diffSplit: false,
@@ -72,9 +70,6 @@
   const elAgentList = document.getElementById("agent-list");
   const elBtnClosePicker = document.getElementById("btn-close-picker");
   const elBtnNewWorkspace = document.getElementById("btn-new-workspace");
-  const elAgentTitle = document.getElementById("agent-title-text");
-  const elAgentCwd = document.getElementById("agent-cwd-text");
-  const elAgentStatus = document.getElementById("agent-status-badge");
   const elHistoryContainer = document.getElementById("history-container");
   const elHistoryContent = document.getElementById("history-content");
   const elBtnScrollBottom = document.getElementById("btn-scroll-bottom");
@@ -89,6 +84,9 @@
   const elBtnAdopt = document.getElementById("btn-adopt");
   const elBtnCycleMode = document.getElementById("btn-cycle-mode");
   const elBtnKeys = document.getElementById("btn-keys");
+  const elComposerMenu = document.getElementById("composer-menu");
+  const elBtnMore = document.getElementById("btn-more");
+  const elComposerMenuPanel = document.getElementById("composer-menu-panel");
   const elKeysBar = document.getElementById("keys-bar");
   const elKeysNumbers = document.getElementById("keys-numbers");
   const elModeCurrent = document.getElementById("mode-current");
@@ -96,18 +94,15 @@
   const elBtnSend = document.getElementById("btn-send");
   const elBtnCtrlC = document.getElementById("btn-ctrl-c");
   const elBtnEsc = document.getElementById("btn-esc");
+  // The palette opens from the composer's icon row, anchored above the box.
+  elPromptForm.appendChild(elKeysBar);
   const elBtnCopy = document.getElementById("btn-copy");
   const elLinesSelect = document.getElementById("lines-select");
-  const elBtnSettings = document.getElementById("btn-settings");
-  const elBtnCloseSheet = document.getElementById("btn-close-sheet");
-  const elSheet = document.getElementById("settings-sheet");
   const elSheetBackdrop = document.getElementById("sheet-backdrop");
   const elNewSheet = document.getElementById("new-sheet");
   const elNewSheetTitle = document.getElementById("new-sheet-title");
   const elNewSheetBody = document.getElementById("new-sheet-body");
   const elBtnCloseNewSheet = document.getElementById("btn-close-new-sheet");
-  const elToggleStatusBar = document.getElementById("toggle-statusbar");
-  const elTogglePlain = document.getElementById("toggle-plain");
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elToggleMachine = document.getElementById("toggle-machine");
@@ -115,7 +110,6 @@
   const elGlobalSettingsView = document.getElementById("global-settings-view");
   const elBtnCloseGlobalSettings = document.getElementById("btn-close-global-settings");
   const elBtnFlockSettings = document.getElementById("btn-flock-settings");
-  const elBtnOpenGlobalSettings = document.getElementById("btn-open-global-settings");
   const elBtnAddHeartbeat = document.getElementById("btn-add-heartbeat");
   const elHeartbeatsList = document.getElementById("heartbeats-list");
   const elPickerQuota = document.getElementById("picker-quota");
@@ -235,23 +229,19 @@
   }
 
   /* ---------------------------------------------------------------------
-   * Transcript parsing
+   * Transcript rows
    *
-   * The pane text is a stripped terminal dump padded to the desktop's
-   * terminal width, so it carries artefacts that read badly on a phone:
-   * full-width horizontal rules around the input box (which wrap into
-   * several lines of dashes) and status-bar lines padded with long runs of
-   * spaces. Classify each line by its leading marker so it can be coloured,
-   * and turn the noise into structure rather than text.
+   * Preserve the pane's screen as it arrived, including the terminal's own
+   * frame and status lines. ANSI SGR colors are retained for legibility; the
+   * small amount of parsing below only feeds the composer mirror and keypad.
    * ------------------------------------------------------------------- */
 
-  const RE_RULE_GLYPH = /[─━┄┅┈┉═—–_=]/g;
   const RE_SGR = /\x1b\[([0-9;]*)m/g;
 
   /* Split one ANSI line into styled runs, carrying the SGR state in `st` so
-     attributes opened on an earlier line keep applying. Only colours the
-     terminal actually sets are emitted; everything else inherits the block's
-     own colour, which keeps the speaker roles readable. */
+     attributes opened on an earlier line keep applying. Only colors the
+     terminal actually sets are emitted; everything else inherits the
+     transcript's default color. */
   function ansiRuns(line, st) {
     const runs = [];
     let last = 0;
@@ -400,270 +390,74 @@
     }
     return out;
   }
-  /* Two agents, two sets of glyphs for the same handful of roles. Claude Code
-     marks a turn with "⏺" and a tool result with "⎿"; Codex uses "•" and "└".
-     `bol` pins a marker to the left margin: Codex's bullet always starts a
-     turn there, while a "•" further in is a list item in somebody's prose. */
-  const MARKERS = [
-    { re: /^❯/, cls: "user" },        // > user message / live input
-    { re: /^⏺/, cls: "assistant" },   // assistant message or tool call
-    { re: /^⎿/, cls: "tool" },        // tool result
-    { re: /^[✻✽✳]/, cls: "meta" }, // "Worked for 1m 8s"
-    { re: /^※/, cls: "tip" },         // tips
-    { re: /^⏵⏵/, cls: "status" }, // "auto mode on ..."
-    { re: /^›\s/, cls: "user" },      // "› what changed in the indexer?"
-    { re: /^•\s/, cls: "assistant", bol: true }, // "• Ran docker compose ps"
-    { re: /^[✓✔✗✘]\s/, cls: "meta", bol: true },  // "✔ You approved codex to ..."
-    { re: /^└\s/, cls: "tool" },                 // "  └ {"acknowledged":true}"
-  ];
-  const RE_BOX = /^[┌┐└┘├┤┬┴┼│╭╮╯╰┏┓┗┛┣┫┳┻╋┃║╔╗╚╝╠╣╦╩╬]/;
-  // "❯ 2. app.bodyweight.plus", "› 1. Yes, proceed (y)" - one choice in a
-  // selection prompt.
-  const RE_OPTION = /^\s*[❯›>]?\s*(\d{1,2})\.\s/;
-  /* The footer a terminal prints under the prompt it is waiting on: Claude
-     Code's "Enter to select", Codex's "Press enter to confirm or esc to
-     cancel". RE_PROMPT_HINT is the half only a prompt says - "Esc to cancel"
-     on its own is also what an autocomplete menu offers. */
+  // Composer and selection hints are read from the raw rows only; they affect
+  // the mirror and keypad, never which transcript rows are shown.
+  const RE_OPTION = /^\s*(?:[❯›>]\s*)?(\d{1,2})\.\s/;
   const RE_PROMPT_HINT = /Enter to select|keys? to navigate|Enter to confirm/i;
   const RE_SELECT_HINT = /Esc to cancel|Esc to reject/i;
-  // The composer's own glyph: "❯" in Claude Code, "›" in Codex.
   const RE_COMPOSER = /^[❯›](?:\s|$)/;
-  // What a composer shows when nothing has been typed into it.
   const RE_PLACEHOLDER = /^(?:ask codex to do anything|try ".*")$/i;
-  /* Codex's footer - its model and the directory it works in - is the only
-     thing it prints under the composer. Claude Code closes the box with a
-     rule instead, so between them they say where the composer ends. */
-  const RE_AGENT_FOOTER = /·\s*[~/]/;
-  // Long runs of rule glyphs anywhere in a line, not just whole-line rules.
-  const RE_INLINE_RULE = /([─━┄┅┈┉═—–_=*.])\1{7,}/g;
-  // Both the composer and a pending prompt sit at the foot of the pane. This
-  // far above it, the same glyphs are something the agent printed.
   const TAIL_REACH = 24;
 
-  /* Is this line one of the terminal's horizontal rules? Returns null if not,
-     otherwise the caption embedded in it - the input box's top border carries
-     the session title ("──────… Get this to work in herdr ─"), which is worth
-     keeping as a heading rather than 200 wrapped dashes. */
-  function ruleLabel(trimmed) {
-    const glyphs = (trimmed.match(RE_RULE_GLYPH) || []).length;
-    if (glyphs < 8) return null;
-    const label = trimmed.replace(RE_RULE_GLYPH, " ").trim();
-    if (!label) return "";
-    // A caption has to contain words; leftover frame glyphs are not one.
-    if (!/[\p{L}\p{N}]/u.test(label)) return "";
-    if (glyphs >= 16 && label.length <= 60) return label;
-    return null; // prose that merely contains a long run of glyphs
-  }
-
-  function classifyLine(line, trimmed) {
-    if (!trimmed) return null;
-    // Markers before boxes: Codex's "└ " tool result would otherwise read as
-    // the bottom-left corner of one.
-    for (const m of MARKERS) {
-      if (m.re.test(m.bol ? line : trimmed)) return m.cls;
-    }
-    if (RE_BOX.test(trimmed)) return "table";
-    if (ruleLabel(trimmed) !== null) return "rule";
-    return null; // continuation of whatever came before
-  }
-
-  /* The terminal's own furniture at the foot of the pane: the composer, and
-     the status bar under it. Claude Code frames the composer in a pair of
-     rules and marks it "❯"; Codex prints "›" with nothing around it at all,
-     then names its model and cwd.
-
-     Anchoring on that glyph rather than on the last pair of rules is what
-     keeps a message whole. A markdown table's separator row is a rule too, so
-     taking the last two of those lifted the tail of the agent's answer into
-     the input mirror - a strip built for one line - and deleted the rest. */
-  function findChrome(raw) {
-    let idx = -1;
-    for (let i = raw.length - 1; i >= Math.max(0, raw.length - TAIL_REACH); i--) {
-      const trimmed = raw[i].trim();
-      if (!RE_COMPOSER.test(trimmed)) continue;
-      // "❯ 1. Yes, proceed" is a choice being offered, not the composer.
-      if (RE_OPTION.test(trimmed)) return null;
-      idx = i;
-      break;
-    }
-    if (idx < 0) return null;
-
-    // Claude Code's box: a rule opens it just above the "❯", the next rule
-    // closes it, and an autocomplete menu can sit in between.
-    let open = -1;
-    for (let i = idx - 1; i >= 0 && idx - i <= 3; i--) {
-      if (ruleLabel(raw[i].trim()) !== null) { open = i; break; }
-      if (raw[i].trim()) break;
-    }
-    let close = -1;
-    if (open >= 0) {
-      for (let i = idx + 1; i < raw.length && i - idx <= 12; i++) {
-        if (ruleLabel(raw[i].trim()) !== null) { close = i; break; }
-      }
-    }
-
-    /* The composer is the last thing in the pane, so nothing may stand under
-       it but blanks and the agent's own footer. An agent quoting a line back
-       - a pasted transcript, the instruction it is acting on - starts it with
-       the same glyph, and mistaking that for the composer lifts it into the
-       one-line mirror and drops every line below it as chrome. */
-    if (close < 0) {
-      for (let i = idx + 1; i < raw.length; i++) {
-        const trimmed = raw[i].trim();
-        if (!trimmed || RE_AGENT_FOOTER.test(trimmed)) continue;
-        if (ruleLabel(trimmed) !== null) continue;
-        return null;
-      }
-    }
-
-    const value = raw
-      .slice(idx, close >= 0 ? close : idx + 1)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(RE_COMPOSER, "")
-      .trim();
-    return {
-      // The opening rule stays: it carries the session title.
-      dropFrom: open >= 0 ? open + 1 : idx,
-      dropTo: close >= 0 ? close : idx,
-      statusFrom: close >= 0 ? close : idx,
-      liveInput: RE_PLACEHOLDER.test(value) ? "" : value,
-    };
-  }
-
-  /* The prompt an agent has stopped on - a tool confirmation, a plan
-     approval, AskUserQuestion. Claude Code frames it in the same pair of
-     rules that otherwise frames its composer; Codex frames it in nothing at
-     all. So find it by what it says - numbered choices and the footer under
-     them - rather than by the furniture around it. Getting this wrong is how
-     the question vanishes from the phone entirely. */
-  function findSelection(raw) {
-    const floor = Math.max(0, raw.length - TAIL_REACH);
-    let hintIdx = -1;
-    for (let i = floor; i < raw.length; i++) {
-      if (RE_PROMPT_HINT.test(raw[i]) || RE_SELECT_HINT.test(raw[i])) hintIdx = i;
-    }
-    let firstOption = -1;
-    let lastOption = -1;
-    const labels = new Set();
-    for (let i = floor; i <= (hintIdx >= 0 ? hintIdx : raw.length - 1); i++) {
-      const m = RE_OPTION.exec(raw[i]);
-      if (!m) continue;
-      if (firstOption < 0) firstOption = i;
-      lastOption = i;
-      labels.add(Number(m[1]));
-    }
-    /* How many choices are on offer - the run of labels from 1, not the
-       highest number seen, so a stray "12." in the text above cannot invent
-       nine keys that answer nothing. */
-    let optionCount = 0;
-    while (labels.has(optionCount + 1)) optionCount++;
-
-    /* A footer only a prompt prints is proof by itself. Numbered choices are
-       not: an agent listing three things to try mid-run looks exactly like a
-       question, and the missing composer is no help - Codex hides its own
-       while it works. So they need a footer under them too. */
-    const promptFooter = hintIdx >= 0 && RE_PROMPT_HINT.test(raw[hintIdx]);
-    if (!promptFooter && !(optionCount >= 2 && hintIdx >= 0)) return null;
-
-    /* Walk up to the head of the prompt: the rule that opens Claude Code's
-       box, or - Codex having no box - the line after the last thing the agent
-       printed for itself. */
-    const head = firstOption >= 0 ? firstOption : hintIdx;
-    let start = Math.max(0, head - TAIL_REACH);
-    for (let i = head - 1; i >= start; i--) {
-      const trimmed = raw[i].trim();
-      if (ruleLabel(trimmed) !== null) { start = i; break; }
-      if (classifyLine(raw[i], trimmed)) { start = i + 1; break; }
-    }
-    return { start, end: Math.max(hintIdx, lastOption), optionCount };
-  }
-
   function parseTranscript(text) {
-    // Tokenise first: every later step works on the plain text, while the
-    // styled runs ride along so rendering can mirror the terminal's colours.
     const st = { fg: null, bg: null, bold: false, italic: false, underline: false };
     const rows = text.split("\n").map((line) => {
       const runs = rtrimRuns(ansiRuns(line.replace(/\r/g, ""), st));
       return { runs, text: runsText(runs) };
     });
-    const raw = rows.map((r) => r.text);
+    const raw = rows.map((row) => row.text);
+    const floor = Math.max(0, raw.length - TAIL_REACH);
+    let liveInput = "";
+    for (let i = raw.length - 1; i >= floor; i--) {
+      const trimmed = raw[i].trim();
+      if (!RE_COMPOSER.test(trimmed) || RE_OPTION.test(trimmed)) continue;
+      const value = trimmed.replace(RE_COMPOSER, "").trim();
+      liveInput = RE_PLACEHOLDER.test(value) ? "" : value;
+      break;
+    }
 
-    const chrome = findChrome(raw);
-    const sel = findSelection(raw);
-    /* Where the two overlap the prompt wins. A question folded into the input
-       mirror is a question nobody ever sees. */
-    const box = sel && chrome && chrome.dropFrom <= sel.end ? null : chrome;
-
-    const liveInput = box ? box.liveInput : "";
-    const statusFrom = box ? box.statusFrom : -1;
-
-    // The status bar names the current mode; shift+tab cycles through them.
     let mode = "";
-    const tail = raw
-      .slice(statusFrom >= 0 ? statusFrom : Math.max(0, raw.length - 6))
-      .join(" ");
-    const m = /\b(auto|plan|manual|accept edits|bypass\w*)\s+mode\b/i.exec(tail);
-    if (m) mode = m[1].toLowerCase();
+    const modeMatch = raw.slice(Math.max(0, raw.length - 6)).join(" ")
+      .match(/\b(auto|plan|manual|accept edits|bypass\w*)\s+mode\b/i);
+    if (modeMatch) mode = modeMatch[1].toLowerCase();
 
-    const blocks = [];
-    let current = "assistant";
-    raw.forEach((line, i) => {
-      /* Drop the composer and everything under it: that is live UI state, not
-         conversation, and rendering it as a past user message is how the
-         phone ends up arguing with the laptop. */
-      if (box && i >= box.dropFrom && i <= box.dropTo) return;
-
-      const trimmed = line.trim();
-      let cls = classifyLine(line, trimmed);
-
-      if (sel && i >= sel.start && i <= sel.end) {
-        // A rule inside the prompt would break it into several cards.
-        if (cls === "rule") { if (i !== sel.start) return; }
-        else cls = "select";
-      } else if (statusFrom >= 0 && i > statusFrom && cls !== "rule") {
-        cls = "status";
+    let hintIndex = -1;
+    for (let i = floor; i < raw.length; i++) {
+      if (RE_PROMPT_HINT.test(raw[i]) || RE_SELECT_HINT.test(raw[i])) hintIndex = i;
+    }
+    let optionCount = 0;
+    if (hintIndex >= 0 && (RE_PROMPT_HINT.test(raw[hintIndex]) || RE_SELECT_HINT.test(raw[hintIndex]))) {
+      const labels = new Set();
+      for (let i = floor; i <= hintIndex; i++) {
+        const option = RE_OPTION.exec(raw[i]);
+        if (option) labels.add(Number(option[1]));
       }
+      while (labels.has(optionCount + 1)) optionCount++;
+    }
+    return { rows, liveInput, mode, optionCount };
+  }
 
-      if (cls === "rule") {
-        const label = ruleLabel(trimmed);
-        const prev = blocks[blocks.length - 1];
-        // Collapse runs of rules, but let a captioned one win.
-        if (prev && prev.cls === "rule") {
-          if (label) prev.label = label;
-          return;
-        }
-        blocks.push({ cls: "rule", label, rows: [] });
-        return;
-      }
+  function transcriptHtml(rows) {
+    return `<div class="t-block t-transcript">${rows
+      .map((row) => runsToHtml(row.runs))
+      .join("\n")}</div>`;
+  }
 
-      if (cls === null) {
-        cls = current; // continuation line inherits the active block
-      } else {
-        current = cls;
-      }
-
-      const last = blocks[blocks.length - 1];
-      if (last && last.cls === cls) last.rows.push(rows[i]);
-      else blocks.push({ cls, rows: [rows[i]] });
-    });
-
-    // Drop leading/trailing empties inside each block, then empty blocks.
-    const kept = blocks.filter((b) => {
-      if (b.cls === "rule") return true;
-      while (b.rows.length && !b.rows[0].text.trim()) b.rows.shift();
-      while (b.rows.length && !b.rows[b.rows.length - 1].text.trim()) b.rows.pop();
-      return b.rows.length > 0;
-    });
-
-    return {
-      blocks: kept,
-      rows,
-      liveInput,
-      mode,
-      optionCount: sel ? sel.optionCount : 0,
-    };
+  function renderTranscript(text) {
+    if (!text) {
+      renderLiveInput("");
+      renderNumberKeys(0);
+      state.mode = "";
+      elModeCurrent.textContent = "unknown";
+      elHistoryContent.innerHTML = '<div class="history-empty">(No output recorded yet)</div>';
+      return;
+    }
+    const parsed = parseTranscript(text);
+    renderLiveInput(parsed.liveInput);
+    renderNumberKeys(parsed.optionCount);
+    state.mode = parsed.mode;
+    elModeCurrent.textContent = parsed.mode || "unknown";
+    elHistoryContent.innerHTML = transcriptHtml(parsed.rows);
   }
 
   /* What the desktop currently has typed into the pane, mirrored above the
@@ -688,106 +482,6 @@
       const n = i + 1;
       return `<button type="button" class="key-btn" data-key="${n}">${n}</button>`;
     }).join("");
-  }
-
-  /* The pane exactly as it arrived, minus the terminal's own padding: every
-     line in the order the agent drew it, coloured by its own escape codes and
-     classified as nothing at all.
-
-     The parsed view is a set of guesses - which glyph starts a turn, which
-     rules frame the composer, which of the last lines are the status bar - and
-     a guess that goes wrong hides something. Most of what it drops is padding
-     and furniture, but not all of it: a caption on a rule directly under
-     another rule is overwritten by it, a line of the agent's own "=" or "."
-     is read as a rule and collapsed, and everything below Claude Code's input
-     box - usage warnings, background tasks, errors - is filed under the status
-     bar and hidden with it. This view is the answer to "the phone is not
-     showing me something": no classification, no collapsing, nothing
-     dropped. */
-  function plainHtml(rows) {
-    return `<div class="t-block t-plain">${rows
-      .map((row) => runsToHtml(row.runs))
-      .join("\n")}</div>`;
-  }
-
-  function renderTranscript(text) {
-    if (!text) {
-      renderLiveInput("");
-      renderNumberKeys(0);
-      elHistoryContent.innerHTML =
-        '<div class="history-empty">(No output recorded yet)</div>';
-      return;
-    }
-
-    // Resolve each block to its final text, dropping the ones that render
-    // to nothing: an empty input box, or the status bar when hidden.
-    const parsed = parseTranscript(text);
-    renderLiveInput(parsed.liveInput);
-    renderNumberKeys(parsed.optionCount);
-    state.mode = parsed.mode;
-    elModeCurrent.textContent = parsed.mode || "unknown";
-
-    /* Parsing still runs in the plain view: the keypad, the mode and the input
-       mirror are read out of it, and they are as useful when the transcript is
-       drawn verbatim as when it is not. Only the drawing changes. */
-    if (state.plainView) {
-      elHistoryContent.innerHTML = plainHtml(parsed.rows);
-      return;
-    }
-
-    const visible = [];
-    for (const b of parsed.blocks) {
-      if (b.cls === "rule") {
-        visible.push({ cls: "rule", label: b.label });
-        continue;
-      }
-      if (b.cls === "status" && !state.showStatusBar) continue;
-
-      // Tables need their padding; everywhere else a long run of rule glyphs
-      // is decoration that would wrap across several phone lines.
-      const collapse = b.cls !== "table";
-      const rows = b.rows.map((row) => {
-        let runs = row.runs;
-        if (b.cls === "status") {
-          // Status lines are padded across the full terminal width.
-          runs = runs.map((r) => ({ ...r, text: r.text.replace(/\s{3,}/g, "  ·  ") }));
-        }
-        if (collapse) {
-          runs = runs.map((r) => ({ ...r, text: r.text.replace(RE_INLINE_RULE, "$1$1$1") }));
-        }
-        return runs;
-      });
-
-      const plain = rows.map(runsText).join("\n").trim();
-      // A bare marker is an empty prompt box, not content.
-      if (!plain.replace(/^[❯⏺⎿✻✽✳※]/, "").trim()) continue;
-
-      visible.push({ cls: b.cls, html: rows.map(runsToHtml).join("\n") });
-    }
-
-    // Separators only mean something between two blocks.
-    const trimmed = [];
-    for (const b of visible) {
-      if (b.cls === "rule" && (!trimmed.length || trimmed[trimmed.length - 1].cls === "rule")) {
-        continue;
-      }
-      trimmed.push(b);
-    }
-    while (trimmed.length && trimmed[trimmed.length - 1].cls === "rule") trimmed.pop();
-
-    const html = trimmed
-      .map((b) => {
-        if (b.cls !== "rule") {
-          return `<div class="t-block t-${b.cls}">${b.html}</div>`;
-        }
-        return b.label
-          ? `<div class="t-rule-label"><span>${escapeHtml(b.label)}</span></div>`
-          : '<div class="t-rule"></div>';
-      })
-      .join("");
-
-    elHistoryContent.innerHTML =
-      html || '<div class="history-empty">(No output recorded yet)</div>';
   }
 
   // Fetch Agent List
@@ -830,7 +524,6 @@
           selectAgent(first.pane_id, !state.pickerOpen);
         } else {
           state.activePaneId = null;
-          renderActiveAgentMeta();
           syncPickerChrome();
           // Nothing open means nothing to switch between: the strip goes with
           // the chat it belonged to rather than being left standing.
@@ -838,7 +531,6 @@
           elHistoryContent.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
         }
       } else {
-        renderActiveAgentMeta();
       }
     } catch (err) {
       console.warn("fetchAgents error:", err);
@@ -2555,7 +2247,6 @@
 
     renderAgentBar();
     syncPickerChrome();
-    renderActiveAgentMeta();
     renderChatQueue();
     retargetPaneViews();
     fetchHistory(true);
@@ -2702,27 +2393,8 @@
     }
   }
 
-  // Render Metadata (lives in the settings sheet)
-  function renderActiveAgentMeta() {
-    const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
-    if (!agent) {
-      elAgentTitle.textContent = "No agent selected";
-      elAgentCwd.textContent = "";
-      elAgentStatus.className = "status-badge status-unknown";
-      elAgentStatus.textContent = "--";
-      return;
-    }
-
-    elAgentTitle.textContent = agent.title || agent.name || agent.pane_id;
-    elAgentCwd.textContent = agent.cwd || "";
-
-    const status = knownStatus(agent.status);
-    elAgentStatus.className = `status-badge status-${status}`;
-    elAgentStatus.textContent = agent.status || "unknown";
-  }
-
   // Fetch Agent History
-  async function fetchHistory(forceScroll = false) {
+  async function fetchHistory(forceScroll = false, forceRender = false) {
     if (!state.activePaneId) return;
 
     try {
@@ -2733,7 +2405,7 @@
       setConnected(true);
 
       const newText = data.text || "";
-      if (newText !== state.historyText) {
+      if (forceRender || newText !== state.historyText) {
         // Something in it is selected: hold the redraw. See releaseHeld.
         if (transcriptHeld()) {
           state.heldHistory = newText;
@@ -2836,21 +2508,8 @@
 
   document.addEventListener("selectionchange", releaseHeld);
 
-  // Settings sheet
-  function openSheet() {
-    triggerHaptic();
-    elSheet.classList.remove("hidden");
-    elSheetBackdrop.classList.remove("hidden");
-  }
-
-  function closeSheet() {
-    elSheet.classList.add("hidden");
-    elSheetBackdrop.classList.add("hidden");
-  }
-
   function openGlobalSettings() {
     triggerHaptic();
-    closeSheet();
     if (elGlobalSettingsView) {
       elGlobalSettingsView.classList.remove("hidden");
       refreshGlobalSettings();
@@ -3081,80 +2740,58 @@
   const MAX_HISTORY = 20;
   const MAX_HISTORY_CHATS = 40;
 
+  const recallHistory = SheepItComposer.createRecallHistory({
+    getHistory: () => state.history,
+    setHistory: (history) => { state.history = history; },
+    read: () => readPref("history"),
+    write: (value) => savePref(HISTORY_KEY, value),
+    input: elPromptInput,
+    getScope: () => state.activePaneId,
+    getRecall: () => state.recall,
+    setRecall: (recall) => { state.recall = recall; },
+    maxEntries: MAX_HISTORY,
+    maxScopes: MAX_HISTORY_CHATS,
+    resize: autoResizeTextarea,
+    rememberDraft,
+    haptic: () => triggerHaptic(),
+    showButton: (show) => elBtnRecall.classList.toggle("hidden", !show),
+  });
+
   function loadHistory() {
-    try {
-      const raw = JSON.parse(readPref("history") || "{}");
-      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-    } catch (err) {
-      return {};
-    }
+    return recallHistory.load();
   }
 
   function saveHistory() {
-    const entries = Object.entries(state.history);
-    if (entries.length > MAX_HISTORY_CHATS) {
-      // Oldest first: the map is written in touch order, like the drafts.
-      state.history = Object.fromEntries(entries.slice(-MAX_HISTORY_CHATS));
-    }
-    try {
-      savePref(HISTORY_KEY, JSON.stringify(state.history));
-    } catch (err) {
-      // A full or disabled localStorage must not stop anybody sending.
-    }
+    recallHistory.save();
   }
 
   function historyFor(paneId) {
-    return (paneId && state.history[paneId]) || [];
+    return recallHistory.forScope(paneId);
   }
 
   /* Newest last, the way a shell keeps it. The same prompt sent twice running
      is one entry: the walk back is for finding something, and a run of
      identical lines is the one thing it never helps you find. */
   function rememberSent(paneId, text) {
-    if (!paneId || !text.trim()) return;
-    const list = historyFor(paneId).slice();
-    if (list[list.length - 1] !== text) list.push(text);
-    delete state.history[paneId];
-    state.history[paneId] = list.slice(-MAX_HISTORY);
-    saveHistory();
+    recallHistory.rememberSent(paneId, text);
   }
 
   /* One step further back, stopping at the oldest rather than wrapping round:
      a list that wraps hands you the newest prompt again just as you were
      getting somewhere, with nothing on screen to say it has turned around. */
   function recallPrev() {
-    const list = historyFor(state.activePaneId);
-    const next = state.recall.at < 0 ? list.length - 1 : state.recall.at - 1;
-    if (next < 0) return;
-    triggerHaptic();
-    const text = list[next];
-    state.recall = { at: next, text };
-    elPromptInput.value = text;
-    try {
-      elPromptInput.setSelectionRange(text.length, text.length);
-    } catch (err) {
-      // Not focused, or a browser that refuses: the text is what matters.
-    }
-    autoResizeTextarea();
-    rememberDraft();
+    recallHistory.previous();
   }
 
   /* The arrow is offered where it means something and nowhere else: an empty
      box with something behind it, or a box still holding exactly what the
      last tap put there. */
   function syncRecall() {
-    if (state.recall.text !== null && elPromptInput.value !== state.recall.text) {
-      state.recall = { at: -1, text: null };
-    }
-    const walking = state.recall.text !== null;
-    const show =
-      historyFor(state.activePaneId).length > 0 &&
-      (walking || !elPromptInput.value.trim());
-    elBtnRecall.classList.toggle("hidden", !show);
+    recallHistory.sync();
   }
 
   function resetRecall() {
-    state.recall = { at: -1, text: null };
+    recallHistory.reset();
   }
 
   /* -------------------------------------------------------- Attachments ---
@@ -3718,8 +3355,7 @@
   function renderChatQueue() {
     const queued = queuedFor(state.activePaneId);
     if (!queued.length) {
-      elChatQueue.classList.add("hidden");
-      elChatQueue.innerHTML = "";
+      chatQueueStrip.render([]);
       state.queueSignature = null;
       return;
     }
@@ -3728,9 +3364,10 @@
     if (signature === state.queueSignature && !elChatQueue.classList.contains("hidden")) return;
     state.queueSignature = signature;
 
-    elChatQueue.classList.remove("hidden");
-    elChatQueue.innerHTML = note + queued
-      .map((p) => {
+    chatQueueStrip.render(queued, note);
+  }
+
+  function chatQueueRow(p) {
         const failed = p.state === "failed";
         const word = QUEUE_WORD[p.state] || p.state;
         return `
@@ -3741,13 +3378,11 @@
                 ? `<span class="chat-queued-why">${escapeHtml(p.last_error)}</span>`
                 : ""}
             <span class="chat-queued-acts">
-              <button type="button" class="chat-queued-act" data-queue-edit="${p.id}">Edit</button>
-              <button type="button" class="chat-queued-act accent" data-queue-send="${p.id}">Send now</button>
-              <button type="button" class="chat-queued-act danger" data-queue-delete="${p.id}">Delete</button>
+              <button type="button" class="chat-queued-act" data-composer-action="edit" data-composer-id="${p.id}">Edit</button>
+              <button type="button" class="chat-queued-act accent" data-composer-action="send" data-composer-id="${p.id}">Send now</button>
+              <button type="button" class="chat-queued-act danger" data-composer-action="delete" data-composer-id="${p.id}">Delete</button>
             </span>
           </div>`;
-      })
-      .join("");
   }
 
   async function queueAction(id, action) {
@@ -3780,14 +3415,11 @@
     await queueAction(id, "delete");
   }
 
-  elChatQueue.addEventListener("click", (e) => {
-    const edit = e.target.closest("[data-queue-edit]");
-    if (edit) return editQueued(edit.dataset.queueEdit);
-    const send = e.target.closest("[data-queue-send]");
-    if (send) return queueAction(send.dataset.queueSend, "send");
-    const del = e.target.closest("[data-queue-delete]");
-    if (del) return queueAction(del.dataset.queueDelete, "delete");
-  });
+  function onChatQueueAction(action, id) {
+    if (action === "edit") return editQueued(id);
+    return queueAction(id, action);
+  }
+  const chatQueueStrip = SheepItComposer.createQueueStrip(elChatQueue, chatQueueRow, onChatQueueAction);
 
   // Poll loop
   async function loop() {
@@ -3836,18 +3468,11 @@
 
   function loadPrefs() {
     try {
-      const lines = parseInt(readPref("lines"), 10);
-      if (lines) {
-        state.linesCount = lines;
-        elLinesSelect.value = String(lines);
-      }
-      state.showStatusBar = readPref("statusbar") === "1";
-      elToggleStatusBar.checked = state.showStatusBar;
-      state.plainView = readPref("plain") === "1";
+      const lines = Number(readPref("lines"));
+      if ([200, 400, 600, 800].includes(lines)) state.linesCount = lines;
+      elLinesSelect.value = String(state.linesCount);
       state.paneView = readPref("view") || "chat";
-      elTogglePlain.checked = state.plainView;
       setDiffLayout(readPref("diffsplit") === "1");
-      syncStatusBarRow();
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
       state.customOrder = loadOrder();
@@ -3888,66 +3513,37 @@
   const DRAFTS_KEY = "sheepit.drafts";
   const MAX_DRAFTS = 40;
 
+  const draftStore = SheepItComposer.createDraftStore({
+    getDrafts: () => state.drafts,
+    setDrafts: (drafts) => { state.drafts = drafts; },
+    read: () => readPref("drafts"),
+    write: (value) => savePref(DRAFTS_KEY, value),
+    input: elPromptInput,
+    resize: autoResizeTextarea,
+    limit: MAX_DRAFTS,
+  });
+
   function loadDrafts() {
-    try {
-      const raw = JSON.parse(readPref("drafts") || "{}");
-      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-    } catch (err) {
-      return {};
-    }
+    return draftStore.load();
   }
 
   function saveDrafts() {
-    const entries = Object.entries(state.drafts);
-    if (entries.length > MAX_DRAFTS) {
-      // Oldest first: the map is written in touch order, so the tail is the
-      // recently used end.
-      state.drafts = Object.fromEntries(entries.slice(-MAX_DRAFTS));
-    }
-    try {
-      savePref(DRAFTS_KEY, JSON.stringify(state.drafts));
-    } catch (err) {
-      // A full or disabled localStorage must not stop anybody typing.
-    }
+    draftStore.save();
   }
 
   /* Remember what is in the composer now, against the pane it belongs to.
      Called as you type, and again before the pane changes under it. */
   function rememberDraft(paneId) {
     const id = paneId || state.activePaneId;
-    if (!id) return;
-    const text = elPromptInput.value;
-    if (text.trim()) {
-      // Re-inserting keeps the key at the recent end of the map.
-      delete state.drafts[id];
-      state.drafts[id] = { text, caret: elPromptInput.selectionStart ?? text.length };
-    } else if (state.drafts[id]) {
-      delete state.drafts[id];
-    } else {
-      return;
-    }
-    saveDrafts();
+    draftStore.remember(id);
   }
 
   function restoreDraft(paneId) {
-    const draft = state.drafts[paneId];
-    elPromptInput.value = draft ? draft.text : "";
-    autoResizeTextarea();
-    if (!draft) return;
-    // Put the caret back where it was, so a half-typed word can be finished
-    // rather than found.
-    const caret = Math.min(draft.caret ?? draft.text.length, draft.text.length);
-    try {
-      elPromptInput.setSelectionRange(caret, caret);
-    } catch (err) {
-      // Not focused, or a browser that refuses: the text is what matters.
-    }
+    draftStore.restore(paneId);
   }
 
   function clearDraft(paneId) {
-    if (!paneId || !state.drafts[paneId]) return;
-    delete state.drafts[paneId];
-    saveDrafts();
+    draftStore.clear(paneId);
   }
 
   function loadActivity() {
@@ -4985,11 +4581,28 @@
     loop();
   });
 
-  elBtnSettings.addEventListener("click", openSheet);
-  elBtnCloseSheet.addEventListener("click", closeSheet);
-  /* One backdrop dismisses any open sheet. */
+  function closeComposerMenu() {
+    elComposerMenuPanel.classList.add("hidden");
+    elBtnMore.setAttribute("aria-expanded", "false");
+  }
+  elBtnMore.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = elComposerMenuPanel.classList.contains("hidden");
+    elComposerMenuPanel.classList.toggle("hidden", !open);
+    elBtnMore.setAttribute("aria-expanded", String(open));
+  });
+  elComposerMenuPanel.addEventListener("click", (e) => {
+    if (e.target.closest("button")) closeComposerMenu();
+  });
+  document.addEventListener("click", (e) => {
+    if (!elComposerMenu.contains(e.target)) closeComposerMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeComposerMenu();
+  });
+
+  /* The backdrop dismisses the new-item sheet. */
   elSheetBackdrop.addEventListener("click", () => {
-    closeSheet();
     closeNewSheet();
   });
 
@@ -5031,7 +4644,7 @@
   });
 
   elBtnRecall.addEventListener("click", recallPrev);
-  elPromptForm.addEventListener("submit", submitPrompt);
+  SheepItComposer.bindSubmit(elPromptForm, submitPrompt);
 
   /* ^C arms itself before it fires, rather than asking through confirm():
      iOS stops showing confirm() in a home screen web app after the user has
@@ -5077,9 +4690,9 @@
   elBtnCopy.addEventListener("click", copyHistory);
 
   elLinesSelect.addEventListener("change", (e) => {
-    state.linesCount = parseInt(e.target.value, 10) || 100;
+    state.linesCount = parseInt(e.target.value, 10) || 400;
     savePref("sheepit.lines", String(state.linesCount));
-    fetchHistory(true);
+    fetchHistory(true, true);
   });
 
   /* One vocabulary for both key rows. #keys-bar sends a name to Herdr over
@@ -5104,6 +4717,7 @@
     state.showKeys = show;
     elKeysBar.classList.toggle("hidden", !show);
     elBtnKeys.classList.toggle("active", show);
+    elBtnKeys.setAttribute("aria-pressed", String(show));
     savePref("sheepit.keys", show ? "1" : "0");
   }
 
@@ -5139,30 +4753,6 @@
     if (state.machineStrip) state.quotaAt = 0; // ask again, with the machine in it
     else renderQuota();
     fetchQuota();
-  });
-
-  elToggleStatusBar.addEventListener("change", (e) => {
-    state.showStatusBar = e.target.checked;
-    savePref("sheepit.statusbar", state.showStatusBar ? "1" : "0");
-    renderTranscript(state.historyText);
-    scrollToBottom();
-  });
-
-  /* The plain view already draws the status bar, so the toggle for it has
-     nothing left to say - grey it out rather than leave a switch that does
-     nothing when flicked. */
-  function syncStatusBarRow() {
-    elToggleStatusBar.disabled = state.plainView;
-    const row = elToggleStatusBar.closest(".sheet-row");
-    if (row) row.classList.toggle("row-muted", state.plainView);
-  }
-
-  elTogglePlain.addEventListener("change", (e) => {
-    state.plainView = e.target.checked;
-    savePref("sheepit.plain", state.plainView ? "1" : "0");
-    syncStatusBarRow();
-    renderTranscript(state.historyText);
-    scrollToBottom();
   });
 
   /* iOS does not reliably reflow a fixed, dvh-sized layout when the keyboard
@@ -5638,7 +5228,6 @@
   }
 
   if (elBtnFlockSettings) elBtnFlockSettings.addEventListener("click", openGlobalSettings);
-  if (elBtnOpenGlobalSettings) elBtnOpenGlobalSettings.addEventListener("click", openGlobalSettings);
   if (elBtnCloseGlobalSettings) elBtnCloseGlobalSettings.addEventListener("click", closeGlobalSettings);
   if (elBtnAddHeartbeat) elBtnAddHeartbeat.addEventListener("click", addHeartbeat);
 
@@ -5676,8 +5265,8 @@
   /* ----------------------------------------------------------------------
      The console
 
-     The transcript above is a reading of a pane: parsed into turns, with the
-     furniture taken off. Sometimes you want the pane itself - a full-screen
+     The transcript above is a verbatim reading of a pane. Sometimes you want
+     the pane itself - a full-screen
      editor an agent opened, a curses installer, a prompt the parser has no
      shape for. So: xterm.js here, Herdr's own client socket at the far end of
      a WebSocket, and the pane's bytes flowing both ways with nothing in

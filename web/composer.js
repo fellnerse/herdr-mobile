@@ -71,6 +71,126 @@
     return height;
   }
 
+  /* Persistence mechanics for text kept against a scope (a pane or a chat).
+     The view supplies storage and textarea policy; this module owns ordering,
+     caret restoration, the cap, and safe handling of unavailable storage. */
+  function createDraftStore({ getDrafts, setDrafts, read, write, input, resize, limit = 40 }) {
+    function load() {
+      try {
+        const value = JSON.parse(read() || "{}");
+        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      } catch (_) { return {}; }
+    }
+    function save() {
+      let drafts = getDrafts();
+      const entries = Object.entries(drafts);
+      if (entries.length > limit) {
+        drafts = Object.fromEntries(entries.slice(-limit));
+        setDrafts(drafts);
+      }
+      try { write(JSON.stringify(drafts)); } catch (_) { /* storage is optional */ }
+    }
+    function remember(scope) {
+      if (!scope) return;
+      const drafts = getDrafts();
+      const text = input.value;
+      if (text.trim()) {
+        delete drafts[scope];
+        drafts[scope] = { text, caret: input.selectionStart ?? text.length };
+      } else if (drafts[scope]) delete drafts[scope];
+      else return;
+      save();
+    }
+    function restore(scope) {
+      const draft = getDrafts()[scope];
+      input.value = draft ? draft.text : "";
+      resize();
+      if (!draft) return;
+      const caret = Math.min(draft.caret ?? draft.text.length, draft.text.length);
+      try { input.setSelectionRange(caret, caret); } catch (_) { /* unfocused */ }
+    }
+    function clear(scope) {
+      const drafts = getDrafts();
+      if (!scope || !drafts[scope]) return;
+      delete drafts[scope];
+      save();
+    }
+    return { load, save, remember, restore, clear };
+  }
+
+  /* The send history behind the composer's recall button. */
+  function createRecallHistory({ getHistory, setHistory, read, write, input,
+    getScope, getRecall, setRecall, maxEntries = 20, maxScopes = 40,
+    resize, rememberDraft, haptic, showButton }) {
+    function load() {
+      try {
+        const value = JSON.parse(read() || "{}");
+        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      } catch (_) { return {}; }
+    }
+    function save() {
+      const history = getHistory();
+      const entries = Object.entries(history);
+      if (entries.length > maxScopes) setHistory(Object.fromEntries(entries.slice(-maxScopes)));
+      try { write(JSON.stringify(getHistory())); } catch (_) { /* storage is optional */ }
+    }
+    function forScope(scope) { return (scope && getHistory()[scope]) || []; }
+    function rememberSent(scope, text) {
+      if (!scope || !text.trim()) return;
+      const history = getHistory();
+      const list = forScope(scope).slice();
+      if (list[list.length - 1] !== text) list.push(text);
+      delete history[scope];
+      history[scope] = list.slice(-maxEntries);
+      save();
+    }
+    function reset() { setRecall({ at: -1, text: null }); }
+    function sync() {
+      let recall = getRecall();
+      if (recall.text !== null && input.value !== recall.text) {
+        recall = { at: -1, text: null };
+        setRecall(recall);
+      }
+      showButton(forScope(getScope()).length > 0 && (recall.text !== null || !input.value.trim()));
+    }
+    function previous() {
+      const list = forScope(getScope());
+      const recall = getRecall();
+      const next = recall.at < 0 ? list.length - 1 : recall.at - 1;
+      if (next < 0) return;
+      haptic();
+      const text = list[next];
+      setRecall({ at: next, text });
+      input.value = text;
+      try { input.setSelectionRange(text.length, text.length); } catch (_) { /* unfocused */ }
+      resize();
+      rememberDraft();
+    }
+    return { load, save, forScope, rememberSent, reset, sync, previous };
+  }
+
+  /* Queue strips share their display and action wiring while each view keeps
+     its own copy and styling of a queue row. `renderRow` and `onAction` are
+     the view's send contract. */
+  function createQueueStrip(el, renderRow, onAction) {
+    function render(rows, before = "") {
+      el.classList.toggle("hidden", !rows.length && !before);
+      el.innerHTML = before + rows.map(renderRow).join("");
+    }
+    el.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-composer-action]");
+      if (button) onAction(button.dataset.composerAction, button.dataset.composerId);
+    });
+    return { render };
+  }
+
+  function bindSubmit(form, send) {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      send(event);
+    });
+  }
+
   /* One strip, one hidden array behind it. `upload(blob)` does whatever a view
      needs to hand the gateway the bytes and must resolve to the string that
      names the result there (a chat's attachment name, a pane's inbox path);
@@ -135,5 +255,8 @@
     };
   }
 
-  window.SheepItComposer = { MAX_EDGE, KEEP_AS_IS, shrinkImage, imagesIn, resizeTextarea, createAttachStrip };
+  window.SheepItComposer = {
+    MAX_EDGE, KEEP_AS_IS, shrinkImage, imagesIn, resizeTextarea,
+    createDraftStore, createRecallHistory, createQueueStrip, bindSubmit, createAttachStrip,
+  };
 })();

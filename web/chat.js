@@ -565,21 +565,22 @@
   }
 
   function drawQueue() {
-    elQueue.classList.toggle("hidden", !queued.length);
-    elQueue.innerHTML = queued.map((p) => {
+    queueStrip.render(queued);
+    keepWatching();
+  }
+
+  function queueRow(p) {
       const failed = p.state === "failed";
       return `<div class="queued${failed ? " failed" : ""}">
         <span class="queued-state">${esc(failed ? "failed" : "queued")}</span>
         <span class="queued-text">${esc(p.prompt || "")}</span>
         ${failed && p.last_error ? `<span class="queued-why">${esc(p.last_error)}</span>` : ""}
         <span class="queued-acts">
-          <button type="button" class="queued-act" data-q-edit="${p.id}">Edit</button>
-          <button type="button" class="queued-act accent" data-q-send="${p.id}">Send now</button>
-          <button type="button" class="queued-act danger" data-q-delete="${p.id}">Delete</button>
+          <button type="button" class="queued-act" data-composer-action="edit" data-composer-id="${p.id}">Edit</button>
+          <button type="button" class="queued-act accent" data-composer-action="send" data-composer-id="${p.id}">Send now</button>
+          <button type="button" class="queued-act danger" data-composer-action="delete" data-composer-id="${p.id}">Delete</button>
         </span>
       </div>`;
-    }).join("");
-    keepWatching();
   }
 
   async function queueAct(id, action) {
@@ -591,13 +592,9 @@
     await fetchQueue();
   }
 
-  elQueue.addEventListener("click", async (e) => {
-    const btn = e.target.closest("button");
-    if (!btn) return;
-    const id = btn.dataset.qSend || btn.dataset.qDelete || btn.dataset.qEdit;
-    if (!id) return;
-    if (btn.dataset.qSend) { queueAct(id, "send"); return; }
-    if (btn.dataset.qDelete) { queueAct(id, "delete"); return; }
+  function onQueueAction(action, id) {
+    if (action === "send") { queueAct(id, "send"); return; }
+    if (action === "delete") { queueAct(id, "delete"); return; }
     // Editing takes it back: the text lands in the box it was typed in, where
     // the keyboard is already open, and sending it queues it again.
     const row = queued.find((p) => String(p.id) === String(id));
@@ -605,8 +602,9 @@
     elInput.value = row.prompt || "";
     grow();
     elInput.focus();
-    await queueAct(id, "delete");
-  });
+    queueAct(id, "delete");
+  }
+  const queueStrip = SheepItComposer.createQueueStrip(elQueue, queueRow, onQueueAction);
 
   /* ---- Composer. A pane's message waits for the window in the queue; a
      headless chat's goes to its own process, where one sent mid-answer waits
@@ -631,8 +629,7 @@
       $("composer").requestSubmit();
     }
   });
-  $("composer").addEventListener("submit", async (e) => {
-    e.preventDefault();
+  async function submitMessage() {
     const text = elInput.value;
     if (attachStrip.list.some((a) => !a.name)) return; // still uploading
     const images = attachStrip.list.map((a) => a.name);
@@ -656,7 +653,8 @@
       fetchQueue();
     } catch (err) { alert(err.message); }
     elSend.disabled = false;
-  });
+  }
+  SheepItComposer.bindSubmit($("composer"), submitMessage);
   elStop.addEventListener("click", () => current && api("/api/chat/stop", { id: current.id }).catch(() => {}));
   // Inside the desktop app, the transcript is the same pane in the parent.
   $("btn-transcript").addEventListener("click", (e) => {

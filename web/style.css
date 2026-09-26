@@ -31,13 +31,8 @@
      reports - orange so it reads as yours rather than as the agent's. */
   --status-queued: #f0883e;
 
-  /* Transcript roles */
-  --role-user: #7ee787;
-  --role-user-bg: rgba(126, 231, 135, 0.07);
+  /* Default transcript and diff text */
   --role-assistant: #d1d7e0;
-  --role-tool: #8b949e;
-  --role-meta: #a371f7;
-  --role-tip: #58a6ff;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --font-mono: "SF Mono", Menlo, Monaco, Consolas, "Courier New", monospace;
@@ -127,7 +122,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   visibility: hidden;
 }
 
-/* Header: agent switcher + settings gear, no branding */
+/* Header: agent switcher, no branding */
 .app-header {
   flex-shrink: 0;
   display: flex;
@@ -142,12 +137,9 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   z-index: 10;
 }
 
-.header-gear {
-  position: relative;
-  flex-shrink: 0;
-}
 
 
+.conn-indicator { position: relative; width: 10px; height: 10px; flex-shrink: 0; }
 .conn-dot {
   position: absolute;
   top: 2px;
@@ -1114,12 +1106,11 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   color: var(--role-assistant);
 }
 
-/* Transcript blocks, coloured by speaker */
+/* The pane transcript, shown verbatim with its terminal colors. */
 .t-block {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  margin: 6px 0;
 }
 
 .t-block a {
@@ -1129,112 +1120,12 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   word-break: break-all;
 }
 
-.t-block span a {
-  color: inherit;
-}
+.t-block span a { color: inherit; }
 
-.t-assistant {
-  color: var(--role-assistant);
-}
-
-.t-user {
-  color: var(--role-user);
-  background: var(--role-user-bg);
-  border-left: 2px solid var(--role-user);
-  border-radius: 0 6px 6px 0;
-  padding: 6px 10px;
-  margin: 10px 0;
-  font-family: var(--font-sans);
-  font-size: 14px;
-}
-
-.t-tool {
-  color: var(--role-tool);
-  font-size: 12px;
-  padding-left: 8px;
-  border-left: 1px solid var(--border-subtle);
-}
-
-.t-meta {
-  color: var(--role-meta);
-  font-size: 12px;
-  font-style: italic;
-}
-
-.t-tip {
-  color: var(--role-tip);
-  font-size: 12px;
-}
-
-.t-status {
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: pre-wrap;
-}
-
-/* The prompt an agent is waiting on: its options are the reason the phone is
-   in your hand, so it gets a card of its own rather than blending into prose. */
-.t-select {
-  color: var(--text-primary);
-  background: var(--bg-card);
-  border: 1px solid var(--accent-primary);
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin: 10px 0;
-  font-size: 13px;
-}
-
-/* The plain view: one block for the whole pane, in the terminal's own colours
-   and nothing else. No role colouring - a marker the parser reads wrongly is
-   exactly what this view exists to show. */
-.t-plain {
+.t-transcript {
   color: var(--text-secondary);
   margin: 0;
   font-size: 12px;
-}
-
-/* Tables keep their alignment and scroll sideways instead of wrapping. */
-.t-table {
-  white-space: pre;
-  overflow-x: auto;
-  font-size: 11px;
-  color: var(--role-tool);
-  padding-bottom: 2px;
-}
-
-/* The terminal's full-width input-box borders become a hairline. */
-.t-rule {
-  height: 1px;
-  background: var(--border-subtle);
-  margin: 12px 0;
-}
-
-/* Same, but the border carried the session title. */
-.t-rule-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 14px 0 10px 0;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.t-rule-label::before,
-.t-rule-label::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--border-subtle);
-}
-
-.t-rule-label span {
-  flex-shrink: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  letter-spacing: 0.3px;
 }
 
 .history-empty {
@@ -1328,10 +1219,16 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 /* Key palette: single keypresses for the agent's confirmation prompts. */
 .keys-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 6px 0 2px 0;
+  background: var(--bg-surface);
+  z-index: 12;
 }
 
 .keys-bar.hidden { display: none; }
@@ -1383,10 +1280,6 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .key-no { color: #ff7b72; border-color: rgba(248, 81, 73, 0.3); }
 .key-enter { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }
 
-.header-keys.active {
-  background: var(--bg-hover);
-  color: var(--accent-primary);
-}
 
 /* Row mirrors the composer below it: text on the left, a round action button
    on the right at the same size and offset as Send, so the two line up. */
@@ -1453,6 +1346,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 
 .prompt-form {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 6px;
@@ -1469,6 +1363,50 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.composer-menu { position: relative; display: flex; }
+.btn-more[aria-expanded="true"] { background: var(--bg-hover); color: var(--accent-primary); }
+.composer-menu-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: min(220px, 72vw);
+  padding: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.composer-menu-panel.hidden { display: none; }
+.composer-menu-item {
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+}
+.composer-menu-item:active { background: var(--bg-hover); }
+.composer-menu-item.active { color: var(--accent-primary); }
+.composer-menu-setting { padding: 8px 10px 2px; color: var(--text-muted); font-size: 11px; }
+.composer-menu-select {
+  width: 100%;
+  min-height: 36px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
 }
 
 .prompt-form.stacked .prompt-actions {
@@ -1497,6 +1435,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 }
 
 .btn-attach:active { background: var(--bg-hover); color: var(--text-primary); }
+.btn-attach.active { background: var(--bg-hover); color: var(--accent-primary); }
 
 /* Uploading: the clip turns and the button stops taking taps, because a
    second screenshot queued behind the first is how you end up with two. */
@@ -1691,33 +1630,12 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 .sheet-row input[type="checkbox"]:disabled { opacity: 0.4; }
 
-/* A row whose setting the current view has taken over. */
-.sheet-row.row-muted label { opacity: 0.45; }
-
 .sheet-agent-text {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-.sheet-title {
-  color: var(--text-primary);
-  font-size: 14px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sheet-cwd {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-family: var(--font-mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  direction: rtl; /* keep the tail of long paths visible */
-  text-align: left;
-}
 
 .sheet-row select {
   background: var(--bg-card);
@@ -1733,31 +1651,6 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   width: 20px;
   height: 20px;
   accent-color: var(--accent-primary);
-}
-
-.mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.mode-btn:active { background: var(--bg-hover); }
-
-.mode-btn svg { color: var(--text-muted); }
-
-.sheet-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 14px;
 }
 
 .sheet-btn {

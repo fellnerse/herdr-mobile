@@ -14,7 +14,7 @@ Phases are checked off as they land.
 | | source | transport | write path | works for |
 |---|---|---|---|---|
 | Console | the pane's pty | `herdr-client.sock` bincode → WebSocket, pushed | raw bytes to the pty | anything |
-| Transcript | the pane's *screen*, last 100 lines | `GET /api/agents/<pane>/history`, polled every 2s | `POST /api/queue`; keys via `agent.send_keys` | any agent, and plain shells |
+| Transcript | the pane's *screen*, last 400 lines by default | `GET /api/agents/<pane>/history`, polled every 2s | `POST /api/queue`; keys via `agent.send_keys` | any agent, and plain shells |
 | Chat | Claude Code's session JSONL | `GET /api/chat/events`, long-polled by index | `POST /api/chat/send` → `POST /api/queue` (phase 1) | Claude Code panes only |
 
 This table is what exists today. The transcript row is going away in phase 4,
@@ -193,33 +193,31 @@ is its own piece of work, and it is not a view problem.
   attachment strip holding `{name, url}` entries. `chat.js` supplies
   `images[]`; the plain view folds the same strip's paths into `@path` tokens
   when it queues a prompt. Image-only prompts work in both.
-- [ ] Extract the remaining composer lifecycle (drafts, recall and queue
-  strip) behind a pluggable send. Keep completion behavior view-specific for
-  now: plain keeps `@` path completion and chat keeps its slash menu, as
-  requested; do not bring either into the other view in this phase.
-- [ ] The key palette moves into the composer's icon row, next to attach —
-  out of the header (`#btn-keys` goes) and out of being a panel stacked above
-  the box on its own. It only does anything for **plain**: chat's permission
-  prompts are already structured (`askHtml`'s Allow/Deny), so a blind
-  esc/y/n/arrows palette next to a chat has nothing to point at and the icon
-  hides itself there.
-- [ ] Keep `tools/test-drafts.js` passing, and cover completion and drafts
-  under the extracted component.
+- [x] Extract scoped draft persistence, recall history, queue-strip rendering
+  and action delegation into `composer.js`. Each view still supplies its send
+  callback and queue-row presentation, so pane prompts continue through the
+  queue and chat messages continue through `/api/chat/send`.
+- [x] Keep completion behavior view-specific for now: plain keeps `@` path
+  completion and chat keeps its slash menu, as requested; neither completion
+  was added to the other view.
+- [x] The plain key palette opens from the composer's icon row, next to
+  attach. Its panel is anchored above the composer, and the header toggle is
+  gone. The palette remains plain-only because chat prompts have structured
+  Allow/Deny controls.
+- [ ] Verify the existing `tools/test-drafts.js` suite after the extraction;
+  completion coverage is deferred with the completion work.
 
 ### Phase 4 — fold the chat renderer in, drop the transcript's guess, retire the second page
 
-- [ ] Move `build()`, `markdown()`, `itemHtml()` and `askHtml()` into `app.js`
-  as a second render mode beside `plainHtml`.
-- [ ] Delete `renderTranscript`'s block classification — rule detection,
-  composer framing, status-bar hiding, turn splitting — and the `RE_RULE_GLYPH`
-  machinery under it. Keep `parseTranscript`'s row split and the three things
-  read straight off it regardless of classification: `renderLiveInput`,
-  `renderNumberKeys`, `state.mode`. `plainHtml` becomes the only way to draw a
-  screen; there is no classified mode left for it to be an escape hatch from.
-- [ ] Delete `tools/test-transcript.js`'s per-agent glyph fixtures with it.
-  Whatever of `parseTranscript` still needs covering (row split, live input,
-  mode, keypad) moves to wherever exercises the surviving code path, not a
-  revived version of that suite.
+- [ ] Move the pane chat renderer into `app.js` beside the verbatim transcript
+  renderer, with chat's structured events used when available.
+- [x] Removed transcript block classification, turn splitting, composer
+  framing, status-bar hiding, and the `RE_RULE_GLYPH` machinery. The pane
+  transcript is now always verbatim; status lines remain visible. The
+  “Plain view” and “Show agent status bar” settings are gone. Row splitting,
+  ANSI colors, live-input mirroring, mode detection and keypad sizing remain.
+- [x] Replaced the per-agent glyph fixtures in `tools/test-transcript.js` with
+  focused checks for verbatim rows, ANSI colors, live input, mode and keypad.
 - [ ] Delete `chat.html`, `chat.js`, `chat.css`, `renderPaneChat`, the
   `postMessage` protocol, the second `visualViewport` handler, the second
   escaper and the second scroll-to-bottom; drop `frame-ancestors 'self'` from
@@ -229,11 +227,9 @@ is its own piece of work, and it is not a view problem.
 
 ### Phase 5 — the view model
 
-- [ ] `state.paneView` becomes a per-pane renderer choice, `chat | plain`,
-  replacing the wide-only chat/transcript toggle and the plain-view checkbox
-  in the settings sheet — there is no third option once the transcript's guess
-  is gone. Chat is offered only where a log resolves; plain is what every
-  other pane gets, and what a chat-eligible pane falls back to on request.
+- [ ] `state.paneView` becomes a per-pane renderer choice, `chat | transcript`,
+  replacing the wide-only chat/transcript toggle. The transcript renderer is
+  verbatim; it is offered for every pane, and chat only where a log resolves.
 - [ ] Source follows renderer: the log where there is one, the screen
   otherwise.
 - [ ] Update `docs/design.md` and the architecture notes in `CLAUDE.md`, which
