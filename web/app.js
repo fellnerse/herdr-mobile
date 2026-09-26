@@ -2443,8 +2443,12 @@
         state.historyText = newText;
         renderTranscript(newText);
 
-        // Auto-scroll to bottom if user hasn't scrolled up, or if forced
-        if (!state.isUserScrolledUp || forceScroll) {
+        // Auto-scroll to bottom if user hasn't scrolled up, or if forced.
+        // The transcript keeps polling behind a chat that covers it (see
+        // renderChatSurface), and on a phone it shares the document scroller
+        // with that chat now - scrolling a hidden transcript would drag the
+        // chat the user is actually reading down with it.
+        if ((!state.isUserScrolledUp || forceScroll) && !elHistoryContainer.classList.contains("hidden")) {
           scrollToBottom();
         }
       }
@@ -2539,7 +2543,6 @@
       const term = consoleState.term;
       if (!term) return;
       for (const bytes of frames) term.write(bytes);
-      if (keyboardOpen()) pinConsoleBottom();
     }
   }
 
@@ -4055,6 +4058,11 @@
       document.dispatchEvent(new CustomEvent("sheepit:chat-dismiss"));
       return;
     }
+    // The console is the one full-view that leaves this header showing, since
+    // it sits below --app-header-height rather than covering it - so this is
+    // its only way back, and skipping the close left it fixed on top of the
+    // flock this button just opened underneath it.
+    if (!wide.matches && !elConsoleView.classList.contains("hidden")) closeConsole();
     openPicker();
   });
   elBtnClosePicker.addEventListener("click", closePicker);
@@ -4226,6 +4234,12 @@
       || (wide.matches ? state.paneView === "chat" : state.chatVisible));
     const targetId = show ? (state.activeChatId || target) : "";
     elChatView.classList.toggle("hidden", !show);
+    // The transcript used to sit behind a chat that was `position: fixed`
+    // over the whole screen, so leaving it in the document did nothing. Now
+    // both are flex items in the same flow, and an unhidden transcript is a
+    // sibling above the chat - one long scroll up from the top of a chat and
+    // you are reading the pane's raw output instead.
+    elHistoryContainer.classList.toggle("hidden", show);
     elPromptForm.parentElement.classList.toggle("chat-covered", show);
     if (targetId !== chatTarget) {
       chatTarget = targetId;
@@ -5516,13 +5530,16 @@
       const moved = touchY - y;
       // A tap that drifts is still a tap; only a real drag scrolls.
       if (Math.abs(moved) < 24) return;
+      // This is remote terminal scrollback, not a local page scroll. Stop
+      // Safari and xterm competing to interpret the same finger movement.
+      e.preventDefault();
       touchY = y;
       sendConsoleControl({
         type: "scroll",
         direction: moved < 0 ? "up" : "down",
         lines: Math.min(10, Math.max(1, Math.round(Math.abs(moved) / 24))),
       });
-    }, { passive: true });
+    }, { passive: false });
     elConsoleTerm.addEventListener("touchend", () => { touchY = null; }, { passive: true });
   }
 
@@ -5538,7 +5555,6 @@
     consoleState.rows = rows;
     if (keyboardOpen()) {
       if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
-      pinConsoleBottom();
       return;
     }
     const box = consoleBox();
@@ -5649,16 +5665,11 @@
     return Boolean(vv && vv.height < window.innerHeight * 0.75);
   }
 
-  function pinConsoleBottom() {
-    elConsoleTerm.scrollTop = elConsoleTerm.scrollHeight;
-  }
-
   function fitConsole() {
     if (elConsoleView.classList.contains("hidden")) return;
     if (keyboardOpen()) {
       if (consoleFitTimer) clearTimeout(consoleFitTimer);
       consoleFitTimer = null;
-      pinConsoleBottom();
       return;
     }
     if (consoleFitTimer) clearTimeout(consoleFitTimer);
@@ -5701,7 +5712,10 @@
       consoleState.heldBytes = 0;
       consoleState.paneId = state.activePaneId;
     }
-    term.focus();
+    // Focusing xterm opens the software keyboard on iOS. Keep the terminal
+    // ready for typing on desktop, but let mobile users choose when to bring
+    // up the keyboard by tapping the terminal themselves.
+    if (wide.matches) term.focus();
     connectConsole();
   }
 
@@ -5768,7 +5782,6 @@
       }
       consoleState.heldBytes = 0;
       term.write(bytes);
-      if (keyboardOpen()) pinConsoleBottom();
     };
     ws.onclose = () => {
       if (consoleState.ws === ws) consoleState.ws = null;
@@ -5800,6 +5813,11 @@
     loop();
   }
 
+  // Shortcut taps should not move focus off xterm's hidden textarea. On
+  // mobile that blur dismisses the system keyboard before the key is sent.
+  elConsoleKeys.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".key-btn")) e.preventDefault();
+  });
   elConsoleKeys.addEventListener("click", (e) => {
     const btn = e.target.closest(".key-btn");
     if (btn && btn.dataset.key) sendConsoleKey(btn.dataset.key);

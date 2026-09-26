@@ -105,15 +105,15 @@ body:has(.sheet-backdrop:not(.hidden)) {
 
 .app-header { position: sticky; top: 0; }
 
-/* Warm, but not on screen. The flock is in the flow and the chat is fixed
-   behind it, so the rubber-band at the end of the list slides the flock up
-   while the chat stays pinned to the viewport - and a strip of somebody's
-   transcript appears under the last project. Painting nothing there leaves
-   the body's own colour, which is what the bounce is supposed to show.
-   `visibility` rather than `display`, so the box is still laid out and the
-   transcript keeps where it was scrolled to. */
+/* The flock and the chat share one document scroller now (see the note atop
+   this file), so only one of them can be in flow at a time - `display: none`
+   takes the other out of it entirely, or its `min-height: 100dvh` sits above
+   or below the flock as a screen of blank, unscrollable space. app.js keeps
+   each side's own scroll position (`flockScroll` / restoreFlockScroll) across
+   the swap, since the browser has nothing to remember it by once the element
+   it belonged to stops being laid out. */
 body:has(.agent-picker:not(.hidden)) .app-container {
-  visibility: hidden;
+  display: none;
 }
 
 /* Header: agent switcher, no branding */
@@ -1067,6 +1067,12 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   position: relative;
 }
 
+/* A chat covers this the way `.input-dock.chat-covered` covers the composer -
+   both are flex items in the same document flow now, so leaving this one
+   merely `visibility`'d or un-toggled put the raw transcript directly above
+   the chat, reachable by scrolling past the top of it. */
+.history-container.hidden { display: none; }
+
 /* A long press has to catch the text, not the tap highlight. The transcript
    only needs saying out loud; the console has to be talked out of xterm's own
    `user-select: none`, which is there to protect the selection xterm draws
@@ -1146,6 +1152,13 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 /* Bottom Input Dock */
 .input-dock {
   flex-shrink: 0;
+  /* The document is the scroller now (see the note atop this file), so
+     without this the dock is just the last flex item and scrolls off with
+     the rest of the transcript. Sticky keeps it pinned to the bottom of the
+     viewport the way it sat when `.app-container` itself was fixed, while
+     leaving the scroll that collapses Safari's chrome alone. */
+  position: sticky;
+  bottom: 0;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
   /* Leave breathing room below the input controls, including the home
@@ -2273,6 +2286,10 @@ footer.input-dock.chat-covered { display: none !important; }
   flex-shrink: 0;
   display: flex;
   gap: 6px;
+  /* The visual viewport already ends at the top of the software keyboard.
+     Adding the home-indicator inset here too leaves an oversized gap and
+     makes the row appear to jump upward when the keyboard opens. */
+  margin-bottom: 10px;
   padding: 8px 10px;
   overflow-x: auto;
   border-top: 1px solid var(--border-subtle);
@@ -2870,7 +2887,7 @@ footer.input-dock.chat-covered { display: none !important; }
   /* The flock is always open here, and the chat is the column beside it
      rather than something behind it - nothing to hide. */
   body:has(.agent-picker:not(.hidden)) .app-container {
-    visibility: visible;
+    display: flex;
   }
 
   /* Both of these say "go back to the list", and the list never left. */
@@ -3122,6 +3139,11 @@ footer.input-dock.chat-covered { display: none !important; }
   display: flex; gap: 8px; align-items: flex-end;
   padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 8px);
   background: var(--bg-surface); border-top: 1px solid var(--border);
+  /* Same reason as .input-dock: the document scrolls now, so without this
+     the composer is just the last item in the chat's flow and scrolls off
+     with the messages above it. */
+  position: sticky;
+  bottom: 0;
 }
 #chat-chat-view .composer textarea { flex: 1; resize: none; font-size: 16px; max-height: 40vh; border-radius: 18px; padding: 8px 14px; }
 #chat-chat-view .send {
