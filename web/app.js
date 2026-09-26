@@ -614,7 +614,7 @@
     elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
     // Pane chat currently reads Claude Code's session log format.
     elBtnPaneChat.classList.toggle("hidden", !chattable);
-    elBtnViewNormal.classList.toggle("hidden", chattable);
+    elBtnViewNormal.classList.toggle("hidden", chattable || wide.matches);
     const consoleShowing = !elConsoleView.classList.contains("hidden");
     elBtnPaneChat.setAttribute("aria-pressed", String(!consoleShowing && chatShowing));
     elBtnViewNormal.setAttribute("aria-pressed", String(!consoleShowing && !chatShowing));
@@ -4276,6 +4276,10 @@
     elHistoryContainer.classList.toggle("hidden", show);
     elPromptForm.classList.toggle("chat-mode", show);
     elPromptInput.placeholder = show ? "Message Claude…" : "Prompt or tap mic…";
+    // The composer is initially measured while its app pane may still be
+    // display:none behind the flock. Measure again after the mobile view has
+    // been laid out so its first appearance has the right height.
+    requestAnimationFrame(autoResizeTextarea);
     if (targetId !== chatTarget) {
       chatTarget = targetId;
       document.dispatchEvent(new CustomEvent("sheepit:chat-target", { detail: targetId }));
@@ -4319,13 +4323,18 @@
     elPromptForm.classList.remove("chat-mode");
     chatTarget = "";
     renderAgentBar();
+    if (!headless && wide.matches && state.activePaneId) openConsole();
     if (headless) fetchAgents();
     // This event always means "back to the flock" - a pane's chat included,
     // or the Claude Code transcript it falls back to (a view its own button
     // is hidden for) shows behind it instead of the project list.
     if (!wide.matches) openPicker();
   });
-  wide.addEventListener("change", () => renderAgentBar());
+  wide.addEventListener("change", () => {
+    renderAgentBar();
+    if (wide.matches && state.activePaneId && state.paneView !== "chat"
+        && elConsoleView.classList.contains("hidden")) openConsole();
+  });
 
   function openAsChat(paneId) {
     const agent = state.agents.find((a) => a.pane_id === paneId);
@@ -4784,6 +4793,7 @@
   // Give the composer room while it has focus.
   elPromptInput.addEventListener("focus", () => {
     elPromptInput.classList.add("expanded");
+    if (!wide.matches) document.documentElement.classList.add("keyboard-open");
     autoResizeTextarea();
     if (state.chatVisible || state.activeChatId) return;
     setTimeout(() => {
@@ -4794,6 +4804,7 @@
 
   elPromptInput.addEventListener("blur", () => {
     elPromptInput.classList.remove("expanded");
+    document.documentElement.classList.remove("keyboard-open");
     autoResizeTextarea();
   });
 

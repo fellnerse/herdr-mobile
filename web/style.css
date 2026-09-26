@@ -1172,6 +1172,12 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   z-index: 10;
 }
 
+/* iOS can retain the home indicator inset while the keyboard is open. The
+   keyboard owns that bottom area, so don't reserve it a second time. */
+.keyboard-open .input-dock {
+  padding-bottom: 0;
+}
+
 /* Prompt Form */
 /* Mirror of the desktop's own input line, so a prompt typed on the laptop is
    visibly the terminal's and not something half-entered on the phone. */
@@ -3303,5 +3309,32 @@ body:has(.agent-picker:not(.hidden)) .app-container {
     min-height: 0;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* On phones, keep the composer controls together above a full-width input.
+   The desktop composer stays on its existing single row. */
+@media (max-width: 899px) {
+  .prompt-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .prompt-form > .prompt-input {
+    order: 0;
+    grid-row: 2;
+    width: 100%;
+    min-width: 0;
+  }
+  .prompt-form > .prompt-actions {
+    display: flex;
+    grid-row: 1;
+    flex-direction: row;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .prompt-form.stacked > .prompt-actions {
+    flex-direction: row;
+    justify-content: flex-end;
   }
 }
