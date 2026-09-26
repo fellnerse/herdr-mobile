@@ -19,12 +19,25 @@ pane is still chosen behind the flock so its transcript is loaded by the time
 you ask for it; it just does not drag the screen with it.
 
 On a Mac the same two screens fit side by side. Past 900px the flock stops
-being a sheet and becomes a 360px column on the left that nothing closes: the
+being a sheet and becomes a 380px column on the left that nothing closes: the
 chat opens beside it, the back chevron and the X have nothing left to do and go
 away, and the transcript and composer hold to a column of their own rather than
 running the width of a monitor. Everything below that width still stacks, which
 is what a phone and a narrow window both want. The breakpoint lives in
 `style.css`; `app.js` knows only that closing the flock is not a thing there.
+
+Everything else the app opens goes in that same right-hand column: the console,
+the changed files, the tokens page and the settings. They are full-screen views
+on a phone, where a half-view of a terminal or a diff is no view at all, and on
+a Mac they start where the flock ends — one column saying what there is, the
+other showing whatever you asked to see of it, and nothing covering the list.
+Two of those views are a reading of one pane, so picking another row underneath
+one re-aims it rather than leaving it showing the pane you walked away from: the
+console re-attaches, the diff re-reads the new pane's working tree, and a
+headless chat, which is not a pane at all, closes both. The tokens page and the
+settings belong to no pane and sit still. The console is also the one view that
+used to stop the poll while it was up; now it only takes the transcript out of
+the loop, because the flock beside it has to stay alive.
 
 ### The row says what it is doing
 
@@ -42,7 +55,7 @@ nothing is ever delivered into one.
 | Idle 🟢 | green spine | standing, head up |
 | Blocked 🔴 | red spine **and a tinted card** | head up, ear pricked — twitch |
 | Done 🔵 | blue spine | lying down asleep — slow breathing |
-| Unknown ⚪ | grey spine | no sheep — empty pasture |
+| Unknown ⚪ | grey spine | no animal — a black terminal with a sheep on it |
 
 The spine is five pixels down the left edge of the card, drawn as an inset
 shadow so the corner radius clips it and the swipe underneath does not have to
@@ -57,8 +70,16 @@ hairline.
 
 Idle stands rather than sleeps on purpose: it is the state that most wants
 answering, so it must not look like the dormant one. The pane with no agent in
-it at all is the empty pasture — which is what a project's plain shell tab
-draws, beside its siblings' sheep.
+it at all draws none of those postures: it is a black terminal screen with a
+`>_` on it and a small white sheep standing beside the prompt — the only sheep
+in the flock with no breed, no colour and nothing to be doing, which is what a
+project's plain shell tab shows beside its siblings. The prompt is what makes
+it a terminal rather than a dark card, and the animal is what keeps it in the
+same list as the rest. Bare ground was the first answer and it said the wrong
+thing: an empty field is an agent that has spent its window, and that is what
+the grass is for. A shell has not run out of anything. It also needs no word
+beside it — the drawing already says shell, and the badge saying it again was
+the same fact twice.
 
 Every animation stops under `prefers-reduced-motion`.
 
@@ -104,6 +125,14 @@ Only the blade at the muzzle moves. Eight swaying blades on every row of a list
 is a battery bill, not a meadow.
 
 ### The machine is the other wall
+
+Off unless you ask for it: **Show machine load** in Settings, saved on the
+phone (`sheepit.machine`) and off on a fresh install, because the strip answers
+a question about the laptop rather than about the agents and most glances at the
+flock are not asking it. While it is off the phone asks for the usage windows
+with `?machine=0` and the gateway does not read a single counter — the strip
+disappearing and the work behind it stopping are the same switch. Turning it on
+takes a poll to show numbers: rates need a previous pass to measure against.
 
 Under the subscriptions' windows, in the same columns, sits the computer
 itself: hostname, one-minute load average under it, then five readings two to a
@@ -310,29 +339,71 @@ with the whole four-by-four of it checked in `tools/test-flock.js`.
 ## Tabs
 
 A workspace has tabs — the laptop shows them in its tab bar — and the overview
-does not list them. A row is the workspace: one sheep per pen, which for
-everything the scheduler cuts is one sheep per worktree. This is a change from
-listing a row per tab, and the reason is what the rows could *do*: every action
-a swipe revealed acted on the workspace, so closing what looked like one tab
-stopped the whole branch and took its neighbours with it. A row that is a
-worktree can offer Close and Remove honestly.
+groups by the workspace rather than by them: a pen, which for everything the
+scheduler cuts is one pen per worktree. This is a change from listing a row per
+tab, and the reason is what the rows could *do*: every action a swipe revealed
+acted on the workspace, so closing what looked like one tab stopped the whole
+branch and took its neighbours with it. A pen can offer Close and Remove
+honestly.
 
-All the row says about the tabs inside is how many there are — `3 tabs` on the
-small line, and nothing at all on a worktree with one, which is the common
-case. Which of them the row speaks for is whichever needs you most: a question
+A pen with one tab in it — the common case — is one row, and its sheep is
+hashed from the workspace rather than from the pane, so a worktree keeps one
+face for as long as it is open.
+
+A pen with more than one **hangs them out**: the worktree's title on a quiet
+line of its own, and a sheep per tab indented underneath it, joined to the
+title by a bracket down the left. Standing in front of them instead was honest
+about Close and dishonest about everything else — the row drew whichever tab
+needed you most, so the second agent in a worktree was the words `2 tabs` in
+the corner of the first one's row, and the only way to it was the strip above
+somebody else's transcript. The count stays, on the title, because it is what
+makes Close read as stopping more than one thing.
+
+Which of the tabs the title speaks for is whichever needs you most: a question
 first, then a turn that finished and is sitting there, then work in progress,
-and a plain shell last. That is also the pane the row opens, so the sheep, the
-status word and the tap all agree.
+and a plain shell last. That is the pane tapping the title opens, so a pen you
+open lands on the tab that was asking.
 
-The sheep is hashed from the workspace rather than the pane, so a worktree
-keeps one face for as long as it is open — hashing the leading pane would hand
-it a new animal every time another of its tabs started asking something.
+The sheep in an opened pen are hashed from their own panes, which is the one
+place the workspace hash is deliberately not used: two animals side by side
+under one title that were the same animal would say the two tabs were the same
+agent. The cost is that a worktree's face changes when its second tab opens,
+and it is the right way round — the face that matters is the one telling this
+tab from the one below it.
 
-The tabs themselves live in a strip above the transcript: a chip each, the one
-you are reading in the accent colour. Tap to switch, hold to rename, `+` for
-another tab in the same checkout, and `×` on the chip you are in to close that
-tab alone. The `×` is absent on the last tab, because Herdr closes the
-workspace along with it — that is the row's own Close, where it says so. The
+Each half of a pen offers what it can honestly do. The title keeps the
+worktree's three — Rename, Close, Remove — and a tab keeps the two a strip
+offers it: Rename, which is `tab.rename`, and Close, which closes that tab and
+not the branch. Closing is safe there because a pen is only drawn this way while
+it has a second tab for Herdr to keep the workspace alive by.
+
+On a desktop every row wears the first two of what its drawer offers as icons —
+a pencil and a bin, which arrive when the pointer is on the row. A mouse cannot
+swipe, so the drawer behind a row is a gesture it does not have, and these two
+are that drawer for this one row. They sit in the corner the `…` used to appear
+in, which is the whole of what that hint is replaced by: it said a drawer was
+there and did nothing itself. A worktree's pair renames and closes the worktree,
+a pen's title the same, a tab inside an opened pen renames and closes that tab,
+and a chat gets the bin alone, since Delete is all a chat has. Remove is
+deliberately not among them, because it deletes a checkout and should stay
+something you aim at — which means a desktop cannot delete a checkout at all,
+only close it and leave it on disk. A phone shows no icons and keeps the swipe;
+a desktop shows the icons and has no drawer, not even by right-click, which is
+the browser's own menu again. Two of anything on a row are two things to hit by
+accident, and each pointer only ever sees one of the two ways in.
+
+They arrive above the status badge rather than over it: hovering a row must not
+take anything off the row, least of all the status it is there to say. A pen's
+title has no badge in its corner and no corner to speak of, so its pair sits at
+the end of the name instead.
+
+The strip above the transcript is the other place they live: a chip each, the
+one you are reading in the accent colour. It is where a tab is switched without
+leaving the chat you are in, and the only place another one is opened. Tap to
+switch, hold to rename, `+` to add something beside them, and `×` on the chip
+you are in to close that tab alone. The `×` is absent on the last tab, because
+Herdr closes the workspace along with it — that is the pen's own Close, where it
+says so. The
 chips scroll and the `+` does not: Herdr's tab labels are whole sentences, and
 a plus that scrolls away with them is a plus nobody knows is there.
 
@@ -343,6 +414,62 @@ which is the label, not `number`. A tab somebody has named is called that; a
 tab Herdr has only numbered is called what the laptop calls it, and lets its
 pane's title lead instead.
 
+## What "+" asks
+
+There were four of them, and between them they did four unrelated things
+nobody could name from the icon: a bare workspace at the top of the flock, a
+worktree on a project heading, a tab in the strip above the transcript, and —
+on a page of its own that nothing pointed at — a chat. Two of those are the
+same question with a different answer, *another agent on this project, in its
+own checkout or not*; the other two are the other same question, *something
+new, with a terminal in front of it or a model*.
+
+So there are two, and both of them ask. The sheet is one element with a title,
+a body drawn from whichever question is being asked, and a cancel.
+
+**`+ New`, at the top of the flock**, asks chat or terminal. A terminal is
+`workspace.create` and needs nothing more said, so it happens on the tap. A
+chat needs three answers — which project, what it may do without asking, and
+which model — so the same sheet becomes that form, with the last answers filled
+in, and the project guessed from the row you were looking at.
+
+**`+` on a project heading, and `+` in the tab strip**, ask worktree or tab.
+They are the same sheet: a worktree is its own branch and its own copy of the
+tree, a tab is another agent on the branch that is already checked out. What
+differs is only what each one knows. The strip knows exactly which worktree a
+tab would join, and says so; the heading has to aim at the project's own
+checkout, which is the same workspace a branch would be cut from. A worktree
+asks for a name and takes a blank answer, which means *you name it* — one tap
+and a return key when you have not thought that far. A project with no checkout
+of its own open is offered a tab and no worktree, because Herdr resolves a
+branch through a workspace and there is none to resolve through.
+
+## The chats among the pens
+
+A headless chat is the same Claude Code spending the same subscription in the
+same checkout as the panes around it, and it used to live on a list of its own
+that nothing pointed at — so a chat left holding a permission prompt was a
+question nobody saw for a day. It is a row in the flock now, under the project
+its directory names, with a speech bubble over its sheep's rump. The bubble
+sits there rather than by the head because the head moves with every pose, and
+a mark that jumps around the animal is one you have to find each time.
+
+What it is *not* is a pane. It has no workspace, no tab strip, no transcript
+and no pane id Herdr would recognise, so it never enters the list of panes that
+the badge, the bleat and the selection all walk. It is hung on its project
+after the grouping and given a pen of its own at the end of that project's
+rows, below the worktrees, which are the only rows that have one. A project
+whose panes are all closed still gets a heading if a chat is running in it,
+because a chat you cannot see is a chat you cannot stop.
+
+Its status is the same vocabulary the panes use, with one deliberate gap: a
+question waiting on you is `blocked` and a turn in flight is `working`, but
+there is no `done`. Nothing marks a chat as read, so a chat that answered last
+Tuesday would sit at the top of its project asleep forever; a chat between
+turns is idle, and the push is what tells you it finished. Its drawer offers
+Delete and nothing else — Rename, Close and Remove all belong to a worktree,
+and it has none.
+
 ## Renaming
 
 Both labels are Herdr's own — `workspace.rename` writes the name in the
@@ -352,13 +479,15 @@ keeps no private nickname of its own: a name the machine under the desk knows
 nothing about is a name that disagrees with every other way of looking at the
 same workspace.
 
-Swipe a row left to reach Rename and Close. A row is a worktree, so Rename is
-`workspace.rename` and every button in the drawer names the same workspace —
+Swipe a row left to reach Rename and Close. A row that stands for a worktree —
+one with a single tab in it, or the title above a pen that has its tabs out — is
+`workspace.rename`, and every button in that drawer names the same workspace:
 Rename used to be handed a pane and rename the tab behind it, which on a
-two-tab worktree renamed something the row was not even showing. A single tab
-is renamed by holding its chip in the strip, where you can see which one you
-meant. The row is dragged aside by however wide those buttons actually are
-rather than by a number written down twice.
+two-tab worktree renamed something the row was not even showing. A row that is
+one tab of an opened pen renames that tab instead, the same `tab.rename` that
+holding its chip in the strip calls. A pointer reaches the title's Rename by the
+pencil on it rather than by the drawer. Either row is dragged aside by however
+wide its own buttons actually are rather than by a number written down twice.
 
 ## Reading the pane
 

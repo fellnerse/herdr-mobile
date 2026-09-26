@@ -82,6 +82,25 @@ def child_env() -> dict:
     return env
 
 
+# What makes a turn cost money rather than a slice of a window.
+BILLED_PER_TOKEN = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
+
+
+def bills_per_token() -> bool:
+    """Whether a turn here is invoiced, rather than paid for by a subscription.
+
+    Claude Code reports `total_cost_usd` on every turn either way - it is the
+    price the tokens would have carried on the API, and it is mostly cache
+    writes - so on a subscription the figure buys nothing and reads as alarming:
+    what a turn there actually spends is the window, which the pasture already
+    draws. The credential is what settles it, and the child's environment is
+    where it would be: an API key, or a cloud provider standing in for one.
+    """
+    env = child_env()
+    return any(env.get(k) for k in BILLED_PER_TOKEN)
+
+
 def _clip(value):
     if isinstance(value, str):
         return value if len(value) <= MAX_RESULT else value[:MAX_RESULT] + f"\n… ({len(value) - MAX_RESULT} more)"
@@ -126,7 +145,8 @@ def slim(event: dict) -> dict | None:
         return {"type": "tool_results", "content": blocks} if blocks else None
     if kind == "result":
         return {"type": "result", "is_error": bool(event.get("is_error")),
-                "subtype": event.get("subtype"), "cost": event.get("total_cost_usd"),
+                "subtype": event.get("subtype"),
+                "cost": event.get("total_cost_usd") if bills_per_token() else None,
                 "duration_ms": event.get("duration_ms"), "num_turns": event.get("num_turns"),
                 "text": event.get("result") if event.get("is_error") else None}
     if kind == "system" and event.get("subtype") == "init":
@@ -464,12 +484,21 @@ def get(chat_id):
     return _CHATS.get(chat_id)
 
 
+def summaries() -> list:
+    """Every headless chat, the one that moved most recently first.
+
+    The flock lists these beside the panes, so it asks for them on the same
+    poll as the agents rather than on one of its own - `list(...)` because a
+    chat can be born or reaped on another thread while this reads."""
+    return sorted((c.summary() for c in list(_CHATS.values())),
+                  key=lambda m: m.get("updated") or m.get("created") or 0, reverse=True)
+
+
 # ---- routes -------------------------------------------------------------
 
 def handle_list(handler, qs):
-    chats = sorted((c.summary() for c in _CHATS.values()),
-                   key=lambda m: m.get("updated") or m.get("created") or 0, reverse=True)
-    handler.send_json({"ok": True, "chats": chats, "dirs": _known_dirs(), "modes": list(MODES)})
+    handler.send_json({"ok": True, "chats": summaries(),
+                       "dirs": _known_dirs(), "modes": list(MODES)})
 
 
 def handle_events(handler, qs):

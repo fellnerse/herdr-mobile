@@ -12,43 +12,10 @@
 </head>
 <body>
   <div id="app">
-    <!-- The chats: what the page opens on -->
-    <section id="list-view" class="view">
-      <header class="bar">
-        <a href="/" class="icon-btn" aria-label="Back to projects">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
-        </a>
-        <span class="bar-title">Chats</span>
-        <span class="beta">poc</span>
-      </header>
-      <div class="scroll">
-        <form id="new-chat" class="new-chat">
-          <label>Project
-            <select id="new-cwd" required></select>
-          </label>
-          <div class="row">
-            <label>Permissions
-              <select id="new-mode"></select>
-            </label>
-            <label>Model
-              <select id="new-model">
-                <option value="">default</option>
-                <option value="opus">opus</option>
-                <option value="sonnet">sonnet</option>
-                <option value="haiku">haiku</option>
-              </select>
-            </label>
-          </div>
-          <button type="submit" class="primary">New chat</button>
-        </form>
-        <ul id="chat-list" class="chat-list"></ul>
-      </div>
-    </section>
-
     <!-- One chat -->
     <section id="chat-view" class="view hidden">
       <header class="bar">
-        <button type="button" id="btn-back" class="icon-btn" aria-label="Back to chats">
+        <button type="button" id="btn-back" class="icon-btn" aria-label="Back to the flock">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
         </button>
         <div class="bar-titles">

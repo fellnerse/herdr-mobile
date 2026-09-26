@@ -195,12 +195,6 @@
           <line x1="18" y1="20" x2="18" y2="9"></line>
         </svg>
       </button>
-      <!-- Claude Code as a chat rather than a terminal (proof of concept) -->
-      <a id="btn-chat" href="/chat.html" class="icon-btn" aria-label="Chat" title="Chat">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg>
-      </a>
       <button id="btn-flock-settings" class="icon-btn" aria-label="Global Settings" title="Global Settings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>
@@ -333,6 +327,17 @@
       </div>
 
       <div class="settings-section">
+        <div class="settings-section-title">Overview</div>
+        <div class="sheet-row">
+          <label for="toggle-machine">
+            Show machine load
+            <span class="sheet-hint">cpu, ram, swap, disk and network of the machine the agents run on</span>
+          </label>
+          <input type="checkbox" id="toggle-machine">
+        </div>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-section-head">
           <div>
             <div class="settings-section-title">Heartbeats</div>
@@ -347,6 +352,17 @@
 
   <!-- Settings sheet -->
   <div id="sheet-backdrop" class="sheet-backdrop hidden"></div>
+
+  <!-- What every "+" asks. One sheet for all of them: at the top of the flock
+       it asks chat or terminal, on a project heading or the tab strip it asks
+       worktree or tab, and the second step is whatever that answer needs. The
+       body is drawn from JS because it is the question that changes. -->
+  <section id="new-sheet" class="settings-sheet new-sheet hidden" role="dialog" aria-label="New">
+    <div class="sheet-grip"></div>
+    <h2 id="new-sheet-title" class="new-sheet-title">New</h2>
+    <div id="new-sheet-body"></div>
+    <button id="btn-close-new-sheet" class="sheet-btn sheet-close">Cancel</button>
+  </section>
 
   <section id="settings-sheet" class="settings-sheet hidden" aria-label="Settings">
     <div class="sheet-grip"></div>

@@ -28,32 +28,39 @@ function loadRows() {
   const to = src.indexOf("  async function createWorkspace() {");
   if (from < 0 || to < 0) throw new Error(`row anchors moved in ${SRC}`);
   const PRELUDE = `
-    const state = { activePaneId: null, groups: [], agents: [], queue: [],
+    const state = { activePaneId: null, groups: [], agents: [], chats: [], queue: [],
                     swiping: false, listSignature: null };
     const elAgentList = { innerHTML: "", querySelector: () => null };
     const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const knownStatus = (s) => s || "unknown";
-    const sheepSvg = () => "";
+    const sheepSeeds = [];
+    const sheepSvg = (status, seed) => { sheepSeeds.push(seed); return ""; };
     const pastureOf = (kind) => (kind ? { left: 0.5, spent: false, rate: 8, chew: "2.4s" } : null);
     const pastureMark = (p) => (p ? String(p.left) : "");
     const sheepMarks = (seed) => ({ breed: { id: "test", fleece: "#abcdef", face: "#123456" },
                                     horn: "curl", coat: "woolly", muzzle: false });
     const agoLabel = () => "";
-    const wantsInput = (a) => a.status === "blocked" || a.status === "done";
+    const agoText = () => "2m";
   `;
   /* What a tab is called, and how a project's panes collapse into one row per
      worktree, are tested on their own further down; a row is asked here with
      the real things rather than stubs that could agree with nothing. */
-  const { tabName, tabNumber, tabCount, penSeed } = loadFlock();
+  const { tabName, tabNumber, tabCount, penSeed, bornAt } = loadFlock();
+  // What the strip calls a tab, which is what a pen's rows call one too: the
+  // two lists must not have separate opinions about a tab's name.
+  const { tabChipLabel } = loadStrip();
   return new Function(
     "tabName",
     "tabNumber",
     "tabCount",
     "penSeed",
+    "bornAt",
+    "tabChipLabel",
     `${PRELUDE}${src.slice(from, to)}
-     return { state, elAgentList, agentRowHtml, renderAgentList, agentListSignature,
-              queuedByPane, penQueue, queuedLabel };`
-  )(tabName, tabNumber, tabCount, penSeed);
+     return { state, elAgentList, sheepSeeds, agentRowHtml, chatRowHtml, renderAgentList,
+              agentListSignature, queuedByPane, penQueue, queuedLabel,
+              penHtml, penHeadHtml, penTabRowHtml, penShowsTabs, penTabs };`
+  )(tabName, tabNumber, tabCount, penSeed, bornAt, tabChipLabel);
 }
 
 /* The strip above the transcript, which is where a tab is switched, named and
@@ -117,7 +124,7 @@ function loadFlock(busy = false) {
   /* `swiping` is a hand on the list. The flock is the home screen now, so
      being on screen is no longer what holds the order still - a finger is. */
   const PRELUDE = `
-    const state = { agents: [], groups: [], order: [], customOrder: [],
+    const state = { agents: [], chats: [], groups: [], order: [], customOrder: [],
                     swiping: ${busy}, listTouchedAt: 0 };
     const store = {};
     const readPref = (name) => (name in store ? store[name] : null);
@@ -125,9 +132,10 @@ function loadFlock(busy = false) {
   `;
   return new Function(
     `${PRELUDE}${src.slice(from, to)}
-     return { state, store, orderAgents, groupByProject, bornAt, wantsInput, listBusy,
+     return { state, store, orderAgents, groupByProject, bornAt, listBusy,
               projectKey, tabName, tabNumber, reorder, insertIndexFor, loadOrder, saveOrder,
-              urgency, byWorkspace, tabCount, penSeed, collapseTabs };`
+              urgency, byWorkspace, tabCount, penSeed, collapseTabs,
+              attachChats, chatStatus, chatRowOf };`
   )();
 }
 
@@ -306,7 +314,7 @@ function order(agents, busy = false, held = [], custom = []) {
     row("wA:p1", 1, "/p/api", "working"),
     row("wB:p1", 2, "/p/api", "blocked", { has_agent: false }),
   ]);
-  check("an empty pasture does not jump the queue",
+  check("a shell does not jump the queue",
         f.state.groups[0].agents.map((a) => a.pane_id), ["wA:p1", "wB:p1"]);
 }
 
@@ -652,8 +660,8 @@ function order(agents, busy = false, held = [], custom = []) {
   const shell = agentRowHtml(pen(tab({ tab_label: "2", tab_number: 2, cwd: "/p/api" })), "api");
   check("a tab with no agent is called what the laptop calls it",
         text(shell, "agent-row-name"), "tab 2");
-  check("and says so instead of a status it does not have",
-        /<span class="agent-row-ago">shell<\/span>/.test(shell), true);
+  check("and says nothing about a status it does not have",
+        /shell<\/span>/.test(shell), false);
   check("with no status badge on it", /status-badge/.test(shell), false);
 
   const named = agentRowHtml(pen(tab({ tab_label: "dev server", tab_number: 2 })), "api");
@@ -697,12 +705,18 @@ function order(agents, busy = false, held = [], custom = []) {
   };
 
   const repo = draw(group());
-  check("a repository's heading offers another worktree",
+  check("a repository's heading offers another one of these",
         /class="agent-group-add"/.test(repo), true);
-  check("and says which project it would cut",
+  check("and says which project the sheet is about",
         /data-action="worktree" data-project="\/p\/api"/.test(repo), true);
-  check("a project with nothing to cut from does not",
-        /agent-group-add/.test(draw(group({ from: "" }))), false);
+  /* The plus asks worktree-or-tab now, and a project with no checkout of its
+     own can still be given a tab - the sheet is what leaves the worktree out,
+     not the heading. */
+  check("a project that cannot be branched still offers a tab",
+        /agent-group-add/.test(draw(group({ from: "" }))), true);
+  const nothing = draw(group({ from: "", agents: [], rows: [] }));
+  check("a project with nothing open at all offers neither",
+        /agent-group-add/.test(nothing), false);
 
   /* The list is redrawn only when its signature moves, so a project that
      becomes a repository - its checkout opened on the laptop a moment ago -
@@ -722,7 +736,12 @@ function order(agents, busy = false, held = [], custom = []) {
 {
   const { agentRowHtml } = loadRows();
   const actions = (html) =>
-    [...html.matchAll(/data-action="([a-z]+)"/g)].map((m) => m[1]);
+    [...html.matchAll(/class="agent-row-action [a-z]+" data-action="([a-z-]+)"/g)]
+      .map((m) => m[1]);
+  const icons = (html) =>
+    [...html.matchAll(
+      /class="row-tool[^"]*"[\s\S]*?data-action="([a-z-]+)" data-[a-z-]+="([^"]*)"/g)]
+      .map((m) => [m[1], m[2]]);
   const of = (extra) =>
     agentRowHtml(pen({ ...row("wA:p1", 1, "/p/api", "working"), name: "api",
                        title: "Rewrite it", ...extra }), "api");
@@ -741,41 +760,147 @@ function order(agents, busy = false, held = [], custom = []) {
 
   /* Every one of them acts on the workspace, and now says so: Rename used to
      be handed a pane and rename the tab behind it, which on a two-tab worktree
-     renamed something the row was not showing. */
+     renamed something the row was not showing. Five, because the first two are
+     on the row as icons as well. */
   check("and so do the other two",
         [...of({ repo: true }).matchAll(/data-action="[a-z]+" data-workspace-id="([^"]*)"/g)]
           .map((m) => m[1]),
-        ["wA", "wA", "wA"]);
+        ["wA", "wA", "wA", "wA", "wA"]);
+
+  /* A mouse cannot swipe, so the two that are safe enough to press by accident
+     are on the row itself. Remove is not one of them: deleting a checkout stays
+     behind the right-click, where it has to be aimed at. */
+  check("and a pointer gets the first two as icons in the corner",
+        icons(of({ repo: true })), [["rename", "wA"], ["close", "wA"]]);
+  check("the row no longer grows an ellipsis that did nothing",
+        /\\2026/.test(of({ repo: true })), false);
 }
 
-// -- a row standing in front of several tabs ---------------------------------
+// -- a pen with its tabs out -------------------------------------------------
 
-/* The count is what makes Close honest: a row saying "3 tabs" is visibly not
-   one chat, so the button that stops all three does not come as a surprise. */
+/* A worktree with a second tab in it draws both of them, indented under one
+   title. Standing in front of them was honest about what Close does and
+   dishonest about everything else: the tab that lost the urgency tie was a
+   number in the corner of the other tab's row, and the only way to it was the
+   strip above somebody else's transcript.
+
+   The title is the worktree, which is what its drawer has always acted on;
+   each tab carries the two things the strip offers it and nothing more. */
 {
-  const { agentRowHtml, state } = loadRows();
+  const r = loadRows();
   const tab = (id, extra) => ({
-    ...row(id, 1, "/p/api", "working", { tab_id: `wA:t${id.slice(-1)}` }),
-    name: "api", title: "Rewrite it", ...extra,
+    ...row(id, 1, "/p/api", "working", {
+      tab_id: `wA:t${id.slice(-1)}`,
+      tab_number: Number(id.slice(-1)),
+    }),
+    name: "api", workspace_label: "sheep #4", title: "Rewrite it", repo: true, ...extra,
   });
+  const draw = (...tabs) => r.penHtml(pen(...tabs), "api", r.queuedByPane());
+  const rowsOf = (html) =>
+    [...html.matchAll(/class="agent-row st-\w+ ?[^"]*" data-pane-id="([^"]*)"/g)]
+      .map((m) => m[1]);
 
-  const one = agentRowHtml(pen(tab("wA:p1")), "api");
-  check("a worktree with one tab says nothing about tabs",
-        /row-tabs/.test(one), false);
+  const one = draw(tab("wA:p1"));
+  check("a worktree with one tab is still a single row", /pen-head/.test(one), false);
+  check("and still says nothing about tabs", /row-tabs/.test(one), false);
 
-  const three = agentRowHtml(pen(tab("wA:p1"), tab("wA:p2"), tab("wA:p3")), "api");
-  check("and one with three says so", /<span class="row-tabs">3 tabs<\/span>/.test(three), true);
+  const two = draw(tab("wA:p2", { status: "blocked", title: "Which of these?" }),
+                   tab("wA:p1"));
+  check("a worktree with two tabs draws a title", /class="agent-row pen-head/.test(two), true);
+  check("and a sheep per tab, in the order the strip has them",
+        rowsOf(two), ["wA:p1", "wA:p2"]);
+  check("the title is the worktree's own name, not the leading tab's headline",
+        /<span class="pen-head-name">sheep #4<\/span>/.test(two), true);
+  check("and it still counts what Close would stop",
+        /<span class="row-tabs">2 tabs<\/span>/.test(two), true);
 
-  /* The open chat can be any tab in the pen, not just the one leading it -
-     and the row you came from has to be the row that looks open. */
-  state.activePaneId = "wA:p2";
-  const active = agentRowHtml(pen(tab("wA:p1"), tab("wA:p2")), "api");
-  check("a pen holding the open chat is the active row",
-        /agent-row st-working active/.test(active), true);
-  state.activePaneId = "wB:p1";
-  check("and one that does not is not",
-        /active/.test(agentRowHtml(pen(tab("wA:p1"), tab("wA:p2")), "api")), false);
-  state.activePaneId = null;
+  /* A split tab is two panes under one tab: the pen has nothing to hang out,
+     since the strip switches between halves of the thing it already shows. */
+  const split = draw(tab("wA:p1", { tab_id: "wA:t1", split: true }),
+                     tab("wA:p2", { tab_id: "wA:t1", split: true }));
+  check("a split tab is not two tabs", /pen-head/.test(split), false);
+
+  /* Each sheep is its own pane's. This is the one row that does not hash the
+     workspace: two animals side by side under one title that were the same
+     animal would say the two tabs were the same agent. */
+  r.sheepSeeds.length = 0;
+  draw(tab("wA:p1"), tab("wA:p2"));
+  check("the tabs of a pen are told apart by their panes",
+        r.sheepSeeds, ["wA:p1", "wA:p2"]);
+  r.sheepSeeds.length = 0;
+  draw(tab("wA:p1"));
+  check("and a pen of one is still hashed from the worktree", r.sheepSeeds, ["wA"]);
+
+  /* What each half of the pen can be told to do. The title keeps the three that
+     act on the branch - in its drawer for a finger, and the first two of them
+     again as icons on the row itself, which is all a mouse can reach without a
+     swipe. A tab offers the two a strip does, and closing one is safe here
+     because a pen is only drawn this way while it has a second tab for Herdr to
+     keep the workspace alive by. */
+  const actions = (html) =>
+    [...html.matchAll(/class="agent-row-action [a-z]+" data-action="([a-z-]+)"/g)]
+      .map((m) => m[1]);
+  check("the title closes the worktree and the tabs close themselves",
+        actions(two),
+        ["rename", "close", "remove", "tab-rename", "tab-close",
+         "tab-rename", "tab-close"]);
+  check("and a tab's Close names the tab rather than the workspace",
+        /data-action="tab-close" data-tab-id="wA:t1"/.test(two), true);
+
+  /* The icons a pointer gets, which are the ones that can be pressed by mistake
+     and survived: Remove deletes a checkout, so it stays in the drawer where it
+     has to be aimed at. Each names what its half of the pen acts on - the title
+     the workspace, a tab its own pane and its own tab. */
+  const tools = [...two.matchAll(
+    /class="row-tool[^"]*"[\s\S]*?data-action="([a-z-]+)" data-[a-z-]+="([^"]*)"/g)]
+    .map((m) => [m[1], m[2]]);
+  check("both halves wear rename and close for a mouse, and nothing else",
+        tools,
+        [["rename", "wA"], ["close", "wA"],
+         ["tab-rename", "wA:p1"], ["tab-close", "wA:t1"],
+         ["tab-rename", "wA:p2"], ["tab-close", "wA:t2"]]);
+
+  // What a tab's row says for itself: what it is doing, and which tab that is.
+  const named = draw(tab("wA:p1", { tab_label: "dev server" }), tab("wA:p2"));
+  check("a tab says which of the strip's tabs it is",
+        /<span class="row-tab">dev server<\/span>/.test(named), true);
+  const bare = draw(tab("wA:p1", { title: "", has_agent: false }), tab("wA:p2"));
+  check("and a tab with nothing to show is called what the strip calls it",
+        /<span class="agent-row-name">tab 1<\/span>/.test(bare), true);
+
+  /* The chat you came from is one of these tabs: that tab is the active row,
+     and the title says so as well, since a long pen can have it scrolled out
+     of sight. */
+  r.state.activePaneId = "wA:p2";
+  const here = draw(tab("wA:p1"), tab("wA:p2"));
+  check("the tab holding the open chat is the active row",
+        /class="agent-row st-working active" data-pane-id="wA:p2"/.test(here), true);
+  check("and its pen is marked as the one you are in",
+        /class="agent-row pen-head here"/.test(here), true);
+  r.state.activePaneId = null;
+  check("a pen you are not in is not",
+        /pen-head here/.test(draw(tab("wA:p1"), tab("wA:p2"))), false);
+}
+
+/* A tab that is not leading its pen is drawn now, so the list has to be
+   redrawn when one of them moves - the signature used to carry the leading tab
+   and a count, which is exactly what does not change when the other tab
+   finishes. */
+{
+  const r = loadRows();
+  const sig = (status) => {
+    const agents = [
+      { ...row("wA:p1", 1, "/p/api", "blocked", { tab_id: "wA:t1", tab_number: 1 }),
+        name: "api", title: "Which of these?" },
+      { ...row("wA:p2", 1, "/p/api", status, { tab_id: "wA:t2", tab_number: 2 }),
+        name: "api", title: "Rewrite it" },
+    ];
+    r.state.groups = [{ key: "/p/api", name: "api", from: "wA", agents,
+                        rows: byWorkspace(agents) }];
+    return r.agentListSignature();
+  };
+  check("a tab behind the one leading its pen still redraws the list",
+        sig("working") === sig("done"), false);
 }
 
 // -- the strip that switches tabs --------------------------------------------
@@ -1087,10 +1212,15 @@ function order(agents, busy = false, held = [], custom = []) {
     check(`${axis} changes the animal`, strip(m.sheepSvg("idle", a)) === strip(m.sheepSvg("idle", b)), false);
   }
 
-  // Nobody home is nobody to tell apart.
+  // Nobody home is nobody to tell apart: a shell draws a shell.
   const empty = m.sheepSvg("unknown", "wJ:p1");
-  check("an empty pasture is no animal at all",
+  check("a shell is no animal at all",
         [empty.includes("sheep-horn"), empty.includes("sheep-face")], [false, false]);
+  check("it is a terminal with a sheep standing in it",
+        [empty.includes("shell-prompt"), empty.includes("shell-sheep-fleece")],
+        [true, true]);
+  // The grass is what a window has left, and a shell has no window.
+  check("and no grass under it", empty.includes("grass"), false);
 }
 
 // -- the grass is what is left to spend --------------------------------------
@@ -1436,6 +1566,135 @@ function order(agents, busy = false, held = [], custom = []) {
   check("a field that has visibly gone down redraws", mark(0.8) === mark(0.6), false);
   check("one that moved a third of a percent does not", mark(0.803), mark(0.8));
   check("and no reading marks nothing at all", u.pastureMark(null), "");
+}
+
+/* -------------------------------------------------- The chats among the pens
+ *
+ * A headless chat is a row in this list now. It is not a pane, which is the
+ * whole thing worth testing: it must reach the list without reaching
+ * `state.agents`, where the badge, the bleat and the selection all assume a
+ * pane id Herdr would answer for.
+ * -------------------------------------------------------------------------- */
+{
+  const f = loadFlock();
+  const chat = (id, cwd, extra = {}) => ({
+    id, cwd, project: cwd, project_name: cwd.split("/").pop(),
+    title: "", model: "", mode: "auto", running: false, pending: [],
+    created: 1000, updated: 1000, ...extra,
+  });
+
+  check("a chat with a question on screen is blocked",
+        f.chatStatus(chat("a", "/p/api", { pending: [{ id: "x" }] })), "blocked");
+  check("a turn in flight is working",
+        f.chatStatus(chat("a", "/p/api", { running: true })), "working");
+  /* Deliberately never done: nothing marks a chat as read, so a chat that
+     answered last week would sit at the top of its project forever. */
+  check("and one between turns is idle, never done",
+        f.chatStatus(chat("a", "/p/api", { title: "Fix it" })), "idle");
+
+  f.state.agents = [row("wA:p1", 1, "/p/api", "working"),
+                    row("wB:p1", 2, "/p/web", "idle")];
+  f.state.chats = [chat("c1", "/p/api", { title: "Fix the parser" })];
+  f.orderAgents();
+
+  const api = f.state.groups.find((g) => g.key === "/p/api");
+  check("a chat joins the project its cwd names",
+        api.rows.map((pen) => pen.lead.pane_id), ["wA:p1", "chat:c1"]);
+  check("underneath the worktrees, which are the only rows with one",
+        api.rows[1].workspace_id, undefined);
+  /* The one that matters: nothing downstream of here may find a chat where it
+     expects a pane Herdr can be asked about. */
+  check("and never among the panes",
+        f.state.agents.map((a) => a.pane_id), ["wA:p1", "wB:p1"]);
+  check("nor among the ids the held order is kept by",
+        f.state.order, ["wA:p1", "wB:p1"]);
+
+  // A chat outlives its project's panes, and a chat you cannot see is one you
+  // cannot stop.
+  f.state.agents = [row("wB:p1", 2, "/p/web", "idle")];
+  f.state.chats = [chat("c1", "/p/api", { title: "Fix the parser" })];
+  f.state.order = [];
+  f.orderAgents();
+  const orphan = f.state.groups.find((g) => g.key === "/p/api");
+  check("a project with nothing but a chat still gets a heading", !!orphan, true);
+  check("named after the project rather than the chat", orphan.name, "api");
+  check("with nothing to cut a worktree from", orphan.from, "");
+  check("and sorted to the end, having no workspace number to place it by",
+        f.state.groups.map((g) => g.key), ["/p/web", "/p/api"]);
+
+  // A chat asking permission is as loud as a pane asking one.
+  f.state.agents = [row("wA:p1", 1, "/p/api", "idle"),
+                    row("wB:p1", 2, "/p/web", "idle")];
+  f.state.chats = [chat("c1", "/p/web", { pending: [{ id: "x" }] })];
+  f.state.order = [];
+  f.orderAgents();
+  check("a chat holding a question takes its project to the top",
+        f.state.groups.map((g) => g.key), ["/p/web", "/p/api"]);
+
+  // Two chats on one project: the one waiting on you leads.
+  f.state.agents = [row("wA:p1", 1, "/p/api", "idle")];
+  f.state.chats = [
+    chat("quiet", "/p/api", { title: "Old", updated: 2000 }),
+    chat("asking", "/p/api", { title: "New", pending: [{ id: "x" }], updated: 1500 }),
+  ];
+  f.state.order = [];
+  f.orderAgents();
+  check("and among the chats of one project, the asking one is first",
+        f.state.groups[0].rows.map((pen) => pen.lead.pane_id),
+        ["wA:p1", "chat:asking", "chat:quiet"]);
+}
+
+// -- what a chat's row says ---------------------------------------------------
+{
+  const r = loadRows();
+  const chatPen = (extra = {}) => {
+    const c = { id: "c1", cwd: "/p/api", project: "/p/api", project_name: "api",
+                title: "Fix the parser", model: "opus", mode: "auto",
+                running: false, pending: [], created: 1, updated: 2, ...extra };
+    const lead = { chat: c, pane_id: "chat:" + c.id, name: c.title || "New chat",
+                   project: c.project, cwd: c.cwd, agent: "claude", has_agent: true,
+                   status: c.pending.length ? "blocked" : c.running ? "working" : "idle",
+                   title: c.title, updated: c.updated, workspace_id: "", tab_id: "",
+                   tab_label: "", repo: false, main_checkout: false, split: false };
+    return { key: lead.pane_id, chat: c, lead, tabs: [lead] };
+  };
+
+  const html = r.agentRowHtml(chatPen(), "api", null);
+  check("a chat row is opened by its chat id, not a pane id",
+        /data-chat-id="c1"/.test(html), true);
+  check("and carries no pane id at all, which nothing could resolve",
+        /data-pane-id/.test(html), false);
+  check("it says what it was asked first", /Fix the parser/.test(html), true);
+  check("and what it costs to answer", /opus · auto/.test(html), true);
+  /* A chat has no worktree, so the three things a pen's drawer offers would
+     all be lies. Delete is the only one, and the only way a chat goes away
+     now that the list it was deleted from is gone. */
+  check("the drawer offers delete", /data-action="chat-delete"/.test(html), true);
+  check("and nothing that belongs to a worktree",
+        /data-action="(rename|close|remove)"/.test(html), false);
+  check("and a pointer is offered the same one icon, and no pencil",
+        [...html.matchAll(/class="row-tool[^"]*"[\s\S]*?data-action="([a-z-]+)"/g)]
+          .map((m) => m[1]),
+        ["chat-delete"]);
+  check("a chat with nothing said in it is called something",
+        /New chat/.test(r.agentRowHtml(chatPen({ title: "" }), "api", null)), true);
+  check("one holding a question wears the blocked spine",
+        /class="agent-row st-blocked/.test(
+          r.agentRowHtml(chatPen({ pending: [{ id: "x" }] }), "api", null)), true);
+
+  /* The list is redrawn only when its signature moves, so everything a chat
+     row shows has to be in it - a chat that starts asking and a chat that gets
+     a title are both rows that changed. */
+  const sig = (pen) => {
+    r.state.groups = [{ key: "/p/api", name: "api", from: "wA", rows: [pen] }];
+    return r.agentListSignature();
+  };
+  check("a chat that starts asking redraws the list",
+        sig(chatPen()) === sig(chatPen({ pending: [{ id: "x" }] })), false);
+  check("so does one that has just been given a title",
+        sig(chatPen()) === sig(chatPen({ title: "Something else" })), false);
+  check("and one that has not moved does not",
+        sig(chatPen()), sig(chatPen()));
 }
 
 if (failures) {

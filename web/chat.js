@@ -12,7 +12,7 @@
 
   const $ = (id) => document.getElementById(id);
   const embedded = window.parent !== window;
-  const elList = $("list-view"), elChat = $("chat-view");
+  const elChat = $("chat-view");
   const elMessages = $("messages"), elInput = $("input");
   const elSend = $("btn-send"), elStop = $("btn-stop");
   const elStrip = $("attach-strip"), elAttachInput = $("attach-input");
@@ -59,14 +59,6 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const shortDir = (p) => (p || "").split("/").slice(-2).join("/");
   const imageUrl = (name) => `/api/chat/image?id=${encodeURIComponent(current.id)}&name=${encodeURIComponent(name)}`;
-
-  function ago(t) {
-    const s = Math.max(0, Date.now() / 1000 - t);
-    if (s < 60) return "now";
-    if (s < 3600) return Math.floor(s / 60) + "m";
-    if (s < 86400) return Math.floor(s / 3600) + "h";
-    return Math.floor(s / 86400) + "d";
-  }
 
   /* ---- A little markdown: fences, headings, bullets, tables, `code`, **bold**, links. */
   // Code spans and links are set aside as \u0000n\u0000 while the rest is
@@ -377,104 +369,45 @@
     $("btn-delete").classList.toggle("hidden", pane);
     $("btn-transcript").classList.toggle("hidden", !pane);
     if (pane) $("btn-transcript").href = "/#" + chat.id;
-    // In the desktop app's frame the flock is beside it, so there is no back.
-    $("btn-back").classList.toggle("hidden", pane && embedded);
-    elList.classList.add("hidden");
+    // In the desktop app's frame the flock is beside it, so there is no back -
+    // and following one would load the whole app inside this frame.
+    $("btn-back").classList.toggle("hidden", embedded);
     elChat.classList.remove("hidden");
     if (location.hash !== "#" + chat.id) history.replaceState(null, "", "#" + chat.id);
     render();
     follow(chat.id);
   }
 
-  function showList() {
+  /* There is nothing else on this page. The chats are rows in the flock now,
+     alongside the panes - a list of them here was a second place to look,
+     which is how a chat left holding a question went unanswered for a day. */
+  function backToFlock() {
     if (poll) poll.abort();
     poll = null; current = null;
-    history.replaceState(null, "", location.pathname);
-    elChat.classList.add("hidden");
-    elList.classList.remove("hidden");
-    loadList();
+    // Inside the desktop app's frame, the flock is the column next door: say
+    // so and let it empty the frame, rather than loading it in here.
+    if (embedded) {
+      parent.postMessage({ sheepit: "closed" }, location.origin);
+      return;
+    }
+    location.href = "/";
   }
 
   /* A push names the chat in the hash; the page may already be open. */
   window.addEventListener("hashchange", () => {
     const id = decodeURIComponent(location.hash.slice(1));
-    const c = listData.chats.find((x) => x.id === id);
     if (current && current.id === id) return;
-    if (c) openChat(c);
-    else if (id.startsWith("pane:")) openById(id);
-    else if (id) loadList();
+    if (id) openById(id);
+    else backToFlock();
   });
 
-  /* A Herdr pane is not in the list: the main app links to it by id. */
+  /* Everything this page shows is fetched by id - a headless chat's own, or
+     `pane:<pane id>` for a Herdr pane read as a chat. `chat.get` resolves
+     both, so there is one way in. */
   async function openById(id) {
     try { openChat((await api(`/api/chat/events?id=${encodeURIComponent(id)}`)).chat); }
     catch (e) { alert(e.message); location.href = "/"; }
   }
-
-  /* ---- The list and the new-chat form. */
-  let listData = { chats: [], dirs: [], modes: [] };
-  async function loadList() {
-    try { listData = await api("/api/chat"); } catch (e) { return; }
-    const cwd = $("new-cwd"), mode = $("new-mode");
-    if (!cwd.options.length || cwd.options.length !== listData.dirs.length) {
-      let keep = cwd.value;
-      try { keep = keep || localStorage.getItem("chat.cwd"); } catch (_) {}
-      cwd.innerHTML = listData.dirs.map((d) => `<option value="${esc(d.cwd)}">${esc(d.name)} — ${esc(shortDir(d.cwd))}</option>`).join("");
-      if (keep && listData.dirs.some((d) => d.cwd === keep)) cwd.value = keep;
-    }
-    if (!mode.options.length) {
-      mode.innerHTML = listData.modes.map((m) => `<option>${esc(m)}</option>`).join("");
-      let saved = null;
-      try { saved = localStorage.getItem("chat.mode"); } catch (_) {}
-      mode.value = saved || "auto";
-    }
-    const list = $("chat-list");
-    list.innerHTML = listData.chats.length ? listData.chats.map((c) => {
-      const state = c.pending.length ? " asking" : c.running ? " running" : "";
-      return `<li data-id="${esc(c.id)}"><div class="main"><span class="t"><span class="dot${state}"></span>${esc(c.title || "New chat")}</span>` +
-        `<span class="s">${esc(shortDir(c.cwd))} · ${esc(c.model || "default")} · ${ago(c.updated || c.created)}</span></div>` +
-        `<button type="button" class="row-del${c.id === armed ? " armed" : ""}" data-del="${esc(c.id)}" aria-label="Delete chat">` +
-        (c.id === armed ? "Delete" : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg>`) +
-        `</button></li>`;
-    }).join("") : `<li class="empty">No chats yet.</li>`;
-    if (!current && location.hash.length > 1) {
-      const id = decodeURIComponent(location.hash.slice(1));
-      const c = listData.chats.find((x) => x.id === id);
-      if (c) openChat(c);
-      else if (id.startsWith("pane:")) openById(id);
-    }
-  }
-
-  /* Delete from the list takes two taps: the first arms the row's button,
-     the second deletes. Tapping anywhere else disarms it. */
-  let armed = null;
-  $("chat-list").addEventListener("click", async (e) => {
-    const del = e.target.closest("button[data-del]");
-    if (del) {
-      e.stopPropagation();
-      const id = del.dataset.del;
-      if (armed !== id) { armed = id; loadList(); return; }
-      armed = null;
-      await api("/api/chat/delete", { id }).catch((err) => alert(err.message));
-      loadList();
-      return;
-    }
-    if (armed) { armed = null; loadList(); return; }
-    const li = e.target.closest("li[data-id]");
-    const c = li && listData.chats.find((x) => x.id === li.dataset.id);
-    if (c) openChat(c);
-  });
-
-  $("new-chat").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const body = { cwd: $("new-cwd").value, mode: $("new-mode").value, model: $("new-model").value };
-    try { localStorage.setItem("chat.cwd", body.cwd); localStorage.setItem("chat.mode", body.mode); } catch (_) {}
-    try {
-      const data = await api("/api/chat/new", body);
-      openChat(data.chat);
-      elInput.focus();
-    } catch (err) { alert(err.message); }
-  });
 
   /* ---- Images: scaled down on the phone, kept by the gateway, sent inline. */
   const MAX_EDGE = 1600;
@@ -672,17 +605,17 @@
     parent.postMessage({ sheepit: "transcript" }, location.origin);
   });
 
-  // A pane was opened from the flock, and goes back to it.
-  $("btn-back").addEventListener("click", () => {
-    if (current && current.kind === "pane") location.href = "/";
-    else showList();
-  });
+  // Whatever was opened from the flock goes back to it.
+  $("btn-back").addEventListener("click", backToFlock);
   $("btn-delete").addEventListener("click", async () => {
     if (!current || !confirm("Delete this chat? The Claude Code session itself stays.")) return;
     await api("/api/chat/delete", { id: current.id }).catch(() => {});
-    showList();
+    backToFlock();
   });
 
-  setInterval(() => { if (!current && !document.hidden) loadList(); }, 5000);
-  loadList();
+  /* Opened with no chat named - a stale bookmark of the list that used to be
+     here, or a hash that pointed at something since deleted. */
+  const opening = decodeURIComponent(location.hash.slice(1));
+  if (opening) openById(opening);
+  else backToFlock();
 })();

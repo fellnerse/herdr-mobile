@@ -3,7 +3,14 @@
 (function () {
   let state = {
     agents: [],
+    /* The headless chats, kept apart from the panes on purpose. They are rows
+       in the same list, but they are not panes - no workspace, no tab strip,
+       no transcript - and everything from the badge to the bleat walks
+       `state.agents` assuming one. They join the list at `attachChats`. */
+    chats: [],
     activePaneId: null,
+    // Which headless chat the wide layout's right column is showing, if any.
+    activeChatId: null,
     historyText: "",
     linesCount: 100,
     showStatusBar: false,
@@ -34,6 +41,9 @@
     settling: new Map(),
     quota: null,
     quotaAt: 0,
+    // Off until asked for: the strip answers a question about the laptop, not
+    // about the agents, and most glances at the flock are not asking it.
+    machineStrip: false,
     queueSignature: null,
     editingId: null,
     listTouchedAt: 0,
@@ -91,10 +101,15 @@
   const elBtnCloseSheet = document.getElementById("btn-close-sheet");
   const elSheet = document.getElementById("settings-sheet");
   const elSheetBackdrop = document.getElementById("sheet-backdrop");
+  const elNewSheet = document.getElementById("new-sheet");
+  const elNewSheetTitle = document.getElementById("new-sheet-title");
+  const elNewSheetBody = document.getElementById("new-sheet-body");
+  const elBtnCloseNewSheet = document.getElementById("btn-close-new-sheet");
   const elToggleStatusBar = document.getElementById("toggle-statusbar");
   const elTogglePlain = document.getElementById("toggle-plain");
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
+  const elToggleMachine = document.getElementById("toggle-machine");
   const elPushHint = document.getElementById("push-hint");
   const elGlobalSettingsView = document.getElementById("global-settings-view");
   const elBtnCloseGlobalSettings = document.getElementById("btn-close-global-settings");
@@ -133,6 +148,12 @@
      in style.css; the layout is the stylesheet's, this is only what the app
      has to know about it. */
   const wide = window.matchMedia("(min-width: 900px)");
+
+  /* Whether this machine has a pointer that can hover, which is what decides
+     between the icons on a row and the drawer behind it. The same query is in
+     `style.css`, which is what actually hides each of them; this is only what
+     the gestures have to know about it. */
+  const mouse = window.matchMedia("(hover: hover) and (pointer: fine)");
 
   function pickerVisible() {
     return wide.matches || !elAgentPicker.classList.contains("hidden");
@@ -776,6 +797,11 @@
       setConnected(true);
 
       state.agents = data.agents || [];
+      state.chats = data.chats || [];
+      // Deleted from another phone, or reaped: the column cannot keep showing it.
+      if (state.activeChatId && !state.chats.some((c) => c.id === state.activeChatId)) {
+        state.activeChatId = null;
+      }
       bleatForFinished(state.agents);
       trackActivity();
       orderAgents();
@@ -831,9 +857,12 @@
 
   function updateBadge() {
     if (!("setAppBadge" in navigator)) return;
+    /* A chat holding a permission prompt counts the same as a pane holding
+       one: the badge is how many things are waiting on you, and where they
+       are waiting is not something a number on a home screen can say. */
     const waiting = state.agents.filter(
       (a) => a.has_agent && WAITING.includes(a.status)
-    ).length;
+    ).length + state.chats.filter((c) => c.pending && c.pending.length).length;
     if (waiting === state.badgeCount) return;
     state.badgeCount = waiting;
     const done = waiting > 0 ? navigator.setAppBadge(waiting) : navigator.clearAppBadge();
@@ -851,6 +880,25 @@
 
   // Header button showing the current project
   function renderAgentBar() {
+    /* A headless chat the wide layout is showing has the column to itself. It
+       is not a pane, so there is no transcript behind it to toggle back to and
+       no strip of tabs to switch between - the frame is the whole of it. */
+    const chat = state.activeChatId
+      && state.chats.find((c) => c.id === state.activeChatId);
+    if (chat) {
+      elAgentSelectName.textContent = chat.title || "New chat";
+      elAgentSelectDot.className = `agent-dot ${chatStatus(chat)}`;
+      elBtnPaneChat.classList.add("hidden");
+      renderPaneChat(encodeURIComponent(chat.id));
+      /* The strip is compared against what it last drew before it is replaced,
+         so hiding it here has to forget that - otherwise coming back to a pane
+         whose tabs have not changed leaves the strip hidden. */
+      elTabStrip.classList.add("hidden");
+      tabStripDrawn = null;
+      if (pickerVisible()) renderAgentList();
+      return;
+    }
+
     const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
     elAgentSelectName.textContent = agent
       ? agentBarName(agent)
@@ -862,7 +910,7 @@
     const chattable = !!(agent && agent.agent === "claude");
     elBtnPaneChat.classList.toggle("hidden", !chattable);
     if (chattable) elBtnPaneChat.href = "/chat.html#pane:" + agent.pane_id;
-    renderPaneChat(chattable && agent.pane_id);
+    renderPaneChat(chattable && "pane:" + agent.pane_id);
 
     renderTabStrip();
     if (pickerVisible()) renderAgentList();
@@ -872,8 +920,9 @@
      carries the status, but so does the posture: an agent that is working
      grazes, one that is idle stands with its head up, a blocked one pricks its
      ear at you, and a finished one lies down to sleep. A pane with no agent is
-     an empty pasture - no sheep at all. Drawn inline so the fleece can inherit
-     the row's colour instead of shipping five copies of the file. */
+     a shell, and draws one - a black terminal with a sheep standing on it.
+     Drawn inline so the fleece can inherit the row's colour instead of
+     shipping five copies of the file. */
   const POSE = {
     working: "graze",
     idle: "stand",
@@ -1157,17 +1206,41 @@
     return `rgb(${rgb.join(",")})`;
   }
 
-  /* Nobody home: bare ground where the sheep would stand. Quieter than the
-     animals on purpose - it marks the rows with nothing running. */
-  const EMPTY_PASTURE = `
-      <path d="M2 24 C 10 19, 20 19, 26 22 C 32 25, 38 23, 42 20 L42 32 L2 32 Z"
-            fill="currentColor" opacity="0.32"/>
-      <path d="M2 24 C 10 19, 20 19, 26 22 C 32 25, 38 23, 42 20" fill="none"
-            stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
-      <path d="M11 20 q0.6 -3 2.4 -4.4" fill="none" stroke="currentColor"
-            stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
-      <path d="M33 20.6 q-0.8 -2.6 -2.4 -3.8" fill="none" stroke="currentColor"
-            stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>`;
+  /* Nobody home: a black terminal screen with a sheep standing on it. Bare
+     ground was the first answer and it said the wrong thing - an empty field
+     reads as an agent that has run out, which is the one thing the grass is
+     for. A pane with no agent in it has not run out of anything; it is a
+     shell, so it looks like one, and the sheep in it is the only one in the
+     flock with no breed, no colour and nothing to be doing.
+
+     The prompt is what makes the box a terminal rather than a card - drop the
+     `>_` and this is a dark rectangle with an animal in it. The sheep is
+     four overlapping circles rather than a traced outline, because they are
+     one fill and so union without a seam, and because a fleece at this size
+     is a silhouette with bumps on it and nothing else. Its eye is a hole back
+     to the screen colour, so it stays an eye whatever the row behind it is. */
+  const SHELL_WINDOW = `
+      <rect class="shell-screen" x="1.5" y="4" width="41" height="26" rx="5"/>
+      <rect class="shell-frame" x="1.5" y="4" width="41" height="26" rx="5"/>
+      <g class="shell-prompt" transform="translate(4.6 12.6) scale(0.92)">
+        <path d="M0 0 L3.2 2.8 L0 5.6"/>
+        <path d="M4.6 6 H8.2"/>
+      </g>
+      <g class="shell-sheep" transform="translate(15 10.4) scale(0.92)">
+        <g class="shell-sheep-under">
+          <rect x="5.4" y="8.4" width="2.5" height="6.2" rx="1.2"/>
+          <rect x="12.4" y="8.4" width="2.5" height="6.2" rx="1.2"/>
+          <ellipse cx="19.2" cy="6.8" rx="3.9" ry="4.2"/>
+          <ellipse cx="17.2" cy="2.4" rx="2.2" ry="1.4" transform="rotate(-35 17.2 2.4)"/>
+        </g>
+        <g class="shell-sheep-fleece">
+          <circle cx="5.2" cy="6.6" r="4.2"/>
+          <circle cx="9.5" cy="4.4" r="4.7"/>
+          <circle cx="14" cy="6" r="4.3"/>
+          <circle cx="9.9" cy="8.4" r="4.4"/>
+        </g>
+        <circle class="shell-sheep-eye" cx="20" cy="6.2" r="0.95"/>
+      </g>`;
 
   /* ---------------------------------------------------------- The pasture ---
    *
@@ -1274,11 +1347,25 @@
      every redraw, so the counter never has to be tidied up. */
   let sheepSerial = 0;
 
-  function sheepSvg(status, seed, pasture) {
+  /* What tells a chat's sheep from a pane's at a glance. It sits over the
+     rump rather than by the head - the head moves with every pose, and a
+     bubble that jumps around the animal is one you have to find each time -
+     and it is outlined in the card's colour like every other part laid over
+     the fleece. Drawn inside the sheep's own viewBox, past its left edge,
+     which `.sheep { overflow: visible }` already allows for the horns. */
+  const CHAT_BUBBLE = `
+    <g class="sheep-bubble">
+      <path class="bubble-body" d="M-1 1.5 h13 a2.5 2.5 0 0 1 2.5 2.5 v4.5 a2.5 2.5 0 0 1 -2.5 2.5 h-5.5 l-3 3 v-3 h-4.5 a2.5 2.5 0 0 1 -2.5 -2.5 v-4.5 a2.5 2.5 0 0 1 2.5 -2.5 z"/>
+      <circle class="bubble-dot" cx="2.5" cy="6.2" r="1"/>
+      <circle class="bubble-dot" cx="6" cy="6.2" r="1"/>
+      <circle class="bubble-dot" cx="9.5" cy="6.2" r="1"/>
+    </g>`;
+
+  function sheepSvg(status, seed, pasture, chatty) {
     const pose = POSE[knownStatus(status)];
-    // An empty pasture has nobody to tell apart.
+    // A shell has nobody to tell apart, and no window to draw grass for.
     if (pose === "empty") {
-      return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${EMPTY_PASTURE}</svg>`;
+      return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${SHELL_WINDOW}</svg>`;
     }
     const marks = sheepMarks(seed);
     const asleep = pose === "sleep";
@@ -1290,6 +1377,7 @@
       <svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">
         ${sheepBody(asleep ? 5 : 0, !asleep, marks, `fleece-${++sheepSerial}`)}
         <g class="sheep-head">${HEADS[pose](marks)}</g>
+        ${chatty ? CHAT_BUBBLE : ""}
         ${grassSvg(pasture)}
       </svg>`;
   }
@@ -1306,7 +1394,10 @@
         [
           group.key,
           group.name,
-          group.from ? "+" : "",
+          // Whether the heading can offer anything, which is not the same as
+          // whether it can offer a worktree: a project with no checkout open
+          // can still take a tab.
+          (group.from ? "w" : "") + (group.rows.some((pen) => pen.workspace_id) ? "t" : ""),
           ...group.rows.map((pen) =>
             [
               pen.lead.pane_id,
@@ -1319,12 +1410,18 @@
               pen.lead.name,
               tabName(pen.lead),
               pen.lead.title || pen.lead.cwd,
-              agoLabel(pen.lead.pane_id),
+              rowAgo(pen.lead),
               queuedLabel(penQueue(pen, queued)),
               pastureMark(pastureOf(pen.lead.has_agent ? pen.lead.agent : "")),
               // Any of its tabs being the open one lights the row up: the
               // chat you came from is in this pen even when another tab leads.
-              pen.tabs.some((a) => a.pane_id === state.activePaneId) ? "1" : "",
+              // A headless chat lights up the same way, from its own id.
+              pen.chat
+                ? (state.activeChatId === pen.chat.id ? "1" : "")
+                : pen.tabs.some((a) => a.pane_id === state.activePaneId) ? "1" : "",
+              // And every tab of a pen that has them out, since a second tab
+              // going blocked moves nothing about the tab leading the pen.
+              penTabsMark(pen, queued),
             ].join("\u001f")
           ),
         ].join("\u001e")
@@ -1385,9 +1482,12 @@
      stacked behind it that is the more useful word: an agent that finished
      with a prompt still waiting is not "done", it is one prompt from starting
      again. A question on screen outranks even that - nothing is ever delivered
-     into one, and it is the state that must never be buried. */
+     into one, and it is the state that must never be buried.
+
+     A pane with no agent says nothing here: its sheep is already a terminal
+     window, and the word "shell" beside it was the same fact twice. */
   function statusBadge(agent, status, queued) {
-    if (!agent.has_agent) return '<span class="agent-row-ago">shell</span>';
+    if (!agent.has_agent) return "";
     const word = queued ? queuedLabel(queued) : "";
     if (!word || status === "blocked") {
       return `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`;
@@ -1395,7 +1495,123 @@
     return `<span class="status-badge status-${queued.failed ? "failed" : "queued"}">${escapeHtml(word)}</span>`;
   }
 
+  /* When the row last moved. A pane's age is the last change this phone
+     watched happen; a chat keeps its own timestamp, which is better - it
+     survives a reload, where the pane's activity record is only as old as
+     this tab is. */
+  function rowAgo(row) {
+    if (row.chat) return row.updated ? agoText(Date.now() - row.updated * 1000) : "";
+    return agoLabel(row.pane_id);
+  }
+
+  /* ------------------------------------------------------- Icons on a row ---
+   *
+   * A mouse cannot swipe, so the drawer a finger drags a row aside for is a
+   * gesture a desktop does not have. What it had instead was a `…` in the
+   * corner on hover, which said a drawer was there and did nothing itself -
+   * one more thing to learn before anything could be renamed.
+   *
+   * So the two things a row is asked for most are on the row, in the corner
+   * that hint used to sit in, and only while the pointer is on it. Which two
+   * depends on what the row is: a worktree renames and closes the workspace, a
+   * tab of an opened pen renames and closes the tab, a chat has only Delete.
+   * Remove is deliberately not among them anywhere - it deletes a checkout,
+   * and it stays in the drawer, which is the swipe's: a machine with a pointer
+   * has no drawer at all now, and closing a worktree there leaves the checkout
+   * on disk. `style.css` hides the icons wherever there is no hover to reveal
+   * them, which is every phone, and hides the drawer wherever there is.
+   * ------------------------------------------------------------------------ */
+
+  /* The two glyphs a row wears on a desktop. Drawn here rather than in
+     `index.html` because the row is built in JS, and cut to the same stroke as
+     the icons in the chrome: 24-wide box, `currentColor`, round caps. */
+  const ICON_PENCIL =
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+     </svg>`;
+
+  const ICON_TRASH =
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <polyline points="3 6 5 6 21 6"></polyline>
+       <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+       <path d="M10 11v6M14 11v6"></path>
+       <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+     </svg>`;
+
+  /* One cluster of them. `key` is the data attribute the click handler reads
+     the target out of, which is whatever that action acts on - a workspace, a
+     pane, a tab or a chat. */
+  function rowToolsHtml(tools, cls) {
+    const icons = tools.map(
+      (t) => `
+            <span class="row-tool${t.danger ? " danger" : ""}" role="button"
+                  title="${escapeHtml(t.label)}" aria-label="${escapeHtml(t.label)}"
+                  data-action="${t.action}" data-${t.key}="${escapeHtml(t.value)}">${t.icon}</span>`
+    );
+    return `<span class="${cls}">${icons.join("")}</span>`;
+  }
+
+  // What a worktree's row and its title both offer: Rename and Close, the same
+  // two the drawer leads with, acting on the workspace.
+  function penTools(pen) {
+    return [
+      { action: "rename", key: "workspace-id", value: pen.workspace_id,
+        label: "Rename this worktree", icon: ICON_PENCIL },
+      { action: "close", key: "workspace-id", value: pen.workspace_id,
+        label: "Close this worktree", icon: ICON_TRASH, danger: true },
+    ];
+  }
+
+  /* A chat's row. Shorter than a pane's, because most of what a pane's row
+     says is about the worktree it sits in and a chat has none: no tab count,
+     no worktree name, nothing to rename and nothing to close. What is left is
+     what it is about, what it costs and whether it is waiting on you.
+
+     Delete is the only thing in the drawer, and it is the whole reason the
+     list this replaced could be deleted from at all. */
+  function chatRowHtml(pen) {
+    const row = pen.lead;
+    const chat = pen.chat;
+    const status = knownStatus(row.status);
+    const marks = sheepMarks(penSeed(pen));
+    const pasture = pastureOf("claude");
+    const chew = pasture && pasture.chew ? `--chew:${pasture.chew}` : "";
+    const wrapStyle = [`color:${marks.breed.fleece}`, chew].filter(Boolean).join(";");
+    // What it was told to do first, which is what the gateway titles it with.
+    const headline = row.title || "New chat";
+    const sub = [chat.model || "default", chat.mode].filter(Boolean).join(" · ");
+    return `
+      <div class="agent-row-wrap">
+        <div class="agent-row-actions">
+          <button class="agent-row-action remove" data-action="chat-delete" data-chat-id="${escapeHtml(chat.id)}">Delete</button>
+        </div>
+        <button class="agent-row st-${status} chat-row ${state.activeChatId === chat.id ? "active" : ""}" data-chat-id="${escapeHtml(chat.id)}">
+          <span class="sheep-wrap ${status}" style="${wrapStyle}">${sheepSvg(status, penSeed(pen), pasture, true)}</span>
+          <span class="agent-row-text">
+            <span class="agent-row-name">${escapeHtml(headline)}</span>
+            <span class="agent-row-meta">
+              <span class="row-agent">chat</span>
+              ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
+            </span>
+          </span>
+          <span class="agent-row-side">
+            ${statusBadge(row, status, null)}
+            <span class="agent-row-ago">${escapeHtml(rowAgo(row))}</span>
+          </span>
+          ${rowToolsHtml(
+            [{ action: "chat-delete", key: "chat-id", value: chat.id,
+               label: "Delete this chat", icon: ICON_TRASH, danger: true }],
+            "row-tools"
+          )}
+        </button>
+      </div>
+    `;
+  }
+
   function agentRowHtml(pen, groupName, queued) {
+    if (pen.chat) return chatRowHtml(pen);
     // The tab that speaks for the pen: whichever of them needs you most.
     const agent = pen.lead;
     // The open chat being anywhere in this pen lights the row up - it is the
@@ -1431,11 +1647,6 @@
        one for a branch that was finished with last week. The project's own
        checkout is not something the phone may delete at all. */
     const removable = agent.repo && !agent.main_checkout;
-    /* How many tabs this row is standing in front of, said only when it is
-       more than the one you would assume. It is the count that makes Close
-       honest: a row saying "3 tabs" is visibly not a single chat, and the
-       strip above the transcript is where one of the three is closed. */
-    const tabs = tabCount(pen);
     return `
       <div class="agent-row-wrap">
         <div class="agent-row-actions">
@@ -1453,22 +1664,180 @@
               ${agent.has_agent && agent.agent
                 ? `<span class="row-agent">${escapeHtml(agent.agent)}</span>`
                 : ""}
-              ${tabs > 1 ? `<span class="row-tabs">${tabs} tabs</span>` : ""}
               ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
             </span>
           </span>
           <span class="agent-row-side">
             ${statusBadge(agent, status, queued)}
-            <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
+            <span class="agent-row-ago">${escapeHtml(rowAgo(agent))}</span>
           </span>
+          ${rowToolsHtml(penTools(pen), "row-tools")}
         </button>
       </div>
     `;
   }
 
-  /* The full-screen overview: a heading per project, that project's own sheep
-     under it. The heading counts the ones asking you something, because that
-     is the number the list was opened to find. */
+  /* ------------------------------------------------ A pen with its tabs out
+   *
+   * One row per workspace is honest right up to the moment a workspace has a
+   * second tab in it. Then the row draws whichever tab needs you most and the
+   * other one is a number in the corner - so the tab you were looking for is
+   * the one that lost the tie, and the only way to it is through the strip
+   * above somebody else's transcript.
+   *
+   * So a pen with more than one tab hangs them out: the worktree's title on a
+   * line of its own, and one sheep per tab underneath it, indented and joined
+   * to that title by a bracket down the left. The pen is still one thing -
+   * Rename, Close and Remove still take the whole worktree and still live on
+   * the title, where they read as what they do - and each tab carries the two
+   * a strip offers it, renaming and closing itself and nothing else.
+   * ---------------------------------------------------------------------- */
+
+  // Whether a pen draws its tabs rather than standing in front of them. A
+  // headless chat has no tabs at all, and one tab is already one row.
+  function penShowsTabs(pen) {
+    return !pen.chat && tabCount(pen) > 1;
+  }
+
+  // In the order the strip has them, so the two places that list a workspace's
+  // tabs cannot disagree about which one is first.
+  function penTabs(pen) {
+    return pen.tabs.slice().sort(
+      (a, b) =>
+        (Number(tabNumber(a)) || 0) - (Number(tabNumber(b)) || 0) || bornAt(a) - bornAt(b)
+    );
+  }
+
+  /* The title the tabs hang off. Quieter than a row - everything in this
+     worktree that is doing something is drawn directly underneath it, so all
+     the title has to say is which worktree this is - but the same colour as
+     them, because it is part of the same pen. Tapping it opens the tab that
+     needs you most, which is what the collapsed row did.
+
+     The two icons are for a pointer: a mouse has no swipe, so the drawer
+     behind the row is a gesture it cannot make, and the two things a title is
+     asked for most are on the row itself. `style.css` hides them wherever
+     there is no hover to reveal them, which is every phone. Remove is not
+     among them on purpose - it deletes a checkout, and it stays in the drawer
+     the swipe opens, where it has to be aimed at. */
+  function penHeadHtml(pen) {
+    const lead = pen.lead;
+    const label = lead.workspace_label || lead.name || pen.workspace_id;
+    const removable = lead.repo && !lead.main_checkout;
+    // The chat you came from is in this pen, whichever of its tabs it is: the
+    // tab says so itself, but it can be scrolled off the top of the list.
+    const here = pen.tabs.some((a) => a.pane_id === state.activePaneId);
+    return `
+      <div class="agent-row-wrap">
+        <div class="agent-row-actions">
+          <button class="agent-row-action rename" data-action="rename" data-workspace-id="${escapeHtml(pen.workspace_id)}">Rename</button>
+          <button class="agent-row-action close" data-action="close" data-workspace-id="${escapeHtml(pen.workspace_id)}">Close</button>
+          ${removable
+            ? `<button class="agent-row-action remove" data-action="remove" data-workspace-id="${escapeHtml(pen.workspace_id)}">Remove</button>`
+            : ""}
+        </div>
+        <button class="agent-row pen-head ${here ? "here" : ""}" data-pane-id="${escapeHtml(lead.pane_id)}">
+          <span class="pen-head-name">${escapeHtml(label)}</span>
+          ${rowToolsHtml(penTools(pen), "pen-head-tools")}
+          <span class="row-tabs">${tabCount(pen)} tabs</span>
+        </button>
+      </div>`;
+  }
+
+  /* One tab of an opened pen, which is a row like any other bar two things.
+     Its sheep is hashed from its own pane rather than from the workspace -
+     the one place `penSeed` is deliberately not used, since two animals side
+     by side under one title must not be the same animal. And its drawer is the
+     tab's own: Rename is `tab.rename`, and Close closes this tab rather than
+     the branch, which is safe here because a pen is only drawn this way while
+     it has a second tab for Herdr to keep the workspace alive by. */
+  function penTabRowHtml(agent, queued) {
+    const status = knownStatus(agent.status);
+    // What the strip calls this tab, including which half of a split it is.
+    const chip = tabChipLabel(agent);
+    const headline = agent.title || chip;
+    const fleece = status === "unknown"
+      ? ""
+      : `color:${sheepMarks(agent.pane_id).breed.fleece}`;
+    const pasture = pastureOf(agent.has_agent ? agent.agent : "");
+    const chew = pasture && pasture.chew ? `--chew:${pasture.chew}` : "";
+    const wrapStyle = [fleece, chew].filter(Boolean).join(";");
+    return `
+      <div class="pen-tab">
+        <div class="agent-row-wrap">
+          <div class="agent-row-actions">
+            <button class="agent-row-action rename" data-action="tab-rename" data-pane-id="${escapeHtml(agent.pane_id)}">Rename</button>
+            <button class="agent-row-action close" data-action="tab-close" data-tab-id="${escapeHtml(agent.tab_id)}">Close</button>
+          </div>
+          <button class="agent-row st-${status} ${agent.pane_id === state.activePaneId ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
+            <span class="sheep-wrap ${status}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(status, agent.pane_id, pasture)}</span>
+            <span class="agent-row-text">
+              <span class="agent-row-name">${escapeHtml(headline)}</span>
+              <span class="agent-row-meta">
+                ${agent.has_agent && agent.agent
+                  ? `<span class="row-agent">${escapeHtml(agent.agent)}</span>`
+                  : ""}
+                ${agent.title ? `<span class="row-tab">${escapeHtml(chip)}</span>` : ""}
+              </span>
+            </span>
+            <span class="agent-row-side">
+              ${statusBadge(agent, status, queued)}
+              <span class="agent-row-ago">${escapeHtml(rowAgo(agent))}</span>
+            </span>
+            ${rowToolsHtml(
+              [
+                { action: "tab-rename", key: "pane-id", value: agent.pane_id,
+                  label: "Rename this tab", icon: ICON_PENCIL },
+                { action: "tab-close", key: "tab-id", value: agent.tab_id,
+                  label: "Close this tab", icon: ICON_TRASH, danger: true },
+              ],
+              "row-tools"
+            )}
+          </button>
+        </div>
+      </div>`;
+  }
+
+  /* What an opened pen's own rows are worth to the signature. Everything the
+     collapsed row carried, once per tab: the pen's line above them says almost
+     nothing, and all of what changes is down here. */
+  function penTabsMark(pen, queued) {
+    if (!penShowsTabs(pen)) return "";
+    return penTabs(pen)
+      .map((a) =>
+        [
+          a.pane_id,
+          a.status,
+          a.has_agent ? "a" : "",
+          a.title || a.cwd,
+          tabChipLabel(a),
+          rowAgo(a),
+          queuedLabel(queued.get(a.pane_id) || null),
+          pastureMark(pastureOf(a.has_agent ? a.agent : "")),
+          a.pane_id === state.activePaneId ? "1" : "",
+        ].join("\u001c")
+      )
+      .join("\u001b");
+  }
+
+  // Either shape a workspace takes: one row, or a title with its tabs out.
+  function penHtml(pen, groupName, counts) {
+    if (!penShowsTabs(pen)) return agentRowHtml(pen, groupName, penQueue(pen, counts));
+    return `
+      <div class="pen">
+        ${penHeadHtml(pen)}
+        <div class="pen-tabs">
+          ${penTabs(pen)
+              .map((a) => penTabRowHtml(a, counts.get(a.pane_id) || null))
+              .join("")}
+        </div>
+      </div>`;
+  }
+
+  /* The full-screen overview: a heading per project, with that project's own
+     sheep under it. The heading names the project and nothing else: the sheep
+     are right there to be counted, and the ones asking you something are
+     already at the top of the list, in the pose and the colour that says so. */
   function renderAgentList() {
     if (state.groups.length === 0) {
       state.listSignature = null;
@@ -1486,42 +1855,33 @@
     const queued = queuedByPane();
     elAgentList.innerHTML = state.groups
       .map((group) => {
-        const waiting = group.agents.filter(wantsInput).length;
         const owed = group.agents.reduce(
           (sum, a) => sum + ((queued.get(a.pane_id) || {}).waiting || 0), 0
         );
-        /* Waiting counts questions, since each of them is a separate thing
-           you have to go and answer; the plain tally counts rows, because it
-           is how many sheep are underneath the heading. */
-        const tally = waiting
-          ? `<span class="agent-group-waiting">${waiting} waiting</span>`
-          : `<span class="agent-group-count">${group.rows.length}</span>`;
-        /* The heading is sticky, so a project's total stays on screen while
-           you scroll its sheep - which is the number you want when the queue
-           is long enough to scroll. */
+        /* The one number left in a heading: prompts this project has not been
+           given yet. It stays because nothing else on the screen says so - a
+           sheep with a prompt still queued behind it looks idle. */
         const owedChip = owed
           ? `<span class="agent-group-queued">${owed} queued</span>`
           : "";
-        /* Another one of these, please: a worktree cut off this project, the
-           same thing a right-click on a space does on the desktop. It lives in
-           the heading because the project is what it needs to be told, and the
-           heading is the only thing on this screen that names one. */
-        const add = group.from
+        /* Another one of these, please: a worktree cut off this project or a
+           tab beside what is already open - the sheet asks which. It lives in
+           the heading because the project is what both of them need to be
+           told, and the heading is the only thing on this screen that names
+           one. A project with nothing open has neither to offer. */
+        const add = group.from || group.rows.some((pen) => pen.workspace_id)
           ? `<button class="agent-group-add" type="button"
                      data-action="worktree" data-project="${escapeHtml(group.key)}"
-                     aria-label="New worktree in ${escapeHtml(group.name)}">+</button>`
+                     aria-label="New in ${escapeHtml(group.name)}">+</button>`
           : "";
         return `
           <section class="agent-group" data-project="${escapeHtml(group.key)}">
             <h2 class="agent-group-head">
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
               ${owedChip}
-              ${tally}
               ${add}
             </h2>
-            ${group.rows
-                .map((pen) => agentRowHtml(pen, group.name, penQueue(pen, queued)))
-                .join("")}
+            ${group.rows.map((pen) => penHtml(pen, group.name, queued)).join("")}
           </section>`;
       })
       .join("");
@@ -1625,21 +1985,296 @@
     }
   }
 
+  /* --------------------------------------------------------- What "+" asks
+   *
+   * There were four plusses, and between them they did four unrelated things
+   * nobody could name from the icon: a bare workspace, a worktree, a tab, and
+   * - on a page of its own that nothing pointed at - a chat. Two of those are
+   * the same question with a different answer ("another agent on this project,
+   * in its own checkout or not") and the other two are the other same question
+   * ("something new, with a terminal in front of it or a model").
+   *
+   * So there are two plusses now, and both of them ask. The sheet is one
+   * element: a title, a body drawn from whichever question is being asked, and
+   * a cancel. `newSheet` is what it is asking about - `where` is which plus was
+   * tapped, `step` is how far through the answer we are.
+   * ------------------------------------------------------------------------ */
+
+  let newSheet = null;
+  // The projects and permission modes a chat may be started with. Asked for
+  // once, when a chat is first asked for, rather than on every poll.
+  let chatOptions = null;
+
+  function openNewSheet(where, extra) {
+    newSheet = { where, step: "choose", ...extra };
+    triggerHaptic();
+    resetSwipe();
+    elNewSheet.classList.remove("hidden");
+    elSheetBackdrop.classList.remove("hidden");
+    renderNewSheet();
+  }
+
+  function closeNewSheet() {
+    newSheet = null;
+    elNewSheet.classList.add("hidden");
+    elSheetBackdrop.classList.add("hidden");
+  }
+
+  // The plus at the top of the flock: nothing exists yet, so nothing is known.
+  function openNewAnything() {
+    openNewSheet("flock");
+  }
+
+  /* The plus on a project heading. It knows the project, and which of its
+     workspaces a worktree would be cut from - the project's own checkout,
+     picked in groupByProject - but not which workspace a tab should join, so
+     it aims a tab at that same checkout. */
+  function openNewInProject(key) {
+    const group = state.groups.find((g) => g.key === key);
+    if (!group) return;
+    /* The project's own checkout when it is open, and failing that whichever
+       of its worktrees leads the list - a project that is nothing but
+       worktrees can still be given another tab, it just cannot be branched. */
+    const lead = group.rows.find((pen) => pen.workspace_id);
+    openNewSheet("project", {
+      project: group.key,
+      name: group.name,
+      from: group.from,
+      workspaceId: group.from || (lead && lead.workspace_id) || "",
+    });
+  }
+
+  /* The plus in the tab strip. Same sheet, but here the worktree you are
+     looking at is the one a tab joins, which is the whole reason the strip
+     has its own plus rather than sending you back to the heading. */
+  function openNewInWorkspace(workspaceId) {
+    const row = state.agents.find((a) => a.workspace_id === workspaceId);
+    if (!row) return;
+    const group = state.groups.find((g) => g.key === projectKey(row));
+    openNewSheet("project", {
+      project: group ? group.key : projectKey(row),
+      name: (group && group.name) || row.project_name || row.name,
+      from: group ? group.from : "",
+      workspaceId,
+      workspaceName: row.workspace_label || row.name,
+    });
+  }
+
+  const ICON = {
+    chat: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    terminal: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2"/><polyline points="6.5 9 9.5 12 6.5 15"/><line x1="12" y1="15.5" x2="17" y2="15.5"/></svg>',
+    worktree: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 7.5v9M6 12h5a4 4 0 0 0 4-1.2"/></svg>',
+    tab: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19V7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  };
+
+  function choiceHtml(key, name, hint) {
+    return `
+      <button type="button" class="new-choice" data-choose="${key}">
+        <span class="new-choice-icon">${ICON[key]}</span>
+        <span class="new-choice-text">
+          <span class="new-choice-name">${escapeHtml(name)}</span>
+          <span class="new-choice-hint">${escapeHtml(hint)}</span>
+        </span>
+      </button>`;
+  }
+
+  function renderNewSheet() {
+    if (!newSheet) return;
+    const { where, step } = newSheet;
+    if (where === "flock" && step === "choose") {
+      elNewSheetTitle.textContent = "New";
+      elNewSheetBody.innerHTML =
+        choiceHtml("chat", "Chat", "a Claude Code you talk to, with no terminal behind it") +
+        choiceHtml("terminal", "Terminal", "an empty Herdr workspace to start something in");
+      return;
+    }
+    if (where === "flock" && step === "chat") {
+      elNewSheetTitle.textContent = "New chat";
+      elNewSheetBody.innerHTML = chatFormHtml();
+      restoreChatPrefs();
+      return;
+    }
+    if (where === "project" && step === "choose") {
+      elNewSheetTitle.textContent = `New in ${newSheet.name}`;
+      // No checkout of the project is open, so there is no repository to cut a
+      // branch from - Herdr resolves a worktree through a workspace, not a path.
+      const worktree = newSheet.from
+        ? choiceHtml("worktree", "Worktree", "its own branch and its own copy of the tree")
+        : "";
+      const here = newSheet.workspaceName
+        ? `another agent beside the one in ${newSheet.workspaceName}`
+        : "another agent on the branch that is already checked out";
+      const tab = newSheet.workspaceId ? choiceHtml("tab", "Tab", here) : "";
+      elNewSheetBody.innerHTML = (worktree + tab) ||
+        '<p class="new-choice-hint">Nothing of this project is open to add to.</p>';
+      return;
+    }
+    if (where === "project" && step === "worktree") {
+      elNewSheetTitle.textContent = `New worktree in ${newSheet.name}`;
+      elNewSheetBody.innerHTML = `
+        <label class="new-field">Branch
+          <input id="new-branch" type="text" autocapitalize="off" autocorrect="off"
+                 spellcheck="false" placeholder="leave empty and Herdr names it">
+        </label>
+        <button type="button" class="new-go" data-go="worktree">Cut worktree</button>`;
+      const input = document.getElementById("new-branch");
+      if (input) input.focus();
+    }
+  }
+
+  /* The settings a chat is started with, which are the only ones it ever gets:
+     the directory, what it may do without asking, and which model. Remembered
+     between chats, because the answer is nearly always the last answer. */
+  function chatFormHtml() {
+    if (!chatOptions) return '<p class="new-choice-hint">Reading projects…</p>';
+    if (!chatOptions.dirs.length) {
+      return '<p class="new-choice-hint">No projects open. A chat starts in a directory the flock already has a pane in.</p>';
+    }
+    const dirs = chatOptions.dirs
+      .map((d) => `<option value="${escapeHtml(d.cwd)}">${escapeHtml(d.name)}</option>`)
+      .join("");
+    const modes = chatOptions.modes
+      .map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`)
+      .join("");
+    return `
+      <label class="new-field">Project
+        <select id="new-chat-cwd">${dirs}</select>
+      </label>
+      <div class="new-row">
+        <label class="new-field">Permissions
+          <select id="new-chat-mode">${modes}</select>
+        </label>
+        <label class="new-field">Model
+          <select id="new-chat-model">
+            <option value="">default</option>
+            <option value="opus">opus</option>
+            <option value="sonnet">sonnet</option>
+            <option value="haiku">haiku</option>
+          </select>
+        </label>
+      </div>
+      <button type="button" class="new-go" data-go="chat">Start chat</button>`;
+  }
+
+  function restoreChatPrefs() {
+    const cwd = document.getElementById("new-chat-cwd");
+    const mode = document.getElementById("new-chat-mode");
+    const model = document.getElementById("new-chat-model");
+    if (!cwd) return;
+    /* The project a chat is most likely to be about is the one whose row you
+       were just looking at, and failing that the last one you picked. */
+    const here = state.agents.find((a) => a.pane_id === state.activePaneId);
+    const guess = (here && here.project) || readPref("chat.cwd");
+    if (guess && chatOptions.dirs.some((d) => d.cwd === guess)) cwd.value = guess;
+    if (mode) mode.value = readPref("chat.mode") || "auto";
+    if (model) model.value = readPref("chat.model") || "";
+  }
+
+  async function loadChatOptions() {
+    if (chatOptions) return;
+    try {
+      const res = await fetch("/api/chat");
+      const data = await res.json();
+      chatOptions = { dirs: data.dirs || [], modes: data.modes || ["auto"] };
+    } catch (err) {
+      chatOptions = { dirs: [], modes: ["auto"] };
+    }
+    if (newSheet && newSheet.step === "chat") renderNewSheet();
+  }
+
+  async function startChat() {
+    const cwd = document.getElementById("new-chat-cwd");
+    const mode = document.getElementById("new-chat-mode");
+    const model = document.getElementById("new-chat-model");
+    if (!cwd || !cwd.value) return;
+    const body = {
+      cwd: cwd.value,
+      mode: (mode && mode.value) || "auto",
+      model: (model && model.value) || "",
+    };
+    savePref("sheepit.chat.cwd", body.cwd);
+    savePref("sheepit.chat.mode", body.mode);
+    savePref("sheepit.chat.model", body.model);
+    triggerHaptic();
+    try {
+      const res = await fetch("/api/chat/new", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || "refused");
+      closeNewSheet();
+      // Straight into it: a chat with nothing said in it has nothing to show.
+      await fetchAgents();
+      openChat(data.chat.id);
+    } catch (err) {
+      alert("Could not start a chat: " + err.message);
+    }
+  }
+
+  elNewSheet.addEventListener("click", (e) => {
+    const choice = e.target.closest("[data-choose]");
+    if (choice) {
+      const pick = choice.dataset.choose;
+      triggerHaptic();
+      // The two that need nothing more said happen now; the two that do get
+      // the second step of the same sheet rather than a dialog over it.
+      if (pick === "terminal") {
+        closeNewSheet();
+        createWorkspace();
+      } else if (pick === "tab") {
+        const workspaceId = newSheet.workspaceId;
+        closeNewSheet();
+        createTab(workspaceId);
+      } else if (pick === "chat") {
+        newSheet.step = "chat";
+        renderNewSheet();
+        loadChatOptions();
+      } else if (pick === "worktree") {
+        newSheet.step = "worktree";
+        renderNewSheet();
+      }
+      return;
+    }
+    const go = e.target.closest("[data-go]");
+    if (!go) return;
+    if (go.dataset.go === "chat") startChat();
+    else if (go.dataset.go === "worktree") cutWorktreeFromSheet();
+  });
+
+  /* Return in the branch field is the same as the button: a name and a return
+     key is the whole gesture when you already know what the branch is called. */
+  elNewSheet.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.id === "new-branch") {
+      e.preventDefault();
+      cutWorktreeFromSheet();
+    }
+  });
+
+  // Both read the sheet before closing it, since closing forgets the question.
+  function cutWorktreeFromSheet() {
+    if (!newSheet) return;
+    const input = document.getElementById("new-branch");
+    const project = newSheet.project;
+    const branch = input ? input.value.trim() : "";
+    closeNewSheet();
+    createWorktree(project, branch);
+  }
+
   /* Cut a worktree off a project and open it. Herdr does both halves in the
      one call, so all this has to decide is what the branch is called - and a
      blank answer is a real answer, meaning "you name it", which is how this
      stays one tap and a return key when you have not thought that far. */
-  async function createWorktree(projectKey) {
-    const group = state.groups.find((g) => g.key === projectKey);
+  async function createWorktree(key, branch) {
+    const group = state.groups.find((g) => g.key === key);
     if (!group || !group.from) return;
-    const branch = prompt(`New worktree in ${group.name}`, "");
-    if (branch === null) return;
     triggerHaptic();
     try {
       const res = await fetch("/api/worktrees", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_id: group.from, branch: branch.trim() }),
+        body: JSON.stringify({ workspace_id: group.from, branch: (branch || "").trim() }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) {
@@ -1815,12 +2450,38 @@
     elBtnClosePicker.classList.toggle("hidden", !canLeaveFlock());
   }
 
+  /* ------------------------------------------- The views a pane is read in ---
+   *
+   * The console and the changed files are a reading of one pane. On a phone
+   * they have the screen to themselves, so the pane under them cannot change
+   * while they are open. Past 900px the flock is the column beside them and
+   * choosing what the other half shows is the whole of what it is for - so
+   * picking another row re-aims the view that is open rather than leaving it
+   * showing the pane you walked away from, and a headless chat, which has no
+   * pane for either of them to read, closes them.
+   *
+   * The tokens page and the settings are nobody's pane and stay as they are.
+   * ------------------------------------------------------------------------ */
+  function retargetPaneViews() {
+    if (!elConsoleView.classList.contains("hidden")) openConsole();
+    if (!elChangesView.classList.contains("hidden")) openChanges();
+  }
+
+  function closePaneViews() {
+    if (!elConsoleView.classList.contains("hidden")) closeConsole();
+    if (!elChangesView.classList.contains("hidden")) closeChanges();
+  }
+
   /* Open a pane's chat. `open` false selects it without leaving the flock -
      which is how the app starts: a pane is ready to talk to, but the herd is
      still what you are looking at. */
   function selectAgent(paneId, open = true) {
     if (open) state.chatVisited = true; // there is now a chat to go back to
+    // A pane takes the column back off whatever headless chat had it.
+    const hadChat = state.activeChatId;
+    state.activeChatId = null;
     if (state.activePaneId === paneId) {
+      if (hadChat) renderAgentBar();
       if (open) closePicker();
       return;
     }
@@ -1844,16 +2505,20 @@
     syncPickerChrome();
     renderActiveAgentMeta();
     renderChatQueue();
+    retargetPaneViews();
     fetchHistory(true);
   }
 
   /* ------------------------------------------------------------ The tabs ---
    *
-   * The overview lists worktrees, one sheep per pen, so this is the only place
-   * the tabs inside one are individually reachable - and the only place a
-   * single tab is closed. That was the whole confusion it is here to end:
-   * every action the overview offered acted on the workspace, so closing what
-   * looked like a tab took the branch and its neighbours with it.
+   * A worktree with a second tab in it hangs both of them out in the overview,
+   * so this is not the only place a tab is reachable any more - but it is the
+   * only place one is *switched to* without leaving the chat you are in, and
+   * the only place another is opened. The two agree deliberately: a tab is
+   * called the same thing in both, and Close means this tab in both, which is
+   * the confusion this whole arrangement exists to end - every action the
+   * overview used to offer acted on the workspace, so closing what looked like
+   * a tab took the branch and its neighbours with it.
    *
    * Tap a chip to switch, hold one to rename it, + for another tab in the same
    * checkout, and the x on the one you are in to close it. The x is absent on
@@ -1906,7 +2571,7 @@
     return `
       <div class="tab-chips">${chips.join("")}</div>
       <button type="button" class="tab-chip-new" data-tab-new="${escapeHtml(workspaceId)}"
-              aria-label="New tab in this worktree">+</button>`;
+              aria-label="New tab or worktree">+</button>`;
   }
 
   // Redrawn from the poll, so it is compared before it is replaced: a strip
@@ -1962,7 +2627,13 @@
      same checkout, rather than a worktree of its own. It opens where the tab
      it was asked from is sitting. */
   async function createTab(workspaceId) {
-    const row = state.agents.find((a) => a.pane_id === state.activePaneId);
+    /* Where the new tab opens: the directory the pane you asked from is
+       sitting in, or - asked from the project heading, where no pane is
+       necessarily open - whatever that workspace's first pane is using. */
+    const here = state.agents.find((a) => a.pane_id === state.activePaneId);
+    const row = here && here.workspace_id === workspaceId
+      ? here
+      : state.agents.find((a) => a.workspace_id === workspaceId);
     if (!workspaceId || !row) return;
     triggerHaptic();
     try {
@@ -2750,7 +3421,8 @@
   async function fetchQuota() {
     if (!quotaIsStale()) return;
     try {
-      const res = await fetch("/api/queue/quota");
+      const res = await fetch(
+        `/api/queue/quota${state.machineStrip ? "" : "?machine=0"}`);
       state.quota = await res.json();
       state.quotaAt = Date.now();
       if (state.pickerOpen) {
@@ -2811,6 +3483,7 @@
      every bar sits under the one above it - a wrapped flex item would land
      half a column to the left of the readings it belongs with. */
   function machineHtml(m) {
+    if (!state.machineStrip) return "";
     if (!m || m.ok === false) return "";
     const mem = m.memory || {};
     const cells = [
@@ -3204,7 +3877,11 @@
   // Poll loop
   async function loop() {
     await fetchAgents();
-    await fetchHistory();
+    /* The console is the pane itself, drawn over the transcript: reading the
+       same pane a second time is a request for a screen nobody can see. It is
+       skipped rather than the whole loop being stopped, because past 900px the
+       flock is still a column beside the console and has to stay alive. */
+    if (elConsoleView.classList.contains("hidden")) await fetchHistory();
     // Cheap: a local SQLite read. Keeps the header badge honest even when the
     // queue is closed.
     await fetchQueue();
@@ -3263,6 +3940,8 @@
       state.history = loadHistory();
       state.bleat = readPref("bleat") !== "0";
       elToggleBleat.checked = state.bleat;
+      state.machineStrip = readPref("machine") === "1";
+      elToggleMachine.checked = state.machineStrip;
     } catch (err) {
       /* localStorage unavailable in private mode; defaults are fine */
     }
@@ -3466,11 +4145,6 @@
     return (agent.has_agent && ATTENTION[agent.status]) || 0;
   }
 
-  // Nothing here moves on without you.
-  function wantsInput(agent) {
-    return attentionOf(agent) > 0;
-  }
-
   /* Which project a row belongs under. The gateway reads it off Herdr's
      worktree record - so the scheduler's `sheep/` branches land under the
      repository they were cut from - and falls back to the directory. */
@@ -3510,11 +4184,11 @@
    * tabs on one branch meant two rows, and closing either of them took the
    * branch and the other tab with it.
    *
-   * So the overview lists the pen rather than the animals in it: one row per
-   * workspace, which for everything the scheduler cuts is one row per
-   * worktree. The tabs inside are reached where they can be told apart - the
-   * strip above the transcript, which is also the only place a single tab can
-   * be closed. All the row says about them is how many there are.
+   * So the overview groups by the pen rather than by the animals in it: one
+   * entry per workspace, which for everything the scheduler cuts is one per
+   * worktree - and what a pen with a second tab in it draws is a title with
+   * both of them hung underneath (`penHtml` further up), so the actions on the
+   * title act on the worktree while each sheep is still its own tab.
    * ---------------------------------------------------------------------- */
 
   /* Which of a workspace's tabs speaks for it. The point of the row is what it
@@ -3561,8 +4235,100 @@
     return pen.workspace_id || pen.lead.pane_id;
   }
 
+  /* ------------------------------------------------------- The chats as rows
+   *
+   * A headless chat is the same Claude Code spending the same subscription in
+   * the same checkout as the panes around it, and it used to live on a page of
+   * its own that nothing pointed at - so a chat left asking a question was a
+   * question nobody saw. It is a row here instead.
+   *
+   * What it is not is a pane. It has no workspace, no tab strip, no
+   * transcript and no pane id Herdr would recognise, so it never enters
+   * `state.agents`: it is hung on its project here and given a pen of its own
+   * at the end of that project's rows. The pane id it carries is a label for
+   * the DOM and the sheep hash, and deliberately unresolvable - `chat:` is not
+   * a workspace prefix Herdr issues.
+   * ------------------------------------------------------------------------ */
+
+  /* What the sheep is doing. A question waiting on you is the one state that
+     must never be missed, and a turn in flight is worth showing, but there is
+     deliberately no `done` here: nothing marks a chat as read, so a chat that
+     answered last Tuesday would sit at the top of its project asleep forever.
+     A chat between turns is idle, and the push is what tells you it finished. */
+  function chatStatus(chat) {
+    if (chat.pending && chat.pending.length) return "blocked";
+    if (chat.running) return "working";
+    return "idle";
+  }
+
+  /* A chat wearing enough of a row's clothes that the list can draw it: the
+     same status vocabulary, the same project key, the same agent kind - it is
+     a Claude Code, so it grazes the same field as the panes do. */
+  function chatRowOf(chat) {
+    return {
+      chat,
+      pane_id: "chat:" + chat.id,
+      name: chat.title || "New chat",
+      project: chat.project || chat.cwd || "",
+      project_name: chat.project_name || "",
+      cwd: chat.cwd || "",
+      agent: "claude",
+      has_agent: true,
+      status: chatStatus(chat),
+      title: chat.title || "",
+      updated: chat.updated || chat.created || 0,
+      workspace_id: "",
+      tab_id: "",
+      tab_label: "",
+      repo: false,
+      main_checkout: false,
+      split: false,
+    };
+  }
+
+  /* Hang each chat on the project its cwd names. A project whose panes are all
+     closed still gets a heading, because the chat in it is still running and a
+     chat you cannot see is a chat you cannot stop - such a group gets no `+`
+     for a worktree, since there is no open checkout to cut one from. */
+  function attachChats(groups) {
+    if (!state.chats || !state.chats.length) return groups;
+    const byKey = new Map(groups.map((g) => [g.key, g]));
+    for (const chat of state.chats) {
+      const row = chatRowOf(chat);
+      let group = byKey.get(row.project);
+      if (!group) {
+        group = {
+          key: row.project,
+          name: row.project_name || row.project,
+          agents: [],
+          from: "",
+          chats: [],
+        };
+        byKey.set(group.key, group);
+        groups.push(group);
+      }
+      (group.chats || (group.chats = [])).push(row);
+    }
+    return groups;
+  }
+
+  /* Which chats a project shows, loudest first. Same pair the panes sort by,
+     so a chat holding a permission prompt sits above one merely thinking. */
+  function orderChats(group) {
+    (group.chats || []).sort(
+      (a, b) => attentionOf(b) - attentionOf(a) || (b.updated || 0) - (a.updated || 0)
+    );
+  }
+
   function collapseTabs(groups) {
-    for (const group of groups) group.rows = byWorkspace(group.agents);
+    for (const group of groups) {
+      group.rows = byWorkspace(group.agents);
+      // Under the pens: a chat has no worktree to stand in, and putting it
+      // among them would make the list look like it had one.
+      for (const row of group.chats || []) {
+        group.rows.push({ key: row.pane_id, chat: row.chat, lead: row, tabs: [row] });
+      }
+    }
     return groups;
   }
 
@@ -3666,19 +4432,32 @@
       state.agents.sort((a, b) => at(a.pane_id) - at(b.pane_id));
       // A pane that appeared while you were reading joins its own project at
       // the end, rather than being stranded below every group.
-      state.groups = collapseTabs(groupByProject(state.agents));
+      state.groups = collapseTabs(attachChats(groupByProject(state.agents)));
       return;
     }
 
-    const groups = groupByProject(state.agents);
+    const groups = attachChats(groupByProject(state.agents));
     for (const group of groups) {
       group.agents.sort(
         (a, b) => attentionOf(b) - attentionOf(a) || bornAt(a) - bornAt(b)
       );
+      orderChats(group);
       // A project is as loud as its loudest sheep: a question ahead of a
-      // finished turn, both ahead of a project that wants nothing.
-      group.wants = Math.max(0, ...group.agents.map(attentionOf));
-      group.born = Math.min(...group.agents.map(bornAt));
+      // finished turn, both ahead of a project that wants nothing. A chat
+      // holding a permission prompt is as loud as a pane holding one.
+      group.wants = Math.max(
+        0,
+        ...group.agents.map(attentionOf),
+        ...(group.chats || []).map(attentionOf)
+      );
+      /* Creation order, which only the panes have: Herdr numbers a workspace
+         and a chat has no number to be given. A project that is nothing but
+         chats therefore sorts to the end, which is where the newest thing
+         belongs anyway - and the moment a pane opens in it, it takes its real
+         place in the strip. */
+      group.born = group.agents.length
+        ? Math.min(...group.agents.map(bornAt))
+        : Number.MAX_SAFE_INTEGER;
     }
     sortGroups(groups);
     collapseTabs(groups);
@@ -3747,7 +4526,7 @@
     }
     const add = e.target.closest("[data-tab-new]");
     if (add) {
-      createTab(add.dataset.tabNew);
+      openNewInWorkspace(add.dataset.tabNew);
       return;
     }
     const chip = e.target.closest(".tab-chip");
@@ -3790,7 +4569,17 @@
       if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
       else if (action.dataset.action === "rename") renameRow(action.dataset.workspaceId);
       else if (action.dataset.action === "remove") removeWorktree(action.dataset.workspaceId);
-      else if (action.dataset.action === "worktree") createWorktree(action.dataset.project);
+      else if (action.dataset.action === "worktree") openNewInProject(action.dataset.project);
+      else if (action.dataset.action === "chat-delete") deleteChat(action.dataset.chatId);
+      /* A tab of an opened pen, which is the only row whose drawer acts on
+         something smaller than the worktree. Closing is the same one the
+         strip's x calls, so it asks the same question before it stops an
+         agent mid-turn. */
+      else if (action.dataset.action === "tab-rename") renameTabByPane(action.dataset.paneId);
+      else if (action.dataset.action === "tab-close") {
+        resetSwipe();
+        closeTab(action.dataset.tabId);
+      }
       return;
     }
     const row = e.target.closest(".agent-row");
@@ -3808,8 +4597,56 @@
       suppressClick = false;
       return;
     }
-    if (row.dataset.paneId && !openAsChat(row.dataset.paneId)) selectAgent(row.dataset.paneId);
+    if (row.dataset.chatId) openChat(row.dataset.chatId);
+    else if (row.dataset.paneId && !openAsChat(row.dataset.paneId)) selectAgent(row.dataset.paneId);
   });
+
+  /* A headless chat has no pane behind it, so there is nothing to select and
+     nothing to show a transcript of: on a phone it is the chat page, and past
+     900px it is the same page in the frame that a pane's chat uses, with the
+     tab strip gone because there are no tabs to switch between. */
+  function openChat(chatId) {
+    if (!chatId) return;
+    triggerHaptic();
+    if (!wide.matches) {
+      rememberDraft(state.activePaneId);
+      location.href = "/chat.html#" + encodeURIComponent(chatId);
+      return;
+    }
+    state.activeChatId = chatId;
+    // Neither the console nor the diff has a pane to read here.
+    closePaneViews();
+    renderAgentBar();
+  }
+
+  /* The only thing the drawer on a chat row offers. It used to be two taps on
+     a list that no longer exists, and it is still the only way a chat goes
+     away, so it asks once - a chat is a session log, and nothing brings one
+     back. */
+  async function deleteChat(chatId) {
+    const chat = state.chats.find((c) => c.id === chatId);
+    const name = (chat && chat.title) || "this chat";
+    if (!confirm(`Delete ${name}? The conversation is gone for good.`)) {
+      resetSwipe();
+      return;
+    }
+    triggerHaptic("warning");
+    try {
+      const res = await fetch("/api/chat/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: chatId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || "refused");
+      if (state.activeChatId === chatId) state.activeChatId = null;
+      resetSwipe();
+      await fetchAgents();
+      renderAgentList();
+    } catch (err) {
+      alert("Could not delete chat: " + err.message);
+    }
+  }
 
   /* A Claude Code pane is shown as its chat, and the transcript is the button
      in the chat's header. On a phone that is chat.html; past 900px, where the
@@ -3821,9 +4658,13 @@
     renderAgentBar();
   }
 
-  function renderPaneChat(paneId) {
-    const show = wide.matches && state.paneView === "chat" && !!paneId;
-    const src = show ? "/chat.html#pane:" + paneId : "";
+  /* `target` is what goes after the hash: `pane:<id>` for a Claude Code pane
+     read as a chat, or a headless chat's own id. A chat with no pane behind it
+     is not something the transcript toggle can turn off, so it ignores it. */
+  function renderPaneChat(target) {
+    const show = wide.matches && !!target
+      && (state.paneView === "chat" || !!state.activeChatId);
+    const src = show ? "/chat.html#" + target : "";
     if (elPaneChatFrame.dataset.src !== src) {
       elPaneChatFrame.dataset.src = src;
       // about:blank rather than no src: a hidden chat must stop its poll.
@@ -3838,7 +4679,16 @@
     setPaneView("chat");
   });
   window.addEventListener("message", (e) => {
-    if (e.origin === location.origin && e.data && e.data.sheepit === "transcript") setPaneView("transcript");
+    if (e.origin !== location.origin || !e.data) return;
+    if (e.data.sheepit === "transcript") setPaneView("transcript");
+    /* The chat in the frame is done with - deleted, or backed out of. Only a
+       headless one can say this; a pane's chat has a transcript to fall back
+       to and says that instead. */
+    if (e.data.sheepit === "closed" && state.activeChatId) {
+      state.activeChatId = null;
+      fetchAgents();
+      renderAgentBar();
+    }
   });
   wide.addEventListener("change", () => renderAgentBar());
 
@@ -3884,9 +4734,8 @@
     });
   }
 
-  /* Hold a row aside so its actions show. The swipe ends here, and so does the
-     right-click below - what a finger reaches by dragging is the same drawer,
-     not a second menu that could disagree with it. */
+  // Hold a row aside so its actions show, which is where the swipe ends.
+
   function openRowActions(row) {
     const actions = row.parentElement.querySelector(".agent-row-actions");
     const width = (actions && actions.offsetWidth) || SWIPE_WIDTH;
@@ -3895,20 +4744,11 @@
     row.style.transform = `translateX(${-width}px)`;
   }
 
-  /* A mouse has no swipe. Every one of these rows had its Rename and Close
-     reachable only by dragging it aside, which on a desktop browser meant not
-     reachable at all - so the gesture a mouse does have opens the same drawer.
-     The browser's own menu is not useful over a row and would cover it. */
-  elAgentList.addEventListener("contextmenu", (e) => {
-    const row = e.target.closest(".agent-row");
-    if (!row) return;
-    e.preventDefault();
-    resetSwipe();
-    openRowActions(row);
-  });
-
-  // Anywhere else puts it away, including the heading and the list's own gaps,
-  // so a drawer opened by a right-click is never left standing open.
+  /* Anywhere else puts it away, including the heading and the list's own gaps.
+     A right-click does not open one any more: the drawer was lent to a mouse
+     back when Rename and Close were only reachable by dragging a row aside,
+     and the icons in the corner are that, without taking the browser's own
+     menu away from the row. */
   document.addEventListener("pointerdown", (e) => {
     if (!elAgentList.querySelector(".agent-row.swiped")) return;
     if (e.target.closest(".agent-row-wrap")) return;
@@ -3992,6 +4832,10 @@
       swipe.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
     if (swipe.axis !== "x") return; // let the list scroll
+    /* Nothing behind the row to reveal on a machine with a pointer: the drawer
+       is off there (`style.css`), and a hybrid laptop is a finger on a row that
+       has the icons. */
+    if (mouse.matches) return;
     const base = swipe.row.classList.contains("swiped") ? -swipe.width : 0;
     swipe.dx = Math.max(-swipe.width, Math.min(0, base + dx));
     swipe.row.style.transition = "none";
@@ -4191,7 +5035,8 @@
     }
   }
 
-  elBtnNewWorkspace.addEventListener("click", createWorkspace);
+  elBtnNewWorkspace.addEventListener("click", openNewAnything);
+  elBtnCloseNewSheet.addEventListener("click", closeNewSheet);
 
   elBtnRefresh.addEventListener("click", () => {
     triggerHaptic();
@@ -4203,6 +5048,7 @@
   /* One backdrop dismisses any open sheet. */
   elSheetBackdrop.addEventListener("click", () => {
     closeSheet();
+    closeNewSheet();
   });
 
   elHistoryContainer.addEventListener("scroll", onHistoryScroll, { passive: true });
@@ -4324,6 +5170,18 @@
     state.bleat = e.target.checked;
     savePref("sheepit.bleat", state.bleat ? "1" : "0");
     if (state.bleat) unlockAudio().then(playBleat); // so you hear what you enabled
+  });
+
+  /* The strip appears with the next poll rather than this tap: what it draws
+     are rates, and a first reading has no previous pass to measure against, so
+     the reading asked for here is the one the poll after it can put numbers
+     on. Turning it off blanks it at once. */
+  elToggleMachine.addEventListener("change", (e) => {
+    state.machineStrip = e.target.checked;
+    savePref("sheepit.machine", state.machineStrip ? "1" : "0");
+    if (state.machineStrip) state.quotaAt = 0; // ask again, with the machine in it
+    else renderQuota();
+    fetchQuota();
   });
 
   elToggleStatusBar.addEventListener("change", (e) => {
@@ -5203,14 +6061,17 @@
   function closeConsole() {
     elConsoleView.classList.add("hidden");
     closeConsoleSocket();
-    // Polling stopped while the console had the screen; it is the transcript's
-    // turn again.
+    // The transcript was left out of the loop while the console was up, and on
+    // a phone the loop was stopped outright; it is its turn again either way.
     startPolling();
     loop();
   }
 
   elBtnConsole.addEventListener("click", () => {
-    stopPolling();
+    // On a phone the console has the whole screen and nothing behind it is
+    // worth keeping up to date. Past 900px the flock is still the left column,
+    // so the loop keeps running and only leaves the transcript alone.
+    if (!wide.matches) stopPolling();
     openConsole();
   });
   elBtnCloseConsole.addEventListener("click", closeConsole);
@@ -5575,10 +6436,12 @@
     });
   }
 
-  elBtnChanges.addEventListener("click", openChanges);
-  elBtnCloseChanges.addEventListener("click", () => {
+  function closeChanges() {
     elChangesView.classList.add("hidden");
-  });
+  }
+
+  elBtnChanges.addEventListener("click", openChanges);
+  elBtnCloseChanges.addEventListener("click", closeChanges);
   elBtnDiffLayout.addEventListener("click", () => setDiffLayout(!state.diffSplit));
   elChangesList.addEventListener("click", (e) => {
     const row = e.target.closest(".change-row");

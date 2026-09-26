@@ -45,7 +45,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; position: fixed; top: 
 .bar-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar > .bar-title { flex: 1; }
 .bar-sub { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.beta { font-size: 11px; color: var(--work); border: 1px solid currentColor; border-radius: 6px; padding: 0 6px; }
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 36px; height: 36px; border-radius: 10px; border: 0;
@@ -53,39 +52,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; position: fixed; top: 
 }
 .icon-btn:active { background: var(--bg-card); }
 
-/* List */
-.new-chat {
-  display: flex; flex-direction: column; gap: 10px; padding: 12px;
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
-}
-.new-chat .row { display: flex; gap: 10px; }
-.new-chat .row label { flex: 1; }
-.new-chat label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-2); }
-select, textarea {
+/* The list of chats and the form that started one were here; the flock lists
+   them now, and its "+" starts them. What is left is the one chat. */
+textarea {
   font: inherit; color: var(--text); background: var(--bg-input);
   border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 10px;
 }
-select { font-size: 16px; }
-button.primary {
-  font: inherit; font-weight: 600; color: #fff; background: var(--accent);
-  border: 0; border-radius: 10px; padding: 10px;
-}
-.chat-list { list-style: none; margin: 14px 0 0; padding: 0; }
-.chat-list li {
-  padding: 11px 4px; border-bottom: 1px solid var(--border); cursor: pointer;
-  display: flex; align-items: center; gap: 8px;
-}
-.chat-list .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.row-del {
-  flex: none; min-width: 36px; height: 32px; border-radius: 8px; border: 0; padding: 0 8px;
-  background: transparent; color: var(--text-3); font: inherit; font-size: 13px; font-weight: 600;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.row-del.armed { background: var(--err); color: #fff; }
-.chat-list .t { font-weight: 500; display: flex; gap: 8px; align-items: center; }
-.chat-list .s { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); flex: none; }
-.dot.running { background: var(--work); animation: pulse 1.2s ease-in-out infinite; }
+/* Still what a running tool and a waiting reply are drawn with, further down. */
 @keyframes pulse { 50% { opacity: 0.35; } }
 .empty { color: var(--text-3); text-align: center; padding: 24px 0; }
 
@@ -149,8 +122,6 @@ details.tool pre {
 }
 .send.stop { background: var(--err); }
 .send:disabled { opacity: 0.4; }
-
-.dot.asking { background: var(--err); animation: pulse 1.2s ease-in-out infinite; }
 
 /* Images: in a sent message, and waiting above the composer */
 .msg.user .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }

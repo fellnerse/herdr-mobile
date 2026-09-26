@@ -413,6 +413,38 @@ def chat_dirs() -> list:
     return sorted(seen.values(), key=lambda d: d["cwd"])
 
 
+def flock_chats(rows: list) -> list:
+    """The headless chats, shaped enough to sit in the flock beside the panes.
+
+    All they are missing is which project they belong under, and a chat's cwd
+    is a project root by construction - `handle_new` refuses any directory the
+    flock has no pane in - so the rows just read are enough to name it without
+    asking Herdr a second time.
+    """
+    try:
+        chats = chat.summaries()
+    except Exception:
+        return []
+    if not chats:
+        return []
+    names = {}
+    for row in rows:
+        root = (row.get("project") or "").rstrip("/")
+        if root and root not in names:
+            names[root] = row.get("project_name") or root.rsplit("/", 1)[-1]
+    out = []
+    for meta in chats:
+        cwd = (meta.get("cwd") or "").rstrip("/")
+        out.append({
+            **meta,
+            "project": cwd,
+            # A chat outlives the panes of its project: the heading still has
+            # to be called something once the last workspace is closed.
+            "project_name": names.get(cwd) or cwd.rsplit("/", 1)[-1] or cwd,
+        })
+    return out
+
+
 def chat_notify(title: str, body: str, url: str) -> None:
     """A chat finished or wants an answer: park it like a pane that stopped,
     with where the notification should open, and push."""
@@ -870,7 +902,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 self.send_json({"error": e.args[0]}, 500)
                 return
-            self.send_json({"ok": True, "agents": agents})
+            # The headless chats ride along on the same poll: they are rows in
+            # the same list, and a second request for them would be a second
+            # round trip for a list that is already being drawn.
+            self.send_json({"ok": True, "agents": agents,
+                            "chats": flock_chats(agents)})
             return
 
         # API: Who stopped working most recently. A push carries no payload, so
@@ -891,7 +927,12 @@ class HerdrHandler(BaseHTTPRequestHandler):
         # API: usage windows. Free to ask - it is the same endpoint Claude Code
         # uses for its own limits and costs no tokens.
         if path == "/api/queue/quota":
-            self.send_json({"ok": True, **quota_payload()})
+            # The machine strip is off unless somebody turned it on, and
+            # reading it costs a pass over every counter the host keeps - so
+            # the phone says whether it is looking rather than being handed a
+            # snapshot nobody will draw.
+            want_machine = qs.get("machine", ["1"])[0] != "0"
+            self.send_json({"ok": True, **quota_payload(want_machine)})
             return
 
         # API: what has been spent, hour by hour, out of the agents' own logs.
@@ -1239,8 +1280,13 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 return
 
         # API: Create a workspace
+        # A bare terminal belongs to no project, so it opens in the home
+        # directory rather than wherever Herdr happens to be standing -- a
+        # workspace that inherits a checkout is one the phone then files under
+        # that project's heading, which is not what "+ New > Terminal" asked for.
         if path == "/api/workspaces":
-            res = call_herdr_rpc("workspace.create", {})
+            cwd = (body.get("cwd") or "").strip() or str(Path.home())
+            res = call_herdr_rpc("workspace.create", {"cwd": cwd})
             if "error" in res:
                 self.send_json(res, 400)
                 return
@@ -1818,7 +1864,7 @@ def agent_quota(agent: str) -> dict:
     }
 
 
-def quota_payload() -> dict:
+def quota_payload(include_machine: bool = True) -> dict:
     """What every agent on this machine has left to spend."""
     agents = agents_running() or ["claude"]
     if "codex" in agents:
@@ -1837,8 +1883,9 @@ def quota_payload() -> dict:
         "agents": readings,
         # What the machine itself has left, beside what the subscriptions have:
         # it rides on this poll rather than one of its own, because it is read
-        # at the same moment, for the same glance.
-        "machine": machine.snapshot(),
+        # at the same moment, for the same glance - when the phone is drawing
+        # it at all.
+        "machine": machine.snapshot() if include_machine else None,
         # One line for the whole machine, for anything that wants a yes or no.
         "blocked": all(r["blocked"] for r in readings) if readings else False,
     }

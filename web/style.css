@@ -44,6 +44,13 @@
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* How wide the flock is once it stops being a sheet and becomes the left
+     column - see the desktop section at the foot of this file. A phone's
+     width, near enough: the rows, the sheep and the usage strip were all
+     drawn to fit one. Everything that opens beside it is offset by this, so
+     it is a variable rather than the same number written twice. */
+  --flock-width: 380px;
 }
 
 * {
@@ -382,13 +389,6 @@ html, body {
   white-space: nowrap;
 }
 
-.agent-group-count {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
 /* Cut another worktree off this project. A heading is 12px tall and a thumb is
    not, so the tappable box is grown past the glyph with padding and pulled
    back out of the layout with a negative margin - the heading keeps its height
@@ -410,15 +410,6 @@ html, body {
 
 .agent-group-add:active {
   color: var(--accent-primary);
-}
-
-/* The only thing in a heading worth colouring: somebody is waiting on you. */
-.agent-group-waiting {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  color: var(--status-blocked);
 }
 
 /* Row sits in a clipping wrapper so its actions can hide behind it. */
@@ -460,19 +451,80 @@ html, body {
 .agent-row-action.remove { background: #7d1d1d; }
 .agent-row-action:active { filter: brightness(0.88); }
 
-/* A mouse cannot swipe, so the drawer is opened by a right-click instead - and
-   the row needs to say it has one. The hint only exists where there is a
-   pointer that can hover, since a phone has the gesture already. */
+/* A mouse cannot swipe, so the drawer behind a row is a gesture it does not
+   have. Where the row used to grow a "…" that said only that the drawer was
+   there, it now grows the two things in it worth a single tap: rename, and the
+   close that asks first. Remove is not one of them - it deletes a checkout, so
+   it stays in the drawer, and the drawer stays the finger's.
+
+   Hidden outright where there is no hover to reveal them: a phone has the
+   gesture already, and two more tap targets on a row are two things to hit by
+   accident. Only the media query below turns them on. */
+.row-tools,
+.pen-head-tools {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+/* On a row the corner is the only free space - the sheep has the left, the name
+   the middle, the badge the right - so the icons go where the "…" was: above
+   the badge, which stays where it is. Hovering a row must not take anything off
+   it, least of all the status it is there to say. */
+.row-tools {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+}
+
+/* A pen's title is the exception: it carries no badge to stand clear of, and a
+   13px line has no corner to speak of, so its pair sits in the flow at the end
+   of the name. Only the placement differs - .pen-head-tools is the same two
+   icons, revealed the same way. */
+
+.row-tool {
+  display: flex;
+  padding: 3px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
 @media (hover: hover) and (pointer: fine) {
-  .agent-row-wrap:hover .agent-row::after {
-    content: "\2026";
-    position: absolute;
-    top: 2px;
-    right: 6px;
-    font-family: var(--font-mono);
-    font-size: 14px;
-    line-height: 1;
-    color: var(--text-muted);
+  /* Laid out whether or not the pointer is on the row, so nothing jumps
+     sideways the moment it is - only the ink arrives. */
+  .row-tools,
+  .pen-head-tools {
+    display: flex;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+
+  .agent-row-wrap:hover .row-tools,
+  .agent-row-wrap:hover .pen-head-tools {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .row-tool:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* Closing stops every agent behind the icon, and asks before it does. It is
+     the one here that says what it is before it is pressed. */
+  .row-tool.danger:hover {
+    color: var(--status-blocked);
+  }
+
+  /* And the drawer these replace is gone from here: it is a swipe, a machine
+     with a pointer has no swipe, and the two Rename buttons of a thing that
+     cannot be reached are two more ways to be wrong about what the row offers.
+     `app.js` gives the right-click back to the browser for the same reason. */
+  .agent-row-actions {
+    display: none;
   }
 }
 
@@ -560,6 +612,112 @@ html, body {
   font-size: 10px;
   font-weight: 600;
   color: var(--text-muted);
+}
+
+/* Which tab of a worktree this row is, on the rows of a pen that has its tabs
+   out. Same ink as the count it replaces there - what it says is where in the
+   strip you would find this one, not something the row is claiming. */
+.row-tab {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* ---- A pen with its tabs out ---------------------------------------------
+ *
+ * A worktree with a second tab in it draws both of them: one sheep each,
+ * indented under a single title and joined to it by a bracket down the left.
+ * The title is the worktree, which is what Close and Remove have always acted
+ * on; the animals are the tabs.
+ */
+.pen {
+  margin-bottom: 8px;
+}
+
+/* The title. Deliberately not a card: a worktree is not a thing that is doing
+   something, and giving it the same surface as its tabs made a pen of two read
+   as three agents. */
+/* The same card colour as the tabs under it, because the title is part of the
+   pen rather than a heading over it - and opaque either way: the drawer sits
+   behind the row, so a see-through title has Rename and Close showing through
+   it before anybody has swiped anything. */
+.agent-row.pen-head {
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-card);
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.agent-row.pen-head:active {
+  background: var(--bg-hover);
+}
+
+.pen-head-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The pen the open chat is in, said on the title as well as on the tab: the
+   tab marks itself, but a long pen can have it scrolled out of sight. */
+.agent-row.pen-head.here .pen-head-name {
+  color: var(--accent-primary);
+}
+
+/* The tabs themselves, indented far enough to leave the bracket its room. */
+.pen-tabs {
+  margin-left: 16px;
+}
+
+/* The bracket: a trunk down the left of the pen and an elbow into each tab,
+   ending at the last one rather than running past it. It hangs on this element
+   rather than on the row's wrapper, because the wrapper clips to its own
+   corners so a swipe can hide behind it - a line drawn there is a line nobody
+   ever sees. */
+.pen-tab {
+  position: relative;
+}
+
+.pen-tab::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: -8px;
+  bottom: 0;
+  width: 2px;
+  background: var(--border-strong);
+}
+
+/* Down to the last sheep's middle and no further, which is what makes the
+   bracket read as holding these tabs rather than pointing past them. */
+.pen-tab:last-child::before {
+  bottom: auto;
+  height: calc(50% + 8px);
+}
+
+/* The pen's own gap below it does for the last tab as well, or a pen ends in
+   twice the space between two of them. */
+.pen-tab:last-child .agent-row-wrap {
+  margin-bottom: 0;
+}
+
+.pen-tab::after {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  width: 8px;
+  height: 2px;
+  background: var(--border-strong);
 }
 
 /* The row's headline is what the agent is doing, which is a sentence rather
@@ -675,9 +833,37 @@ html, body {
 .agent-row.active .sheep-edge { fill: var(--bg-hover); }
 .agent-row.active .sheep-lid { stroke: var(--bg-hover); }
 
-/* Nobody home: the empty pasture is the one drawing with no breed behind it,
+/* Nobody home: the shell window is the one drawing with no breed behind it,
    so it keeps a colour of its own. */
 .sheep-wrap.unknown { color: var(--status-unknown); }
+
+/* The screen is the darkest thing on the row - darker than the card, which is
+   what makes it read as a screen rather than a panel. Everything on it is the
+   text colour, since that is what a terminal puts there. */
+.shell-screen { fill: var(--bg-base); }
+
+.shell-frame {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  opacity: 0.55;
+}
+
+.shell-prompt {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.8;
+}
+
+/* The fleece is the whole animal at a glance; the legs, head and ear behind it
+   are the same white turned down, which is the only shading a shape this small
+   can carry. The eye is the screen showing through. */
+.shell-sheep-fleece { fill: var(--text-primary); }
+.shell-sheep-under { fill: var(--text-primary); opacity: 0.6; }
+.shell-sheep-eye { fill: var(--bg-base); }
 
 /* The field under the sheep: what its subscription has left, drawn as blades
    that shorten together rather than blades that disappear. Stroked rather than
@@ -716,7 +902,7 @@ html, body {
 
 .sheep-wrap.blocked { animation: sheep-alert 1.2s ease-in-out infinite; }
 
-/* The sleeping sheep only breathes; the empty pasture does not move at all. */
+/* The sleeping sheep only breathes; a shell does not move at all. */
 .sheep-wrap.done {
   animation: sheep-breathe 3.6s ease-in-out infinite;
 }
@@ -2045,7 +2231,9 @@ html, body {
    The console and the changed files
 
    Both take the whole screen the way the project picker does: on a phone a
-   half-view of a terminal or a diff is no view at all.
+   half-view of a terminal or a diff is no view at all. Past 900px the screen
+   they take is the right-hand column, and the flock keeps the left - see the
+   desktop section at the foot of this file.
    --------------------------------------------------------------------------- */
 /* `inset: 0` is the layout viewport, which on iOS is taller than what you can
    actually see: the bottom of the view - the console's key row, the last rows
@@ -2656,6 +2844,11 @@ html, body {
  * on the left that nothing closes - the chat opens beside it, and the back
  * button and the X that got you between them have nothing left to do.
  *
+ * Everything else the app opens goes in that same right-hand column: the
+ * console, the changed files, the tokens page and the settings. One column is
+ * the list of what there is, the other is whatever you asked to see of it, and
+ * nothing in the app covers the list.
+ *
  * The breakpoint is repeated once in app.js, which needs to know that closing
  * the flock is not a thing here.
  * --------------------------------------------------------------------------- */
@@ -2685,15 +2878,24 @@ html, body {
     z-index: 1;
     order: -1;
     flex: 0 0 auto;
-    /* A phone's width, near enough: the rows, the sheep and the usage strip
-       were all drawn to fit one, and nothing here has to be re-thought. */
-    width: 380px;
+    width: var(--flock-width);
     height: var(--app-height, 100vh);
     border-right: 1px solid var(--border-subtle);
   }
 
   /* Closing it is what a phone does. Here it is the furniture. */
   .agent-picker.hidden { display: flex; }
+
+  /* The console, the diff, the tokens page and the settings are the right
+     column's contents too, not a curtain over the window: what the flock is
+     for is picking what the other half shows, and a view that covered it took
+     that away - you had to close the console to get at the list that said
+     which pane the console would be of. So they start where the flock ends,
+     and switching rows underneath one keeps it open and re-aims it. */
+  .full-view {
+    left: var(--flock-width);
+    width: calc(100vw - var(--flock-width));
+  }
 
   .app-container {
     flex: 1 1 auto;
@@ -2745,3 +2947,126 @@ html, body {
 /* The X only means something while there is a chat behind the flock to go
    back to - on a fresh start there is not. */
 .icon-btn.hidden { display: none; }
+
+/* ------------------------------------------------------------- The + sheet
+ *
+ * Every "+" in the app asks the same way: what kind of new thing, and then
+ * whatever that answer needs. A choice is a whole row rather than a radio
+ * button, because a thumb picking between two things on a phone wants a
+ * target, not a dot - and because each of them has a line of explanation
+ * underneath that a radio label has nowhere to put.
+ * ------------------------------------------------------------------------ */
+
+.new-sheet-title {
+  margin: 0 0 10px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.new-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  text-align: left;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.new-choice:active {
+  border-color: var(--accent-primary);
+  filter: brightness(1.15);
+}
+
+.new-choice-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--bg-surface);
+  color: var(--accent-primary);
+}
+
+.new-choice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.new-choice-name { font-weight: 600; }
+
+.new-choice-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* The second step: the settings the answer needs, and the button that does it. */
+.new-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.new-field select,
+.new-field input {
+  width: 100%;
+  padding: 9px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.new-row {
+  display: flex;
+  gap: 10px;
+}
+
+.new-go {
+  width: 100%;
+  padding: 12px;
+  margin: 2px 0 8px 0;
+  background: var(--accent-primary);
+  border: none;
+  border-radius: 11px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+}
+
+.new-go:active { filter: brightness(0.9); }
+
+.new-go[disabled] { opacity: 0.5; }
+
+/* A chat's sheep carries a speech bubble over its rump - see CHAT_BUBBLE. It
+   is outlined in the card's colour like the face and the ears, so it reads as
+   something laid over the fleece rather than a hole in it. */
+.sheep-bubble .bubble-body {
+  fill: var(--bg-card);
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.sheep-bubble .bubble-dot {
+  fill: currentColor;
+}

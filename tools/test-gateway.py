@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
 os.environ["SHEEPIT_STATE_DIR"] = tempfile.mkdtemp(prefix="sheepit-test-")
 
 import bincode  # noqa: E402
+import chat  # noqa: E402
 import gitdiff  # noqa: E402
 import machine  # noqa: E402
 import server  # noqa: E402
@@ -2158,6 +2159,64 @@ try:
           panechat.get("not a pane"), None)
 finally:
     panechat.call_herdr_rpc, panechat.tokens.session_log = orig
+
+# ---- What a turn cost, and only when somebody is billed for it -------------
+# `claude` prices every turn whether or not the tokens are invoiced, so the
+# figure only reaches the phone when the credential says it is a bill.
+
+RESULT = {"type": "result", "total_cost_usd": 0.357, "duration_ms": 22815, "num_turns": 3}
+saved = {k: os.environ.pop(k, None) for k in chat.BILLED_PER_TOKEN}
+try:
+    check("a subscription is told how long its turn took and nothing else",
+          (chat.slim(RESULT)["cost"], chat.slim(RESULT)["duration_ms"]), (None, 22815))
+    for key in chat.BILLED_PER_TOKEN:
+        os.environ[key] = "1"
+        check(f"{key} is a bill, so the bill is shown", chat.slim(RESULT)["cost"], 0.357)
+        del os.environ[key]
+    # An empty variable is how a shell unsets one it still exports.
+    os.environ["ANTHROPIC_API_KEY"] = ""
+    check("an empty key is no key", chat.slim(RESULT)["cost"], None)
+finally:
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    for k, v in saved.items():
+        if v is not None:
+            os.environ[k] = v
+
+# ---- The chats as rows in the flock ----------------------------------------
+# They ride along on /api/agents rather than a poll of their own, and all the
+# gateway adds is which project each one belongs under - read off the rows it
+# has just built, so Herdr is not asked a second time.
+
+orig_summaries = chat.summaries
+try:
+    chat.summaries = lambda: [
+        {"id": "aa", "cwd": "/repos/api/", "title": "Fix the parser", "running": True},
+        {"id": "bb", "cwd": "/repos/gone", "title": "", "running": False},
+    ]
+    rows = [{"project": "/repos/api", "project_name": "api"}]
+    out = server.flock_chats(rows)
+    check("a chat is filed under the project its cwd names",
+          [(c["id"], c["project"], c["project_name"]) for c in out],
+          [("aa", "/repos/api", "api"), ("bb", "/repos/gone", "gone")])
+    check("and keeps everything the chat page already reads off it",
+          (out[0]["title"], out[0]["running"]), ("Fix the parser", True))
+    # A chat outlives the panes of its project: the heading still needs a name.
+    check("a project with no panes left is named off its path",
+          server.flock_chats([])[1]["project_name"], "gone")
+
+    chat.summaries = lambda: []
+    check("no chats is no work", server.flock_chats(rows), [])
+
+    def boom():
+        raise RuntimeError("no chats today")
+
+    chat.summaries = boom
+    # The flock is the home screen: chats failing must not take the panes with
+    # them, since the panes are the half that can still be answered.
+    check("a chat store that will not answer costs the list nothing",
+          server.flock_chats(rows), [])
+finally:
+    chat.summaries = orig_summaries
 
 # ---------------------------------------------------------------------------
 
