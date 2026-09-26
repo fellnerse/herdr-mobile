@@ -2098,12 +2098,12 @@ finally:
     heartbeat.subprocess.run = orig_run
     heartbeat._model_cache.pop("omp", None)
 # ---- One send path ---------------------------------------------------------
-# Every prompt the phone sends - the transcript's, a pane chat's, the queue
-# tool's - goes through this one function, so a window that is out holds all of
-# them. A shell is the exception it has to make: nothing would ever deliver
-# into a pane with no agent in it, so that goes to the terminal as typed input.
+# Regular prompts wait for the pane and usage window. /clear goes straight to
+# the agent, and shell input goes straight to the terminal.
 
 _qp_rpc, _qp_add = server.call_herdr_rpc, server.sched_db.add
+_qp_cleared = server.panechat.cleared
+qp_clears = []
 qp_panes = {
     "wA:p1": {"pane_id": "wA:p1", "agent_status": "idle", "workspace_id": "wA",
               "cwd": "/tmp/proj", "agent_session": {"kind": "id", "value": "s-1"}},
@@ -2122,6 +2122,7 @@ def qp_rpc(method, params=None, timeout=5.0):
 
 server.call_herdr_rpc = qp_rpc
 server.sched_db.add = lambda conn, **kw: (qp_added.append(kw) or 77)
+server.panechat.cleared = lambda pane_id, pane, sent_at: qp_clears.append((pane_id, pane, sent_at))
 try:
     check("an empty prompt is not queued",
           server.queue_prompt("wA:p1", "   "), ({"ok": False, "error": "Empty prompt"}, 400))
@@ -2131,22 +2132,34 @@ try:
           server.queue_prompt("wZ:p9", "hi")[1], 404)
 
     payload, code = server.queue_prompt("wA:p1", "  fix the login page  ")
-    check("an agent's prompt becomes a queue row", (payload, code), ({"ok": True, "id": 78}, 200))
+    check("an agent's prompt becomes a queue row", (payload, code), ({"ok": True, "id": 77}, 200))
     check("recorded with what outlives the pane",
           {k: qp_added[-1][k] for k in ("pane_id", "prompt", "workspace_id", "session_uuid", "cwd")},
           {"pane_id": "wA:p1", "prompt": "fix the login page", "workspace_id": "wA",
            "session_uuid": "s-1", "cwd": "/tmp/proj"})
     check("and never sent to the pane behind the queue's back", qp_sent, [])
 
+    qp_panes["wA:p1"]["agent_status"] = "working"
+    qp_panes["wA:p1"]["agent"] = "codex"
+    payload, code = server.queue_prompt("wA:p1", "  /clear  ")
+    check("/clear is delivered immediately even while the agent is working",
+          (payload, code), ({"ok": True, "delivered": "agent"}, 200))
+    check("/clear goes to the agent directly",
+          qp_sent, [("agent.prompt", {"target": "wA:p1", "text": "/clear"})])
+    check("/clear has no queue row", len(qp_added), 1)
+    check("/clear invalidates the pane chat cache", len(qp_clears), 1)
+    check("/clear invalidates the intended Codex pane", qp_clears[0][0], "wA:p1")
+
     payload, code = server.queue_prompt("wA:p2", "claude")
     check("a shell is typed into instead, since nothing would deliver to it",
           (payload, code), ({"ok": True, "delivered": "terminal"}, 200))
     check("as text and a return",
-          qp_sent, [("pane.send_text", {"pane_id": "wA:p2", "text": "claude"}),
+          qp_sent[-2:], [("pane.send_text", {"pane_id": "wA:p2", "text": "claude"}),
                     ("pane.send_keys", {"pane_id": "wA:p2", "keys": ["enter"]})])
     check("and no row is kept for it", len(qp_added), 1)
 finally:
     server.call_herdr_rpc, server.sched_db.add = _qp_rpc, _qp_add
+    server.panechat.cleared = _qp_cleared
 
 # ---- A Herdr pane read as a chat -------------------------------------------
 # The session log Claude Code writes is the transcript; a tool call with no
@@ -2406,6 +2419,30 @@ try:
     pc._adopt(None, None)
     pc.refresh()
     check("Codex: prompts before clear do not select the old rollout", pc.path, None)
+
+    # A direct /clear has no queued row or log entry to signal the chat view.
+    # The old rollout must disappear now and stay excluded on the next poll.
+    codex_pane["terminal_title_stripped"] = "Update Codex chat view | codex-project"
+    codex_pane["agent_session"] = {"kind": "id", "value": "a" * 36}
+    pc.refresh()
+    old_epoch = pc.epoch
+    panechat.cleared("wZ:p1", dict(codex_pane), time.time())
+    check("Codex: /clear empties the visible conversation immediately",
+          (pc.path, pc.events, pc.epoch != old_epoch), (None, [], True))
+    pc.refresh()
+    check("Codex: stale session ID cannot restore cleared history", (pc.path, pc.events), (None, []))
+
+    new_sid = "c" * 36
+    new_path = rollouts / f"rollout-{new_sid}.jsonl"
+    new_path.write_text("\n".join(json.dumps(row) for row in (
+        {"type": "session_meta", "payload": {"id": new_sid, "cwd": "/tmp/codex-project"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                     "content": [{"type": "input_text", "text": "new conversation"}]}},
+    )) + "\n")
+    codex_pane["agent_session"] = {"kind": "id", "value": new_sid}
+    pc.refresh()
+    check("Codex: new rollout replaces cleared history",
+          (pc.path, [e.get("text") for e in pc.events]), (new_path, ["new conversation"]))
 finally:
     tokens.CODEX_HOME = orig_codex_home
     sched_db.DB_PATH = orig_queue_db

@@ -184,6 +184,9 @@ class PaneChat:
         # Set the moment `/clear` is seen typed into the log, so a rescan does
         # not wait on the quiet timer for a session that is already leaving.
         self.expect_new_session = False
+        self.clear_at = None
+        self.cleared_path = None
+        self.generation = 0
         self.offset = 0
         self.tail = b""
         self.events: list[dict] = []
@@ -197,7 +200,7 @@ class PaneChat:
 
     @property
     def epoch(self) -> str:
-        return f"{chat.EPOCH}-{(self.session or '')[:8]}"
+        return f"{chat.EPOCH}-{(self.session or '')[:8]}-{self.generation}"
 
     @property
     def status(self) -> str:
@@ -248,6 +251,7 @@ class PaneChat:
         self.expect_new_session = False
         self._restart()
         if path:
+            self.clear_at = self.cleared_path = None
             self.session = session or path.stem
         if self.is_claude and self.session:
             self._save_session()
@@ -407,6 +411,9 @@ class PaneChat:
             )[:40]
         except OSError:
             return None
+        if self.clear_at is not None:
+            candidates = [p for p in candidates if p != self.cleared_path
+                          and p.stat().st_mtime >= self.clear_at]
         matches = []
         for path in candidates:
             try:
@@ -530,6 +537,13 @@ class PaneChat:
     def _restart(self):
         self.offset, self.tail, self.events, self.model = 0, b"", [], ""
         self.unresolved, self.asks, self.answered, self.pending = {}, {}, set(), {}
+
+    def clear_after_command(self, sent_at: float):
+        """Drop the old Codex conversation as soon as /clear is accepted."""
+        self.cleared_path = self.path
+        self._adopt(None, None)
+        self.clear_at = sent_at
+        self.generation += 1
 
     def _read_log(self):
         if not self.path:
@@ -748,6 +762,17 @@ _LOCK = threading.Lock()
 # a chat sends the same way the transcript does - `agent.prompt` from here
 # would be a second door into a window the queue is holding shut.
 _queue = None
+
+
+def cleared(pane_id: str, pane: dict, sent_at: float) -> None:
+    """Invalidate a Codex pane from either the transcript or chat send path."""
+    if pane.get("agent") != "codex":
+        return
+    with _LOCK:
+        pc = _PANES.setdefault(pane_id, PaneChat(pane_id))
+    with pc.lock:
+        pc.pane = pane
+        pc.clear_after_command(sent_at)
 
 
 def init(queue_fn) -> None:

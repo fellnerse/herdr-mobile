@@ -483,13 +483,13 @@ def chat_notify(title: str, body: str, url: str) -> None:
 
 
 def queue_prompt(pane_id: str, prompt: str) -> tuple:
-    """Queue one prompt for one pane; the payload and status to answer with.
+    """Deliver a command or queue a prompt; return its payload and status.
 
     There is one of these because there is one send path: whatever the phone is
     looking at - the transcript, a pane read as a chat, the queue tool - a
     prompt joins the queue and the dispatcher decides when the pane and the
-    window can take it. Sending straight to `agent.prompt` from a second place
-    is how a spent window gets written into anyway.
+    window can take it. `/clear` is a local session command, so it can go
+    straight to the agent without waiting for a turn or a usage window.
     """
     prompt = (prompt or "").strip()
     pane_id = (pane_id or "").strip()
@@ -516,6 +516,14 @@ def queue_prompt(pane_id: str, prompt: str) -> tuple:
         if "error" in res:
             return res, 400
         return {"ok": True, "delivered": "terminal"}, 200
+
+    if prompt == "/clear":
+        sent_at = time.time()
+        res = call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
+        if "error" in res:
+            return res, 400
+        panechat.cleared(pane_id, pane, sent_at)
+        return {"ok": True, "delivered": "agent"}, 200
 
     conn = sched_db.connect()
     try:
@@ -1282,9 +1290,8 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "sent": push.broadcast()})
             return
 
-        # API: queue a prompt for a chat. The dispatcher delivers it as soon as
-        # that pane is free and the subscription has room - which, for an idle
-        # pane in an open window, is within the second.
+        # API: deliver /clear immediately; queue regular chat prompts until the
+        # pane is free and the subscription has room.
         if path == "/api/queue":
             payload, code = queue_prompt(body.get("pane_id"), body.get("prompt"))
             self.send_json(payload, code)
@@ -1558,9 +1565,8 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
                 return
 
-        # Prompts do not have a direct route any more: everything the phone
-        # sends goes through /api/queue, which is what lets a message typed at
-        # 4am wait for the window instead of failing against an empty one.
+        # Prompts use /api/queue, which lets regular messages wait for a free
+        # pane or usage window. Session commands are handled there immediately.
 
         # API: Send keys (e.g. ctrl+c, esc, enter)
         # /api/agents/{pane_id}/keys

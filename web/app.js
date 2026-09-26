@@ -2554,10 +2554,8 @@
     }
   }
 
-  /* Send a prompt - which means queue it. There is deliberately only one path:
-     into a free chat with usage left this lands within the second, and into a
-     busy one or an empty window it waits, without you having to know which of
-     those you were in when you typed it. */
+  /* Send through the gateway's single prompt path. It queues regular prompts
+     until the pane and usage window are ready, but delivers /clear immediately. */
   async function submitPrompt(e) {
     if (e) e.preventDefault();
     const images = attachStrip.list;
@@ -7629,6 +7627,13 @@
       elInput.value = ""; grow();
       hideMenu();
       attachStrip.clear();
+      if (current.kind === "pane" && current.agent === "codex" && text.trim() === "/clear") {
+        if (poll) poll.abort();
+        events = []; epoch = ""; drawn = [];
+        openTools.clear(); picks.clear();
+        elMessages.innerHTML = "";
+        follow(current.id);
+      }
       scrollChatToBottom();
       render();
       // A pane's prompt is a queue row now. Held back for as long as delivery
