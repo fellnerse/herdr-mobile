@@ -1436,9 +1436,6 @@
     const lead = pen.lead;
     const label = lead.workspace_label || lead.name || pen.workspace_id;
     const removable = lead.repo && !lead.main_checkout;
-    // The chat you came from is in this pen, whichever of its tabs it is: the
-    // tab says so itself, but it can be scrolled off the top of the list.
-    const here = pen.tabs.some((a) => a.pane_id === state.activePaneId);
     return `
       <div class="agent-row-wrap">
         <div class="agent-row-actions">
@@ -1448,7 +1445,7 @@
             ? `<button class="agent-row-action remove" data-action="remove" data-workspace-id="${escapeHtml(pen.workspace_id)}">Remove</button>`
             : ""}
         </div>
-        <button class="agent-row pen-head ${here ? "here" : ""}" data-pane-id="${escapeHtml(lead.pane_id)}">
+        <button class="agent-row pen-head" data-pane-id="${escapeHtml(lead.pane_id)}">
           <span class="pen-head-name">${escapeHtml(label)}</span>
           ${rowToolsHtml(penTools(pen), "pen-head-tools")}
           <span class="row-tabs">${tabCount(pen)} tabs</span>

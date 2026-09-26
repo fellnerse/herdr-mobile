@@ -689,12 +689,6 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   text-overflow: ellipsis;
 }
 
-/* The pen the open chat is in, said on the title as well as on the tab: the
-   tab marks itself, but a long pen can have it scrolled out of sight. */
-.agent-row.pen-head.here .pen-head-name {
-  color: var(--accent-primary);
-}
-
 /* The tabs themselves, indented far enough to leave the bracket its room. */
 .pen-tabs {
   margin-left: 16px;
@@ -1234,6 +1228,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 }
 
 .keys-bar.hidden { display: none; }
+#prompt-form.chat-mode .keys-bar { display: none; }
 
 /* Two fixed rows: every key stays reachable without a sideways swipe. Rows
    wrap rather than squeeze when a prompt lists more options than usual. */
