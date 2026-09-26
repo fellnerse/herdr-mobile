@@ -2364,6 +2364,12 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 #btn-view-normal.hidden { display: none; }
 #chat-btn-delete.hidden { display: none; }
 
+/* Normal is the phone's transcript surface. It is not a desktop pane view,
+   even if stale markup or app state forgets to add the hidden class. */
+@media (min-width: 900px) {
+  #btn-view-normal { display: none !important; }
+}
+
 .changes-list {
   flex: 1;
   overflow-y: auto;

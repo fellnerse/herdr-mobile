@@ -521,9 +521,12 @@
           /* Chosen, not opened, while the flock is on screen: the chat behind
              it is loaded and ready, but nothing drags you into it. A workspace
              closed from a chat still lands you in the next one. */
-          // After a reload a Claude pane is ready in its console by default;
-          // chat remains an explicit switch from there.
-          selectAgent(first.pane_id, first.agent === "claude" || !state.pickerOpen);
+          // On desktop, Claude panes open in Chat and other panes open in
+          // Console; there is no Normal pane view there. Phones keep the flock
+          // as their landing page and open panes directly.
+          selectAgent(first.pane_id, wide.matches
+            ? first.agent !== "claude"
+            : (first.agent === "claude" || !state.pickerOpen));
         } else {
           state.activePaneId = null;
           syncPickerChrome();
@@ -3527,7 +3530,12 @@
 
   function loadPrefs() {
     try {
-      state.paneView = readPref("view") || "transcript";
+      state.paneView = readPref("view") || (wide.matches ? "chat" : "transcript");
+      // Normal is a phone-only view. Older builds may have saved either its
+      // current or former name; migrate both values before the first render.
+      if (wide.matches && ["normal", "transcript"].includes(state.paneView)) {
+        state.paneView = "chat";
+      }
       setDiffLayout(readPref("diffsplit") === "1");
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
@@ -4255,6 +4263,9 @@
      chat covers the transcript; on a wide screen the pane view is remembered
      alongside the flock. */
   function setPaneView(view) {
+    // Desktop has no Normal pane view. Keep stale callers and old controls
+    // from ever restoring the transcript there.
+    if (wide.matches && view === "transcript") view = "chat";
     state.paneView = view;
     state.chatVisible = view === "chat";
     savePref("sheepit.view", view);
@@ -4289,6 +4300,11 @@
   elViewSwitcher.addEventListener("click", (event) => {
     const view = event.target.closest("[data-view]")?.dataset.view;
     if (!view) return;
+    // Guard this at the action boundary as well as hiding the desktop control.
+    if (wide.matches && view === "normal") {
+      setPaneView("chat");
+      return;
+    }
     if (view === "console") {
       if (!elConsoleView.classList.contains("hidden")) return;
       // On a phone the console has the whole screen; on desktop the flock
@@ -4318,7 +4334,7 @@
     const headless = !!state.activeChatId;
     state.activeChatId = null;
     state.chatVisible = false;
-    if (!headless) state.paneView = "transcript";
+    if (!headless) state.paneView = wide.matches ? "chat" : "transcript";
     elChatView.classList.add("hidden");
     elPromptForm.classList.remove("chat-mode");
     chatTarget = "";
