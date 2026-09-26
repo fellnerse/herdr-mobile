@@ -165,19 +165,44 @@ panes and a headless chat has none. It spends the same subscription, so a window
 that is out is not held against it. Making the queue able to hold for a chat id
 is its own piece of work, and it is not a view problem.
 
-### Phase 2 — one key vocabulary
+### Phase 2 — one key vocabulary — **done**
 
-- [ ] One table, `name → {bytes, rpcName, label}`: the keys bar sends named
-  keys over `agent.send_keys` and the console's row sends raw bytes over the
-  WebSocket, which is the same vocabulary written twice.
-- [ ] Keep the context-sensitivity — the palette is sized to the prompt on
-  screen by `renderNumberKeys`, while the console's row is fixed.
+- [x] One table, `KEY_VOCAB` in `app.js`, `name → {bytes}`: `#keys-bar`
+  already sent a name straight to Herdr over `agent.send_keys` (`sendKey`),
+  needing nothing more from the table than the name itself; `#console-keys`
+  now looks up the same name's bytes (`sendConsoleKey`) instead of carrying an
+  escape sequence in its own markup.
+- [x] Found on the way: `#console-keys` was dead. Its buttons carried
+  `data-seq=""` — the four characters backslash-u-0-0-1-b, never
+  unescaped by anything — and no listener read `data-seq` at all, so the row
+  had shipped unwired. It is now `data-key="esc"` etc., the same names
+  `#keys-bar` uses, wired through `KEY_VOCAB`.
+- [x] Kept the context-sensitivity — `renderNumberKeys` still sizes the
+  keys-bar's palette to the prompt on screen; the console's row is still
+  fixed, drawing arrows and ctrl+c whether or not anything is waiting on them,
+  since a raw pty never tells you what it wants.
+- [x] Covered by the existing suites: `node tools/test-transcript.js`,
+  `test-diff.js`, `test-drafts.js`, `test-flock.js`, `test-queue.js`,
+  `test-usage.js` all pass unchanged, and `node -c web/app.js` confirms the
+  new code parses.
 
 ### Phase 3 — one composer
 
-- [ ] Extract the composer — textarea, autoresize, attach, `@`-completion,
-  recall, drafts, queue strip — with a pluggable send.
-- [ ] Bring the slash/skill menu with it, so a Codex pane gets it too.
+- [x] Start with the shared mechanics that do not depend on a view's send
+  contract: textarea sizing, image shrinking and `imagesIn`, plus one
+  attachment strip holding `{name, url}` entries. `chat.js` supplies
+  `images[]`; the plain view folds the same strip's paths into `@path` tokens
+  when it queues a prompt. Image-only prompts work in both.
+- [ ] Extract the remaining composer lifecycle (drafts, recall and queue
+  strip) behind a pluggable send. Keep completion behavior view-specific for
+  now: plain keeps `@` path completion and chat keeps its slash menu, as
+  requested; do not bring either into the other view in this phase.
+- [ ] The key palette moves into the composer's icon row, next to attach —
+  out of the header (`#btn-keys` goes) and out of being a panel stacked above
+  the box on its own. It only does anything for **plain**: chat's permission
+  prompts are already structured (`askHtml`'s Allow/Deny), so a blind
+  esc/y/n/arrows palette next to a chat has nothing to point at and the icon
+  hides itself there.
 - [ ] Keep `tools/test-drafts.js` passing, and cover completion and drafts
   under the extracted component.
 

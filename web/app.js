@@ -127,6 +127,7 @@
   const elBtnCloseConsole = document.getElementById("btn-close-console");
   const elBtnConsoleKeyboard = document.getElementById("btn-console-keyboard");
   const elBtnConsoleFit = document.getElementById("btn-console-fit");
+  const elConsoleKeys = document.getElementById("console-keys");
   const elBtnChanges = document.getElementById("btn-changes");
   const elBtnPaneChat = document.getElementById("btn-pane-chat");
   const elPaneChatFrame = document.getElementById("pane-chat-frame");
@@ -2544,7 +2545,7 @@
     state.activePaneId = paneId;
     resetRecall();
     restoreDraft(paneId);
-    renderAttachments();
+    attachStrip.clear();
     state.historyText = "";
     // A redraw held for a selection belonged to the pane being left; letting
     // it out now would paint the old chat into the new one's view.
@@ -2868,7 +2869,10 @@
      those you were in when you typed it. */
   async function submitPrompt(e) {
     if (e) e.preventDefault();
-    const text = elPromptInput.value.trim();
+    const images = attachStrip.list;
+    if (images.some((image) => !image.name)) return; // still uploading
+    const attachmentText = images.map((image) => `@${image.name}`).join(" ");
+    const text = [elPromptInput.value.trim(), attachmentText].filter(Boolean).join(" ");
     if (!text || !state.activePaneId || state.isSending) return;
 
     state.isSending = true;
@@ -2895,7 +2899,7 @@
       clearDraft(state.activePaneId);
       elPromptInput.value = "";
       hideCompletions();
-      renderAttachments();
+      attachStrip.clear();
       autoResizeTextarea();
       elBtnSend.disabled = true;
 
@@ -3055,9 +3059,7 @@
     const cap = focused
       ? Math.max(140, Math.round(window.innerHeight * 0.4))
       : 120;
-    elPromptInput.style.height = "auto";
-    const height = Math.min(elPromptInput.scrollHeight, cap);
-    elPromptInput.style.height = `${height}px`;
+    const height = SheepItComposer.resizeTextarea(elPromptInput, cap);
     // Past one line there is room beside the box for a column of buttons.
     elPromptForm.classList.toggle("stacked", height > ONE_LINE);
     elBtnSend.disabled = elPromptInput.value.trim().length === 0;
@@ -3135,7 +3137,6 @@
     }
     autoResizeTextarea();
     rememberDraft();
-    renderAttachments();
   }
 
   /* The arrow is offered where it means something and nowhere else: an empty
@@ -3165,106 +3166,38 @@
    * beside the work, and the prompt carries its path - a thing both agents
    * already understand.
    *
-   * The composer's text is the attachment. Thumbnails are drawn from whatever
-   * paths are still in it, so deleting the path takes the picture with it and
-   * the two can never disagree about what is being sent.
+   * The strip and its hidden [{name, url}] array are composer.js, shared with
+   * chat - "name" here is the path an upload lands at. Nothing is spliced into
+   * the visible text; submitPrompt folds the strip's paths into `@path` tokens
+   * only at send time, the way gateway/panechat.py already does for a pane
+   * chat's own images.
    * ---------------------------------------------------------------------- */
 
-  // Long edge of what gets uploaded. A phone photo is four thousand pixels
-  // wide, an agent reads it at a fraction of that, and the difference is
-  // several seconds of someone's cellular connection.
-  const MAX_EDGE = 1600;
-  // Below this a screenshot goes up untouched: re-encoding costs the crispness
-  // that makes the text in it readable, which is usually the point of sending
-  // one.
-  const KEEP_AS_IS = 1.2 * 1024 * 1024;
+  const { imagesIn } = SheepItComposer;
 
-  // path -> object URL of the image that was uploaded to it.
-  const attachUrls = new Map();
-
-  /* Scale an image down before it goes anywhere. Everything here is allowed to
-     fail: if the browser will not decode it, the original bytes are still a
-     perfectly good upload. */
-  async function shrinkImage(file) {
-    const isPng = file.type === "image/png";
-    try {
-      const bitmap = await createImageBitmap(file);
-      const longest = Math.max(bitmap.width, bitmap.height);
-      const scale = Math.min(1, MAX_EDGE / longest);
-      if (scale === 1 && file.size <= KEEP_AS_IS) {
-        bitmap.close();
-        return file;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(bitmap.width * scale);
-      canvas.height = Math.round(bitmap.height * scale);
-      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      bitmap.close();
-      const type = isPng ? "image/png" : "image/jpeg";
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, 0.86));
-      return blob || file;
-    } catch (err) {
-      return file; // HEIC on a browser that will not decode it, say
-    }
-  }
-
-  async function uploadAttachment(file) {
-    if (!state.activePaneId) return null;
-    const blob = await shrinkImage(file);
-    const res = await fetch(`/api/agents/${encodeURIComponent(state.activePaneId)}/attach`, {
-      method: "POST",
-      headers: { "Content-Type": blob.type || file.type || "image/png" },
-      body: blob,
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "the gateway would not take it");
-    attachUrls.set(data.path, URL.createObjectURL(blob));
-    return data.path;
-  }
-
-  /* Put the path where the caret is, as an @mention: that is how you point an
-     agent at a file by hand, and it is what the completion bar already writes. */
-  function insertAttachment(path) {
-    const value = elPromptInput.value;
-    const at = elPromptInput.selectionStart ?? value.length;
-    const before = value.slice(0, at);
-    const after = value.slice(at);
-    /* A path must not fuse with the word in front of it, and must not push a
-       second space in front of the one behind it - pasting into the middle of
-       a sentence is rarer than pasting at the end, but it should not leave a
-       gap you have to go back and close. */
-    const lead = before && !/\s$/.test(before) ? " " : "";
-    const trail = /^\s/.test(after) ? "" : " ";
-    const text = `${lead}@${path}${trail}`;
-    elPromptInput.value = before + text + after;
-    const caret = at + text.length;
-    try {
-      elPromptInput.setSelectionRange(caret, caret);
-    } catch (err) {
-      /* not focused; the text is what matters */
-    }
-    autoResizeTextarea();
-    rememberDraft();
-  }
+  const attachStrip = SheepItComposer.createAttachStrip(
+    elAttachStrip,
+    async (blob) => {
+      const res = await fetch(`/api/agents/${encodeURIComponent(state.activePaneId)}/attach`, {
+        method: "POST",
+        headers: { "Content-Type": blob.type || "image/png" },
+        body: blob,
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "the gateway would not take it");
+      return data.path;
+    },
+    (message) => showAttachError(message),
+    (images) => { elBtnSend.disabled = !elPromptInput.value.trim() && !images.length; }
+  );
 
   async function attachFiles(files) {
     if (!files || !files.length) return;
     if (!state.activePaneId) return;
     triggerHaptic();
     setAttachBusy(true);
-    for (const file of files) {
-      try {
-        const path = await uploadAttachment(file);
-        if (path) insertAttachment(path);
-      } catch (err) {
-        /* Not an alert(): iOS stops showing those in an installed web app
-           once a few have been dismissed, and a silently dropped screenshot
-           looks exactly like one that went. */
-        showAttachError(err.message);
-      }
-    }
+    await attachStrip.add(files);
     setAttachBusy(false);
-    renderAttachments();
   }
 
   function setAttachBusy(busy) {
@@ -3273,75 +3206,11 @@
   }
 
   function showAttachError(message) {
+    /* Not an alert(): iOS stops showing those in an installed web app once a
+       few have been dismissed, and a silently dropped screenshot looks
+       exactly like one that went. */
     elAttachStrip.classList.remove("hidden");
-    elAttachStrip.innerHTML =
-      `<div class="attach-error">Could not attach it — ${escapeHtml(message)}</div>`;
-  }
-
-  // Every attachment path currently sitting in the composer, in order.
-  const RE_ATTACHED = /@(\.sheepit\/[A-Za-z0-9._-]+)/g;
-
-  function attachedPaths() {
-    return [...elPromptInput.value.matchAll(RE_ATTACHED)].map((m) => m[1]);
-  }
-
-  function renderAttachments() {
-    const paths = attachedPaths();
-    if (!paths.length) {
-      elAttachStrip.classList.add("hidden");
-      elAttachStrip.innerHTML = "";
-      return;
-    }
-    elAttachStrip.classList.remove("hidden");
-    elAttachStrip.innerHTML = paths
-      .map((path) => {
-        const url = attachUrls.get(path);
-        const name = path.split("/").pop();
-        return `
-          <span class="attach-chip" title="${escapeHtml(path)}">
-            ${url ? `<img src="${url}" alt="">` : ""}
-            <span class="attach-name">${escapeHtml(name)}</span>
-            <button type="button" class="attach-drop" data-path="${escapeHtml(path)}" aria-label="Remove">×</button>
-          </span>`;
-      })
-      .join("");
-  }
-
-  /* Dropping a thumbnail takes the path out of the composer, which is the only
-     thing that was ever going to be sent. The file stays on the machine; the
-     inbox clears itself out after a week. */
-  function dropAttachment(path) {
-    elPromptInput.value = elPromptInput.value
-      .replace(`@${path}`, "")
-      .replace(/[ \t]{2,}/g, " ")
-      .trimStart();
-    const url = attachUrls.get(path);
-    if (url) URL.revokeObjectURL(url);
-    attachUrls.delete(path);
-    autoResizeTextarea();
-    rememberDraft();
-    renderAttachments();
-    triggerHaptic();
-  }
-
-  /* Images out of a clipboard or a drag, which arrive in the same shape from
-     both: a list of items that may be files, and a list of files that may be
-     images. Safari fills one, some browsers fill the other, and a screenshot
-     copied on a phone can arrive as either - so read both and take whatever is
-     actually a picture. */
-  function imagesIn(transfer) {
-    if (!transfer) return [];
-    const found = [];
-    for (const item of transfer.items || []) {
-      if (item.kind !== "file" || !(item.type || "").startsWith("image/")) continue;
-      const file = item.getAsFile();
-      if (file) found.push(file);
-    }
-    if (found.length) return found;
-    for (const file of transfer.files || []) {
-      if ((file.type || "").startsWith("image/")) found.push(file);
-    }
-    return found;
+    elAttachStrip.innerHTML += `<div class="attach-error">Could not attach it — ${escapeHtml(message)}</div>`;
   }
 
   elBtnAttach.addEventListener("click", () => {
@@ -3389,11 +3258,6 @@
     // Let the same file be picked twice in a row.
     elAttachInput.value = "";
     await attachFiles(files);
-  });
-
-  elAttachStrip.addEventListener("click", (e) => {
-    const drop = e.target.closest(".attach-drop");
-    if (drop) dropAttachment(drop.dataset.path);
   });
 
   /* ------------------------------------------------------------- Queue --- */
@@ -5136,9 +5000,7 @@
     autoResizeTextarea();
     scheduleCompletion();
     rememberDraft();
-    // Deleting a path is how you un-attach an image, so the strip follows the
-    // text rather than keeping its own list to fall out of step with.
-    renderAttachments();
+    elBtnSend.disabled = !elPromptInput.value.trim() && !attachStrip.list.length;
   });
   // Tapping a chip blurs the textarea, so the bar must outlive the blur long
   // enough for the click to land on it.
@@ -5219,6 +5081,23 @@
     savePref("sheepit.lines", String(state.linesCount));
     fetchHistory(true);
   });
+
+  /* One vocabulary for both key rows. #keys-bar sends a name to Herdr over
+     agent.send_keys (sendKey, below) and asks nothing more of this table; the
+     console has no RPC, only a pty, so #console-keys looks up the bytes a
+     real terminal would send for the same name (sendConsoleKey, near
+     sendConsole). Keeping both readings of "esc" or "ctrl+c" in one place
+     means the name never means two different things in two places. */
+  const KEY_VOCAB = {
+    esc: { bytes: "" },
+    tab: { bytes: "\t" },
+    "ctrl+c": { bytes: "" },
+    enter: { bytes: "\r" },
+    up: { bytes: "[A" },
+    down: { bytes: "[B" },
+    left: { bytes: "[D" },
+    right: { bytes: "[C" },
+  };
 
   // Key palette: the single keypresses agents ask for at confirmation prompts.
   function setKeysBar(show) {
@@ -5902,6 +5781,13 @@
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(bytes);
   }
 
+  // #console-keys: the fixed row's buttons, looked up in KEY_VOCAB rather
+  // than carrying an escape sequence of their own in the markup.
+  function sendConsoleKey(name) {
+    const entry = KEY_VOCAB[name];
+    if (entry) sendConsole(encoder.encode(entry.bytes));
+  }
+
   function sendConsoleControl(message) {
     const ws = consoleState.ws;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
@@ -6164,6 +6050,10 @@
   elBtnCloseConsole.addEventListener("click", closeConsole);
   elBtnConsoleKeyboard.addEventListener("click", () => {
     if (consoleState.term) consoleState.term.focus();
+  });
+  elConsoleKeys.addEventListener("click", (e) => {
+    const btn = e.target.closest(".key-btn");
+    if (btn && btn.dataset.key) sendConsoleKey(btn.dataset.key);
   });
   elBtnConsoleFit.addEventListener("click", requestFit);
   window.addEventListener("resize", fitConsole);

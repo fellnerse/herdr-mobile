@@ -1536,49 +1536,17 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .attach-strip::-webkit-scrollbar { display: none; }
 .attach-strip.hidden { display: none; }
 
-.attach-chip {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  max-width: 62vw;
-  padding: 4px 4px 4px 4px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-}
-
-.attach-chip img {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  object-fit: cover;
-  display: block;
-}
-
-.attach-name {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.attach-drop {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  font-size: 17px;
-  line-height: 1;
+/* One thumbnail, from #composer.js's createAttachStrip - shared with chat's
+   composer, which is where this shape came from. No filename: the picture is
+   the point, and a path belongs in nothing the phone shows you any more. */
+.thumb { position: relative; flex-shrink: 0; }
+.thumb img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; display: block; }
+.thumb.loading img { opacity: 0.4; }
+.thumb button {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
+  border: 0; background: var(--bg-card); color: var(--text-primary); font-size: 14px; line-height: 20px; padding: 0;
   cursor: pointer;
 }
-
-.attach-drop:active { background: var(--bg-hover); color: var(--text-primary); }
 
 .attach-error {
   padding: 6px 10px;

@@ -244,16 +244,17 @@
     </header>
     <div id="console-term" class="console-term"></div>
     <!-- The keys a touch keyboard has no room for, and the ones a terminal
-         needs most. They send the bytes themselves, not a key name. -->
-    <div class="console-keys">
-      <button type="button" class="key-btn" data-seq="\u001b">esc</button>
-      <button type="button" class="key-btn" data-seq="\t">tab</button>
-      <button type="button" class="key-btn key-no" data-seq="\u0003">^C</button>
-      <button type="button" class="key-btn" data-seq="\u001b[A">↑</button>
-      <button type="button" class="key-btn" data-seq="\u001b[B">↓</button>
-      <button type="button" class="key-btn" data-seq="\u001b[D">←</button>
-      <button type="button" class="key-btn" data-seq="\u001b[C">→</button>
-      <button type="button" class="key-btn key-enter" data-seq="\r">⏎</button>
+         needs most. Same key names as #keys-bar; KEY_VOCAB in app.js looks up
+         the bytes these send instead of an RPC name. -->
+    <div id="console-keys" class="console-keys">
+      <button type="button" class="key-btn" data-key="esc">esc</button>
+      <button type="button" class="key-btn" data-key="tab">tab</button>
+      <button type="button" class="key-btn key-no" data-key="ctrl+c">^C</button>
+      <button type="button" class="key-btn" data-key="up">↑</button>
+      <button type="button" class="key-btn" data-key="down">↓</button>
+      <button type="button" class="key-btn" data-key="left">←</button>
+      <button type="button" class="key-btn" data-key="right">→</button>
+      <button type="button" class="key-btn key-enter" data-key="enter">⏎</button>
     </div>
   </section>
 
@@ -424,6 +425,7 @@
     <button id="btn-close-sheet" class="sheet-btn sheet-close">Done</button>
   </section>
 
+  <script src="/composer.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

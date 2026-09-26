@@ -22,7 +22,6 @@
   let epoch = "";
   let poll = null;             // AbortController of the running long poll
   let drawn = [];              // the markup of each message now on the page
-  let attached = [];           // [{name, url}] waiting to go with the next message
   const openTools = new Set(); // tool cards somebody unfolded
   const picks = new Map();     // request_id -> {question: Set(labels)}
   let commands = null;         // [{name, description, hint}] for the open chat's project
@@ -372,7 +371,7 @@
     queued = []; settling.clear(); drawQueue();
     loadCommands(chat.id);
     elMessages.innerHTML = "";
-    clearAttached();
+    attachStrip.clear();
     $("chat-title").textContent = chat.title || "New chat";
     const pane = chat.kind === "pane";
     $("chat-sub").textContent = pane
@@ -422,75 +421,29 @@
     catch (e) { alert(e.message); location.href = "/"; }
   }
 
-  /* ---- Images: scaled down on the phone, kept by the gateway, sent inline. */
-  const MAX_EDGE = 1600;
-  const KEEP_AS_IS = 1.2 * 1024 * 1024;
+  /* ---- Images: scaled down on the phone, kept by the gateway, sent inline.
+     The strip and its hidden [{name, url}] array are composer.js, shared with
+     the plain view - only how an upload happens is chat's own. */
+  const attachStrip = SheepItComposer.createAttachStrip(
+    elStrip,
+    async (blob) => {
+      const res = await fetch(`/api/chat/upload?id=${encodeURIComponent(current.id)}`, {
+        method: "POST", headers: { "Content-Type": blob.type || "image/jpeg" }, body: blob,
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error);
+      return data.name;
+    },
+    (message) => alert("Could not attach it — " + message)
+  );
 
-  async function shrinkImage(file) {
-    const isPng = file.type === "image/png";
-    try {
-      const bitmap = await createImageBitmap(file);
-      const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
-      if (scale === 1 && file.size <= KEEP_AS_IS && /^image\/(jpeg|png|gif|webp)$/.test(file.type)) {
-        bitmap.close();
-        return file;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(bitmap.width * scale);
-      canvas.height = Math.round(bitmap.height * scale);
-      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      bitmap.close();
-      const blob = await new Promise((r) => canvas.toBlob(r, isPng ? "image/png" : "image/jpeg", 0.86));
-      return blob || file;
-    } catch (err) {
-      return file;
-    }
-  }
-
-  function drawStrip() {
-    elStrip.classList.toggle("hidden", !attached.length);
-    elStrip.innerHTML = attached.map((a, i) =>
-      `<span class="thumb${a.name ? "" : " loading"}"><img src="${esc(a.url)}" alt="">` +
-      `<button type="button" data-drop="${i}" aria-label="Remove">×</button></span>`).join("");
-  }
-  function clearAttached() {
-    attached.forEach((a) => URL.revokeObjectURL(a.url));
-    attached = [];
-    drawStrip();
-  }
-
-  async function attachFiles(files) {
+  function attachFiles(files) {
     if (!current) return;
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) continue;
-      const blob = await shrinkImage(file);
-      const entry = { name: null, url: URL.createObjectURL(blob) };
-      attached.push(entry);
-      drawStrip();
-      try {
-        const res = await fetch(`/api/chat/upload?id=${encodeURIComponent(current.id)}`, {
-          method: "POST", headers: { "Content-Type": blob.type || "image/jpeg" }, body: blob,
-        });
-        const data = await res.json();
-        if (!data.ok) throw new Error(data.error);
-        entry.name = data.name;
-      } catch (err) {
-        attached = attached.filter((a) => a !== entry);
-        alert("Could not attach it — " + err.message);
-      }
-      drawStrip();
-    }
+    return attachStrip.add(files);
   }
 
   $("btn-attach").addEventListener("click", () => elAttachInput.click());
   elAttachInput.addEventListener("change", () => { attachFiles([...elAttachInput.files]); elAttachInput.value = ""; });
-  elStrip.addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-drop]");
-    if (!b) return;
-    const [gone] = attached.splice(+b.dataset.drop, 1);
-    if (gone) URL.revokeObjectURL(gone.url);
-    drawStrip();
-  });
   elInput.addEventListener("paste", (e) => {
     const files = [...(e.clipboardData ? e.clipboardData.files : [])].filter((f) => f.type.startsWith("image/"));
     if (files.length) { e.preventDefault(); attachFiles(files); }
@@ -659,8 +612,7 @@
      headless chat's goes to its own process, where one sent mid-answer waits
      its turn inside Claude Code the way typing ahead in the terminal does. */
   function grow() {
-    elInput.style.height = "auto";
-    elInput.style.height = elInput.scrollHeight + "px";
+    SheepItComposer.resizeTextarea(elInput);
   }
   elInput.addEventListener("input", grow);
   elInput.addEventListener("keydown", (e) => {
@@ -682,8 +634,8 @@
   $("composer").addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = elInput.value;
-    if (attached.some((a) => !a.name)) return; // still uploading
-    const images = attached.map((a) => a.name);
+    if (attachStrip.list.some((a) => !a.name)) return; // still uploading
+    const images = attachStrip.list.map((a) => a.name);
     if ((!text.trim() && !images.length) || !current) return;
     elSend.disabled = true;
     try {
@@ -691,7 +643,7 @@
       current = data.chat;
       elInput.value = ""; grow();
       hideMenu();
-      clearAttached();
+      attachStrip.clear();
       elMessages.scrollTop = elMessages.scrollHeight;
       render();
       // A pane's prompt is a queue row now. Held back for as long as delivery
