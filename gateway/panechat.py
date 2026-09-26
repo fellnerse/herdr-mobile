@@ -163,6 +163,9 @@ class PaneChat:
         # log last grew: between them they say when to go looking again.
         self.title_seen = None
         self.grew_at = 0.0
+        # If Herdr cannot name a brand-new session, its first log can still be
+        # identified by the write Claude makes after this pane's first prompt.
+        self.first_prompt_at = None
         self.offset = 0
         self.tail = b""
         self.events: list[dict] = []
@@ -225,6 +228,53 @@ class PaneChat:
         self.title_seen = self.title
         self.grew_at = time.time()
         self._restart()
+        if path:
+            self.session = session or path.stem
+        if self.is_claude and self.session:
+            self._save_session()
+
+    def _save_session(self):
+        """Keep the pane-to-log link across a gateway restart."""
+        if not self.session and self.first_prompt_at is None:
+            try:
+                (self.dir / "session.json").unlink()
+            except OSError:
+                pass
+            return
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            target = self.dir / "session.json"
+            temporary = self.dir / "session.json.tmp"
+            temporary.write_text(json.dumps({
+                "cwd": self.cwd,
+                "session": self.session,
+                "first_prompt_at": self.first_prompt_at,
+            }))
+            temporary.replace(target)
+        except OSError:
+            pass
+
+    def _saved_session_path(self):
+        """Return this pane's prior log only when its working directory matches."""
+        try:
+            saved = json.loads((self.dir / "session.json").read_text())
+        except (OSError, ValueError, TypeError):
+            return None
+        if saved.get("cwd") != self.cwd:
+            return None
+        if saved.get("session"):
+            return tokens.session_log(saved["session"])
+        self.first_prompt_at = saved.get("first_prompt_at")
+        if self.first_prompt_at is None:
+            return None
+        updated = []
+        for path in tokens.session_logs(self.cwd):
+            try:
+                if path.stat().st_mtime >= self.first_prompt_at:
+                    updated.append(path)
+            except OSError:
+                continue
+        return updated[0] if len(updated) == 1 else None
 
     def _resolve(self):
         """Which session this pane is in, and so which log there is to tail.
@@ -268,6 +318,15 @@ class PaneChat:
                 self.path = tokens.session_log(sid)
             return
 
+        # Older Herdr versions do not report a session id. If the terminal is
+        # still generically titled, use the pane's persisted association before
+        # trying to rediscover a log among other sessions in the same cwd.
+        if not self.session and self.title in ("", "Claude Code"):
+            path = self._saved_session_path()
+            if path:
+                self._adopt(path.stem, path)
+                return
+
         if self.path and self.title == self.title_seen and not self._gone_quiet():
             return
         path = self._find_log()
@@ -302,6 +361,20 @@ class PaneChat:
             for path in logs:
                 if log_title(path) == title:
                     return path
+        # Herdr may not report `agent_session`, and Claude can keep the generic
+        # terminal title for the first turn. A log written after the first
+        # prompt is evidence of the session that prompt started. Refuse ties so
+        # another active pane in the same cwd is never mistaken for this one.
+        if self.first_prompt_at is not None:
+            updated = []
+            for path in logs:
+                try:
+                    if path.stat().st_mtime >= self.first_prompt_at:
+                        updated.append(path)
+                except OSError:
+                    continue
+            if len(updated) == 1:
+                return updated[0]
         return logs[0] if len(logs) == 1 else None
 
     def _find_codex_log(self, session_id=None):
@@ -464,15 +537,20 @@ class PaneChat:
         """
         if not self.is_supported:
             raise ValueError("There is no supported agent in this pane")
-        if not self.session:
-            raise ValueError("Found no session log for this pane yet")
         # An image goes as its path, which Claude Code reads like any file.
         paths = ["@" + str(self.dir / n) for n in images if chat.read_image(self.dir, n)[0] is not None]
         text = "\n".join([text.strip()] + paths).strip()
         if _queue is None:
             raise ValueError("The queue is not running")
+        first_prompt = self.is_claude and not self.session and self.first_prompt_at is None
+        if first_prompt:
+            self.first_prompt_at = time.time()
+            self._save_session()
         payload, _ = _queue(self.pane_id, text)
         if not payload.get("ok"):
+            if first_prompt:
+                self.first_prompt_at = None
+                self._save_session()
             error = payload.get("error")
             if isinstance(error, dict):
                 error = error.get("message")

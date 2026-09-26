@@ -134,9 +134,6 @@
   const elConsoleTerm = document.getElementById("console-term");
   const elConsoleSub = document.getElementById("console-sub");
   const elConsoleKeys = document.getElementById("console-keys");
-  const elConsoleInput = document.getElementById("console-input");
-  const elConsoleComposer = document.getElementById("console-composer");
-  const elConsoleCompleteBar = document.getElementById("console-complete-bar");
   const elBtnChanges = document.getElementById("btn-changes");
   const elBtnPaneChat = document.getElementById("btn-pane-chat");
   const elChatView = document.getElementById("chat-chat-view");
@@ -524,7 +521,9 @@
           /* Chosen, not opened, while the flock is on screen: the chat behind
              it is loaded and ready, but nothing drags you into it. A workspace
              closed from a chat still lands you in the next one. */
-          selectAgent(first.pane_id, !state.pickerOpen);
+          // After a reload a Claude pane is ready in its console by default;
+          // chat remains an explicit switch from there.
+          selectAgent(first.pane_id, first.agent === "claude" || !state.pickerOpen);
         } else {
           state.activePaneId = null;
           syncPickerChrome();
@@ -599,7 +598,7 @@
     elViewSwitcher.classList.toggle("hidden", !agent);
     elBtnChanges.classList.remove("hidden");
     document.getElementById("chat-btn-delete").classList.add("hidden");
-    const chattable = !!(agent && ["claude", "codex"].includes(agent.agent));
+    const chattable = !!(agent && agent.agent === "claude");
     const chatShowing = chattable && (state.chatVisible || (wide.matches && state.paneView === "chat"));
     if (agent) {
       const name = agentBarName(agent);
@@ -608,8 +607,9 @@
       elAgentSelectName.textContent = state.agents.length ? "Select project" : "No agents";
     }
     elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
-    // Only Claude Code writes the session log the chat view reads.
+    // Pane chat currently reads Claude Code's session log format.
     elBtnPaneChat.classList.toggle("hidden", !chattable);
+    elBtnViewNormal.classList.toggle("hidden", chattable);
     const consoleShowing = !elConsoleView.classList.contains("hidden");
     elBtnPaneChat.setAttribute("aria-pressed", String(!consoleShowing && chatShowing));
     elBtnViewNormal.setAttribute("aria-pressed", String(!consoleShowing && !chatShowing));
@@ -2737,13 +2737,6 @@
     const chip = e.target.closest(".complete-chip");
     if (chip) applyCompletion(chip.dataset.path, chip.dataset.dir === "1");
   });
-  elConsoleCompleteBar.addEventListener("mousedown", (e) => e.preventDefault());
-  elConsoleCompleteBar.addEventListener("click", (e) => {
-    const chip = e.target.closest(".complete-chip");
-    if (chip) applyCompletion(chip.dataset.path, chip.dataset.dir === "1", elConsoleInput, elConsoleCompleteBar);
-  });
-  elConsoleInput.addEventListener("input", () => scheduleCompletion(elConsoleInput, elConsoleCompleteBar));
-
   // Auto-resize textarea
   // A single line of the composer: padding, border and one `line-height`.
   const ONE_LINE = 40;
@@ -5774,28 +5767,6 @@
     const btn = e.target.closest(".key-btn");
     if (btn && btn.dataset.key) sendConsoleKey(btn.dataset.key);
   });
-  elConsoleInput.addEventListener("input", () => {
-    elConsoleInput.style.height = "auto";
-    elConsoleInput.style.height = `${Math.min(elConsoleInput.scrollHeight, Math.round(window.innerHeight * 0.22))}px`;
-  });
-  elConsoleInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      elConsoleComposer.requestSubmit();
-    }
-  });
-  elConsoleComposer.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const value = elConsoleInput.value;
-    if (!value || !consoleState.ws) return;
-    // Console composer is deliberately a raw-byte send path: line breaks in
-    // the draft become terminal CRs, with a final CR to submit the command.
-    sendConsole(encoder.encode(value.replace(/\n/g, "\r") + "\r"));
-    elConsoleInput.value = "";
-    elConsoleInput.style.height = "";
-    hideCompletions(elConsoleCompleteBar);
-    elConsoleInput.focus();
-  });
   window.addEventListener("resize", fitConsole);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", fitConsole);
@@ -6914,7 +6885,7 @@
      screen otherwise, and only the last of them is worth waiting through. */
   function paneEmpty(chat) {
     if (!chat.supported) return "There is no supported agent in this pane.";
-    if (!chat.session) return "Found no session log for this pane yet — it appears once Claude Code has named the session.";
+    if (!chat.session) return "No session history yet. Send a message to start chatting; it will appear here once the agent has named the session.";
     return "Nothing in this session yet.";
   }
 

@@ -249,11 +249,6 @@
   <section id="console-view" class="full-view hidden" role="dialog" aria-label="Console">
     <div id="console-sub" class="console-status hidden" role="status" aria-live="polite"></div>
     <div id="console-term" class="console-term"></div>
-    <div id="console-complete-bar" class="complete-bar hidden"></div>
-    <form id="console-composer" class="console-composer">
-      <textarea id="console-input" rows="1" placeholder="Type to terminal…" enterkeyhint="send" autocomplete="off" autocapitalize="none" spellcheck="false"></textarea>
-      <button type="submit" aria-label="Send to terminal">Send</button>
-    </form>
     <!-- The keys a touch keyboard has no room for, and the ones a terminal
          needs most. Same key names as #keys-bar; KEY_VOCAB in app.js looks up
          the bytes these send instead of an RPC name. -->
