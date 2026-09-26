@@ -32,15 +32,6 @@ const PRELUDE = `
   const elPromptInput = { value: "", selectionStart: 0, setSelectionRange(a) { this.selectionStart = a; } };
   function autoResizeTextarea() {}
   const state = { activePaneId: null, drafts: {} };
-  const draftStore = SheepItComposer.createDraftStore({
-    getDrafts: () => state.drafts,
-    setDrafts: (drafts) => { state.drafts = drafts; },
-    read: () => readPref("drafts"),
-    write: (value) => savePref("sheepit.drafts", value),
-    input: elPromptInput,
-    resize: autoResizeTextarea,
-    limit: 40,
-  });
 `;
 
 function loadDrafts_() {
@@ -98,22 +89,6 @@ function loadRecall() {
     function renderAttachments() {}
     function triggerHaptic() {}
     const state = { activePaneId: "w1:p1", history: {}, recall: { at: -1, text: null } };
-    const recallHistory = SheepItComposer.createRecallHistory({
-      getHistory: () => state.history,
-      setHistory: (history) => { state.history = history; },
-      read: () => readPref("history"),
-      write: (value) => savePref("sheepit.history", value),
-      input: elPromptInput,
-      getScope: () => state.activePaneId,
-      getRecall: () => state.recall,
-      setRecall: (recall) => { state.recall = recall; },
-      maxEntries: 20,
-      maxScopes: 40,
-      resize: autoResizeTextarea,
-      rememberDraft,
-      haptic: triggerHaptic,
-      showButton: (show) => elBtnRecall.classList.toggle("hidden", !show),
-    });
   `;
   return new Function("__SheepItComposer",
     `${RECALL_PRELUDE}${src.slice(from, to)}

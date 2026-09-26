@@ -204,13 +204,16 @@ is its own piece of work, and it is not a view problem.
   attach. Its panel is anchored above the composer, and the header toggle is
   gone. The palette remains plain-only because chat prompts have structured
   Allow/Deny controls.
-- [ ] Verify the existing `tools/test-drafts.js` suite after the extraction;
-  completion coverage is deferred with the completion work.
+- [x] Verify `tools/test-drafts.js` after the extraction; all draft tests pass.
+  Completion coverage is deferred with the completion work.
 
 ### Phase 4 — fold the chat renderer in, drop the transcript's guess, retire the second page
 
 - [ ] Move the pane chat renderer into `app.js` beside the verbatim transcript
   renderer, with chat's structured events used when available.
+- [ ] Unify the shared view header while folding the chat page into the main
+  shell: pane/project-tab title, Console context, keyboard fit/close controls,
+  and Files button behavior should be consistent across views.
 - [x] Removed transcript block classification, turn splitting, composer
   framing, status-bar hiding, and the `RE_RULE_GLYPH` machinery. The pane
   transcript is now always verbatim; status lines remain visible. The
@@ -246,3 +249,9 @@ is its own piece of work, and it is not a view problem.
 **The risk worth naming:** phase 1 edits `chat.js`, which phase 4 deletes. That
 is deliberate. A few lines thrown away buy a phase 4 in which any behaviour
 change is unambiguously a refactor bug.
+
+## Follow-up
+
+- [ ] After the consolidation work, check why changing the scrollback setting
+  does not take effect. This was observed during the plan review and is out of
+  scope for the current work.
