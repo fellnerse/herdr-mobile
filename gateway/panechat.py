@@ -25,6 +25,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import chat
@@ -166,6 +167,9 @@ class PaneChat:
         # If Herdr cannot name a brand-new session, its first log can still be
         # identified by the write Claude makes after this pane's first prompt.
         self.first_prompt_at = None
+        # Set the moment `/clear` is seen typed into the log, so a rescan does
+        # not wait on the quiet timer for a session that is already leaving.
+        self.expect_new_session = False
         self.offset = 0
         self.tail = b""
         self.events: list[dict] = []
@@ -227,6 +231,7 @@ class PaneChat:
         self.session, self.path = session, path
         self.title_seen = self.title
         self.grew_at = time.time()
+        self.expect_new_session = False
         self._restart()
         if path:
             self.session = session or path.stem
@@ -298,7 +303,7 @@ class PaneChat:
             session = self.pane.get("agent_session") or {}
             sid = session.get("value") if session.get("kind") == "id" else None
             if self.path and self.title == self.title_seen and not self._gone_quiet() \
-                    and (not sid or sid == self.session):
+                    and not self.expect_new_session and (not sid or sid == self.session):
                 return
             path = self._find_codex_log(sid)
             if path != self.path:
@@ -327,7 +332,8 @@ class PaneChat:
                 self._adopt(path.stem, path)
                 return
 
-        if self.path and self.title == self.title_seen and not self._gone_quiet():
+        if self.path and self.title == self.title_seen and not self._gone_quiet() \
+                and not self.expect_new_session:
             return
         path = self._find_log()
         if path != self.path:
@@ -457,6 +463,10 @@ class PaneChat:
                     self.unresolved.pop(r.get("tool_use_id"), None)
             elif event["type"] == "interrupted":
                 self.unresolved.clear()  # nothing from before is still running
+            elif event["type"] == "prompt" and event["text"] == "/clear":
+                # The next session's log has not been written yet, but this one
+                # is done - don't wait for it to go quiet before looking again.
+                self.expect_new_session = True
             self.events.append(event)
         if first:
             self.events = self.events[-KEEP:]
@@ -595,7 +605,26 @@ class PaneChat:
         pass  # the pane is not ours to stop
 
     def commands(self, wait: float) -> list:
-        return chat._COMMANDS.get(self.cwd, [])
+        """Same answer a headless chat on this project would give - discovered
+        the same way, since a pane's own Claude Code has no route to ask it
+        directly. Unlike a headless chat's own first ask, there is no chat
+        here already to spend on it, so a throwaway one is spun up and killed
+        once `_COMMANDS` has this project (or `wait` runs out) - never
+        registered, so it is never a chat the flock could show."""
+        cwd = self.cwd
+        if cwd not in chat._COMMANDS:
+            probe = chat.Chat({
+                "id": f"probe-{uuid.uuid4().hex[:8]}", "session_id": str(uuid.uuid4()),
+                "cwd": cwd, "mode": "auto", "model": "", "title": "",
+                "created": time.time(), "updated": time.time(), "started": False,
+            })
+            try:
+                probe.commands(wait)
+            except OSError:
+                pass
+            finally:
+                probe.kill()
+        return chat._COMMANDS.get(cwd, [])
 
     def image(self, name: str):
         return chat.read_image(self.dir, name)
