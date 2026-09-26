@@ -1734,7 +1734,10 @@
      picked in groupByProject - but not which workspace a tab should join, so
      it aims a tab at that same checkout. */
   function openNewInProject(key) {
-    const group = state.groups.find((g) => g.key === key);
+    const group = state.groups.find((g) => g.key === key) || (() => {
+      const fallback = groupByProject(state.agents).find((g) => g.key === key);
+      return fallback ? { ...fallback, rows: byWorkspace(fallback.agents) } : null;
+    })();
     if (!group) return;
     /* The project's own checkout when it is open, and failing that whichever
        of its worktrees leads the list - a project that is nothing but
@@ -4110,6 +4113,15 @@
   });
 
   elAgentList.addEventListener("click", (e) => {
+    const projectAdd = e.target.closest(".agent-group-add");
+    if (projectAdd) {
+      e.preventDefault();
+      e.stopPropagation();
+      const project = projectAdd.closest(".agent-group")?.dataset.project ||
+        projectAdd.dataset.project;
+      openNewInProject(project);
+      return;
+    }
     const action = e.target.closest("[data-action]");
     if (action) {
       if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
