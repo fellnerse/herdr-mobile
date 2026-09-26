@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -83,6 +84,8 @@ def slim_codex(entry: dict) -> dict | None:
         item_kind = item.get("type")
         if item_kind == "message":
             role = item.get("role")
+            if role not in ("user", "assistant"):
+                return None
             content = item.get("content") or []
             text = "".join(
                 b.get("text", "") for b in content
@@ -91,24 +94,34 @@ def slim_codex(entry: dict) -> dict | None:
             ).strip()
             if not text:
                 return None
+            if role == "user" and text.startswith("<environment_context>"):
+                return None
             return {"type": "prompt" if role == "user" else "assistant",
                     **({"text": text, "images": []} if role == "user" else
                        {"content": [{"type": "text", "text": text}]})}
-        if item_kind == "function_call":
+        if item_kind in ("function_call", "custom_tool_call"):
             try:
-                args = item.get("arguments") or "{}"
+                args = item.get("arguments") or item.get("input") or "{}"
                 args = json.loads(args) if isinstance(args, str) else args
             except (ValueError, TypeError):
-                args = {"arguments": item.get("arguments", "")}
+                args = {"input": item.get("input") or item.get("arguments", "")}
+            if not isinstance(args, dict):
+                args = {"input": args}
             return {"type": "assistant", "content": [{
                 "type": "tool_use", "id": item.get("call_id") or item.get("id"),
                 "name": item.get("name") or "tool", "input": args,
             }]}
-        if item_kind == "function_call_output":
+        if item_kind in ("function_call_output", "custom_tool_call_output"):
+            output = item.get("output", "")
+            if isinstance(output, list):
+                output = "\n".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in output
+                )
             return {"type": "tool_results", "content": [{
                 "tool_use_id": item.get("call_id") or item.get("id"),
                 "is_error": bool(item.get("is_error")),
-                "content": item.get("output", ""),
+                "content": output,
             }]}
     if kind == "event_msg" and payload.get("type") in ("turn_aborted", "turn_failed"):
         return {"type": "interrupted"}
@@ -413,7 +426,45 @@ class PaneChat:
                 if meta.get("cwd") == self.cwd:
                     matches.append(path)
                 break
-        return matches[0] if session_id and matches else matches[0] if len(matches) == 1 else None
+        if session_id and matches:
+            return matches[0]
+        if len(matches) == 1:
+            return matches[0]
+        return self._codex_log_by_title(matches)
+
+    def _codex_log_by_title(self, matches):
+        """Use Codex's thread index when Herdr has no session ID.
+
+        Terminal titles are short summaries, while index titles are usually the
+        first prompt. Require several shared words and a unique best match so
+        a generic project title cannot show another pane's conversation.
+        """
+        title = self.title.split(" | ", 1)[0]
+        words = set(re.findall(r"[a-z0-9]+", title.lower()))
+        if len(words) < 3:
+            return None
+        database = tokens.CODEX_HOME / "state_5.sqlite"
+        try:
+            with sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=0.2) as db:
+                rows = db.execute(
+                    "SELECT rollout_path, title FROM threads WHERE cwd = ? AND archived = 0",
+                    (self.cwd,),
+                ).fetchall()
+        except (OSError, sqlite3.Error):
+            return None
+        candidates = set(matches)
+        scored = []
+        for path, thread_title in rows:
+            if Path(path) not in candidates:
+                continue
+            other = set(re.findall(r"[a-z0-9]+", (thread_title or "").lower()))
+            common = len(words & other)
+            if common >= 3 and common / len(words) >= 0.6:
+                scored.append((common / len(words), common, Path(path)))
+        scored.sort(reverse=True)
+        if not scored or len(scored) > 1 and scored[0][:2] == scored[1][:2]:
+            return None
+        return scored[0][2]
 
     def _restart(self):
         self.offset, self.tail, self.events, self.model = 0, b"", [], ""

@@ -2317,6 +2317,57 @@ finally:
     tokens.CLAUDE_PROJECTS = orig_projects
     panechat.call_herdr_rpc = orig[0]
 
+# ---- Codex panes without an agent_session ----------------------------------
+codex_home = Path(tempfile.mkdtemp(prefix="sheepit-codex-"))
+rollouts = codex_home / "sessions" / "2026" / "09" / "26"
+rollouts.mkdir(parents=True)
+codex_paths = []
+for sid, prompt in (("a" * 36, "work on the codex chat view"),
+                    ("b" * 36, "fix the console layout")):
+    path = rollouts / f"rollout-{sid}.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in (
+        {"type": "session_meta", "payload": {"id": sid, "cwd": "/tmp/codex-project"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "developer",
+                                              "content": [{"type": "input_text", "text": "setup"}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                              "content": [{"type": "input_text", "text": "<environment_context>private</environment_context>"}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                              "content": [{"type": "input_text", "text": prompt}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                              "content": [{"type": "output_text", "text": "On it."}]}},
+        {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                                              "call_id": "call-1", "input": "print(1)"}},
+        {"type": "response_item", "payload": {"type": "custom_tool_call_output",
+                                              "call_id": "call-1", "output": [{"type": "text", "text": "1"}]}},
+    )) + "\n")
+    codex_paths.append(path)
+with sqlite3.connect(codex_home / "state_5.sqlite") as db:
+    db.execute("CREATE TABLE threads (rollout_path TEXT, title TEXT, cwd TEXT, archived INTEGER)")
+    db.executemany("INSERT INTO threads VALUES (?, ?, ?, 0)",
+                   [(str(codex_paths[0]), "lets work on the codex chat view", "/tmp/codex-project"),
+                    (str(codex_paths[1]), "fix the console layout", "/tmp/codex-project")])
+
+codex_pane = {"pane_id": "wZ:p1", "agent": "codex", "agent_status": "idle",
+              "cwd": "/tmp/codex-project", "terminal_title_stripped": "Update Codex chat view | codex-project",
+              "agent_session": None}
+orig_codex_home = tokens.CODEX_HOME
+tokens.CODEX_HOME = codex_home
+panechat.call_herdr_rpc = lambda m, p=None, timeout=5.0: {"result": {"pane": dict(codex_pane)}}
+try:
+    pc = panechat.get("wZ:p1")
+    check("Codex: pane title finds the right indexed session", pc.path, codex_paths[0])
+    check("Codex: only conversation messages reach chat",
+          [(e["type"], e.get("text")) for e in pc.events],
+          [("prompt", "work on the codex chat view"), ("assistant", None),
+           ("assistant", None), ("tool_results", None)])
+    check("Codex: custom tool output resolves the call", pc.unresolved, {})
+    codex_pane["terminal_title_stripped"] = "codex-project"
+    pc.refresh()
+    check("Codex: a generic title does not pick another session", pc.path, None)
+finally:
+    tokens.CODEX_HOME = orig_codex_home
+    panechat.call_herdr_rpc = orig[0]
+
 # ---- What a turn cost, and only when somebody is billed for it -------------
 # `claude` prices every turn whether or not the tokens are invoiced, so the
 # figure only reaches the phone when the credential says it is a bill.
