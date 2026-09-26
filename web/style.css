@@ -363,6 +363,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .agent-group.dragging {
   z-index: 3;
   transition: none;
+  cursor: grabbing;
 }
 
 .agent-group.dragging .agent-row {
@@ -383,6 +384,7 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 .agent-group-head {
   position: sticky;
+  cursor: grab;
   /* Under the picker head, whose height app.js measures into --picker-head-h:
      both are sticky against the same viewport now, and a heading that stopped
      at 0 would slide behind the title. */
@@ -1072,10 +1074,8 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   position: relative;
 }
 
-/* A chat covers this the way `.input-dock.chat-covered` covers the composer -
-   both are flex items in the same document flow now, so leaving this one
-   merely `visibility`'d or un-toggled put the raw transcript directly above
-   the chat, reachable by scrolling past the top of it. */
+/* The transcript and Chat messages share the page flow. Hide the inactive
+   transcript while Chat is open so it cannot appear above the conversation. */
 .history-container.hidden { display: none; }
 
 /* A long press has to catch the text, not the tap highlight. The transcript
@@ -1345,26 +1345,51 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   position: relative;
   display: flex;
   align-items: flex-end;
-  gap: 6px;
-  padding: 5px 0;
+  gap: 8px;
+  padding: 8px 0;
   margin: 0;
 }
 .prompt-form.hidden { display: none !important; }
-footer.input-dock.chat-covered { display: none !important; }
 
-/* The three buttons travel together. Beside a one-line box they sit in a row,
-   the way they always have; once the box has grown they turn into a column in
-   the height the box itself just made, rather than pushing the composer
-   wider. Bottom-up, so send stays where the thumb last left it. */
-.prompt-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
+
+.prompt-actions { display: contents; }
+.prompt-form > .prompt-input { order: 5; }
+.prompt-actions > #btn-recall { order: 1; }
+.prompt-actions > #btn-attach { order: 2; }
+.prompt-actions > #chat-btn-slash { order: 3; }
+.prompt-actions > #btn-keys { order: 3; }
+.prompt-actions > #composer-menu { order: 4; }
+.prompt-actions > #btn-send { order: 6; }
+.prompt-actions > #chat-btn-stop { order: 7; }
 
 .composer-menu { position: relative; display: flex; }
 .btn-more[aria-expanded="true"] { background: var(--bg-hover); color: var(--accent-primary); }
+.btn-keys { font-size: 17px; }
+.chat-only { display: none !important; }
+#prompt-form.chat-mode #chat-btn-slash { display: inline-flex !important; }
+#prompt-form.chat-mode #chat-btn-stop { display: inline-flex !important; }
+#prompt-form.chat-mode #chat-btn-stop.hidden { display: none !important; }
+#prompt-form.chat-mode #chat-btn-stop {
+  width: 38px; height: 38px; border: 0; border-radius: 50%;
+  background: var(--status-blocked); color: #fff;
+  align-items: center; justify-content: center;
+}
+#prompt-form:not(.chat-mode) .normal-stop.normal-visible { display: inline-flex !important; }
+#prompt-form:not(.chat-mode) .normal-stop.hidden { display: none !important; }
+#prompt-form .normal-stop {
+  width: 38px; height: 38px; border: 0; border-radius: 50%;
+  background: var(--status-blocked); color: #fff;
+  align-items: center; justify-content: center;
+}
+#prompt-form.chat-mode .normal-only { display: none !important; }
+#prompt-form.chat-mode #btn-attach,
+#prompt-form.chat-mode #chat-btn-slash {
+  width: 38px; height: 38px; border: 0; border-radius: 0;
+  background: transparent; color: var(--text-secondary);
+}
+#prompt-form.chat-mode #btn-attach:active,
+#prompt-form.chat-mode #chat-btn-slash:active { background: var(--bg-hover); }
+#prompt-form #btn-recall { display: none !important; }
 .composer-menu-panel {
   position: absolute;
   right: 0;
@@ -1497,15 +1522,15 @@ footer.input-dock.chat-covered { display: none !important; }
   flex: 1;
   min-width: 0;
   background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-strong);
   border-radius: 18px;
-  padding: 8px 12px;
+  padding: 8px 14px;
   font-family: var(--font-sans);
   font-size: 16px; /* 16px keeps iOS from zooming on focus */
   line-height: 18px;
   color: var(--text-primary);
   resize: none;
-  max-height: 120px;
+  max-height: 40vh;
   outline: none;
   transition: border-color 0.2s;
 }
@@ -1544,10 +1569,10 @@ footer.input-dock.chat-covered { display: none !important; }
 .btn-recall.hidden { display: none; }
 
 .btn-send {
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
-  background: var(--accent-gradient);
+  background: var(--accent-primary);
   border: none;
   color: #ffffff;
   display: flex;
@@ -1556,20 +1581,15 @@ footer.input-dock.chat-covered { display: none !important; }
   flex-shrink: 0;
   cursor: pointer;
   transition: transform 0.15s, opacity 0.2s;
-  box-shadow: 0 2px 8px rgba(47, 129, 247, 0.4);
+  box-shadow: none;
 }
 
-/* The paper-plane glyph's mass sits up and right inside its viewBox, so a
-   flex-centred icon reads as off-centre; nudge it back. */
-.btn-send svg {
-  display: block;
-  transform: translate(-1px, 1px);
-}
+.btn-send svg { display: block; }
 
 .btn-send:active { transform: scale(0.92); }
 
 .btn-send:disabled {
-  opacity: 0.3;
+  opacity: 0.4;
   cursor: default;
   box-shadow: none;
 }
@@ -3149,23 +3169,8 @@ footer.input-dock.chat-covered { display: none !important; }
 #chat-chat-view .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: chat-pulse 1s infinite; }
 #chat-chat-view .typing i:nth-child(2) { animation-delay: 0.2s; }
 #chat-chat-view .typing i:nth-child(3) { animation-delay: 0.4s; }
-#chat-chat-view .composer {
-  display: flex; gap: 8px; align-items: flex-end;
-  padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 8px);
-  background: var(--bg-surface); border-top: 1px solid var(--border);
-  /* Same reason as .input-dock: the document scrolls now, so without this
-     the composer is just the last item in the chat's flow and scrolls off
-     with the messages above it. */
-  position: sticky;
-  bottom: 0;
-}
-#chat-chat-view .composer textarea { flex: 1; resize: none; font-size: 16px; max-height: 40vh; border-radius: 18px; padding: 8px 14px; }
-#chat-chat-view .send {
-  flex: none; width: 38px; height: 38px; border-radius: 50%; border: 0;
-  background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center;
-}
-#chat-chat-view .send.stop { background: var(--err); }
-#chat-chat-view .send:disabled { opacity: 0.4; }
+/* The conversation and the transcript both feed the shared composer in the
+   bottom dock. */
 #chat-chat-view .msg.user .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
 #chat-chat-view .msg.user .imgs img { max-width: 100%; max-height: 220px; border-radius: 10px; display: block; }
 #chat-chat-view .msg.user .imgs:last-child { margin-bottom: 2px; }

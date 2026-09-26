@@ -273,33 +273,13 @@ directory stands in. Inside a project, rows sort by when they were created —
 Herdr numbers workspaces as they are opened and never renumbers them, and a
 pane's own index orders the several agents one workspace can hold.
 
-One thing overrides that: a sheep waiting on you. Two states are, and both rise
-to the top of their project and carry their project to the top of the list — an
-agent stopped on a question, and one whose turn ended with nobody having read
-it. Herdr has no unread flag to offer; what it has is `done`, the state a pane
-sits in from the end of a turn until something happens in it, which is near
-enough. It is the same pair the icon badge counts and the same pair earns a
-push, so the order of the list now agrees with both: a finished agent that used
-to sit wherever it was created, under four working ones, is where the answer it
-is owed can be given.
+Project headings stay in creation order unless somebody drags them. Agent
+activity sorts rows inside a project, so a waiting sheep remains easy to find
+without moving the project underneath the user's thumb. The badge and pushes
+still surface questions and finished turns independently.
 
-A question still outranks a finished turn — it has work stopped mid-air, where
-a finished agent has already put its work down. Two projects waiting the same
-way do not fight: creation order breaks the tie.
-
-The panes are sorted before they are collapsed into pens, so what actually
-rises is the workspace the waiting tab is in — and that is the tab the row is
-already wearing, since [the tab a row speaks for](#tabs) is picked by the same
-preference. The row you see float is the row that opens on the thing that
-floated it.
-
-None of it moves while a hand is on it. A state change that reorders rows under
-a thumb about to tap one is the failure this whole section is about, so the
-last drawn order is held through a touch, a swipe, a carried project or a
-scroll, and for three seconds after the finger lifts. It used to be held for as
-long as the list was open, which was the length of a glance; now that the flock
-is the screen the app opens on, that would have been the length of the session,
-and nothing waiting on you would ever have risen.
+The last drawn row order is held through a touch, a swipe, a carried project or
+a scroll, and for three seconds after the finger lifts.
 
 Herdr still exposes no timestamps, and `state_change_seq` is still watched: the
 phone stamps a wall-clock time whenever it moves — or whenever you open a
@@ -311,16 +291,13 @@ happened the moment the app first looked.
 
 The stillness above is a rule about what the *phone* does on its own. Somebody
 who wants a different order can hold a row for a moment: the project lifts off
-the list to be carried somewhere else, and where it lands is kept in
-`localStorage` so the list is right before the next poll rather than after it.
+the list to be carried somewhere else, and where it lands is saved by the
+gateway so desktop and mobile share the same order.
 
-An order made by hand outranks both rules above it — a project put third stays
-third, and nothing waiting pulls it to the front, because a list somebody
-arranged and a list that rearranges itself cannot both be true. Inside a
-project a waiting sheep still rises: the project is not going anywhere either
-way.
-A project the saved order has never seen — made since the last drag — falls
-back to when it was created, which is the end.
+An order made by hand outranks creation order. A project the saved order has
+never seen joins at the end, except for a workspace created from the flock's
+global **+ New** action, which is explicitly placed at the top. A project made
+through another action joins at the end.
 
 Herdr is told too, with `workspace.move`, so the laptop's workspace strip
 follows the phone instead of arguing with it. It is told only when the project

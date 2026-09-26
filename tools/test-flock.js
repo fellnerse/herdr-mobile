@@ -335,8 +335,8 @@ function order(agents, busy = false, held = [], custom = []) {
     row("wB:p1", 2, "/p/web", "blocked"),
     row("wC:p1", 3, "/p/cli", "idle"),
   ]);
-  check("a project with a question floats",
-        f.state.groups.map((g) => g.key), ["/p/web", "/p/api", "/p/cli"]);
+  check("a question does not move its project",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/cli"]);
 }
 
 /* A project carries its loudest sheep: the question first, then the project
@@ -347,8 +347,8 @@ function order(agents, busy = false, held = [], custom = []) {
     row("wB:p1", 2, "/p/web", "done"),
     row("wC:p1", 3, "/p/cli", "blocked"),
   ]);
-  check("a finished turn floats its project, under a question",
-        f.state.groups.map((g) => g.key), ["/p/cli", "/p/web", "/p/api"]);
+  check("a finished turn does not move its project",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/cli"]);
 }
 
 // Two waiting projects do not fight: creation order breaks the tie.
@@ -358,8 +358,8 @@ function order(agents, busy = false, held = [], custom = []) {
     row("wB:p1", 2, "/p/web", "blocked"),
     row("wC:p1", 3, "/p/cli", "blocked"),
   ]);
-  check("waiting projects keep creation order between them",
-        f.state.groups.map((g) => g.key), ["/p/web", "/p/cli", "/p/api"]);
+  check("waiting projects keep their creation order",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/cli"]);
 }
 
 // -- holding still under the thumb ------------------------------------------

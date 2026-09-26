@@ -60,7 +60,6 @@
   };
 
   // DOM Elements
-  const elBtnRefresh = document.getElementById("btn-refresh");
   const elAgentSelect = document.getElementById("agent-select");
   const elAgentSelectDot = document.getElementById("agent-select-dot");
   const elAgentSelectName = document.getElementById("agent-select-name");
@@ -92,12 +91,12 @@
   const elModeCurrent = document.getElementById("mode-current");
   const elBtnRecall = document.getElementById("btn-recall");
   const elBtnSend = document.getElementById("btn-send");
+  const elComposerStop = document.getElementById("chat-btn-stop");
   const elBtnCtrlC = document.getElementById("btn-ctrl-c");
   const elBtnEsc = document.getElementById("btn-esc");
   // The palette opens from the composer's icon row, anchored above the box.
   elPromptForm.appendChild(elKeysBar);
   const elBtnCopy = document.getElementById("btn-copy");
-  const elLinesSelect = document.getElementById("lines-select");
   const elSheetBackdrop = document.getElementById("sheet-backdrop");
   const elNewSheet = document.getElementById("new-sheet");
   const elNewSheetTitle = document.getElementById("new-sheet-title");
@@ -601,6 +600,11 @@
     document.getElementById("chat-btn-delete").classList.add("hidden");
     const chattable = !!(agent && agent.agent === "claude");
     const chatShowing = chattable && (state.chatVisible || (wide.matches && state.paneView === "chat"));
+    if (!chatShowing) {
+      const working = !!agent && agent.status === "working";
+      elComposerStop.classList.toggle("normal-visible", working);
+      elComposerStop.classList.toggle("hidden", !working);
+    }
     if (agent) {
       const name = agentBarName(agent);
       elAgentSelectName.textContent = chatShowing ? `${name} · ${tabChipLabel(agent)}` : name;
@@ -1683,7 +1687,17 @@
       await fetchAgents();
       // Open the one that was not there a moment ago.
       const created = state.agents.find((a) => !before.has(a.workspace_id));
-      if (created) selectAgent(created.pane_id);
+      if (created) {
+        // A workspace made from the flock's + New action is the one kind of
+        // new project that belongs at the top. Other projects discovered by
+        // polling join the end of the saved order.
+        const key = projectKey(created);
+        state.customOrder = [key, ...state.customOrder.filter((item) => item !== key)];
+        saveOrder();
+        orderAgents();
+        renderAgentList();
+        selectAgent(created.pane_id);
+      }
       else closePicker();
     } catch (err) {
       alert("Could not create workspace: " + err.message);
@@ -2754,9 +2768,9 @@
 
   function autoResizeTextarea() {
     const focused = elPromptInput.classList.contains("expanded");
-    const cap = focused
+    const cap = state.chatVisible
       ? Math.max(140, Math.round(window.innerHeight * 0.4))
-      : 120;
+      : focused ? Math.max(140, Math.round(window.innerHeight * 0.4)) : 120;
     const height = SheepItComposer.resizeTextarea(elPromptInput, cap);
     // Past one line there is room beside the box for a column of buttons.
     elPromptForm.classList.toggle("stacked", height > ONE_LINE);
@@ -2890,6 +2904,10 @@
   }
 
   elBtnAttach.addEventListener("click", () => {
+    if (state.chatVisible || state.activeChatId) {
+      document.getElementById("chat-attach-input").click();
+      return;
+    }
     if (!state.activePaneId) return;
     elAttachInput.click();
   });
@@ -2904,7 +2922,7 @@
      textarea. Text pastes are left entirely alone. */
   document.addEventListener("paste", (e) => {
     // The console has its own terminal to paste into, and it wants the text.
-    if (!elConsoleView.classList.contains("hidden")) return;
+    if (!elConsoleView.classList.contains("hidden") || state.chatVisible || state.activeChatId) return;
     if (!state.activePaneId) return;
     const images = imagesIn(e.clipboardData);
     if (!images.length) return;
@@ -2923,6 +2941,7 @@
   });
 
   elPromptInput.addEventListener("drop", (e) => {
+    if (state.chatVisible || state.activeChatId) return;
     const images = imagesIn(e.dataTransfer);
     if (!images.length || !state.activePaneId) return;
     e.preventDefault();
@@ -3508,9 +3527,6 @@
 
   function loadPrefs() {
     try {
-      const lines = Number(readPref("lines"));
-      if ([200, 400, 600, 800].includes(lines)) state.linesCount = lines;
-      elLinesSelect.value = String(state.linesCount);
       state.paneView = readPref("view") || "transcript";
       setDiffLayout(readPref("diffsplit") === "1");
       setKeysBar(readPref("keys") !== "0");
@@ -3925,7 +3941,27 @@
   }
 
   function saveOrder() {
-    savePref(ORDER_KEY, JSON.stringify(state.customOrder));
+    const serialized = JSON.stringify(state.customOrder);
+    savePref(ORDER_KEY, serialized);
+    fetch("/api/project-order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order: state.customOrder }),
+    }).catch(() => {});
+  }
+
+  async function loadServerOrder() {
+    try {
+      const res = await fetch("/api/project-order");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.saved) state.customOrder = data.order || [];
+      else if (state.customOrder.length) saveOrder(); // one-time migration from this device
+      orderAgents();
+      renderAgentList();
+    } catch (err) {
+      // Keep the cached order when the gateway cannot be reached.
+    }
   }
 
   // A project carried from one slot to another, as a list of keys.
@@ -3944,10 +3980,8 @@
     return to > from ? to + 1 : to;
   }
 
-  /* A hand-made order wins over both rules above it: a project put third stays
-     third even when one of its agents starts asking something. Inside a
-     project the waiting sheep still rise - that costs nothing, since a project
-     stays where the finger left it either way. */
+  /* A hand-made order wins over creation order. Agent activity only sorts rows
+     inside a project; it must never move the project heading itself. */
   function sortGroups(groups) {
     const rank = new Map(state.customOrder.map((key, i) => [key, i]));
     if (rank.size) {
@@ -3955,7 +3989,7 @@
       groups.sort((a, b) => at(a.key) - at(b.key) || a.born - b.born);
       return;
     }
-    groups.sort((a, b) => b.wants - a.wants || a.born - b.born);
+    groups.sort((a, b) => a.born - b.born);
   }
 
   /* Never reshuffle a list under a hand: an agent changing state would slide a
@@ -4240,7 +4274,8 @@
     // sibling above the chat - one long scroll up from the top of a chat and
     // you are reading the pane's raw output instead.
     elHistoryContainer.classList.toggle("hidden", show);
-    elPromptForm.parentElement.classList.toggle("chat-covered", show);
+    elPromptForm.classList.toggle("chat-mode", show);
+    elPromptInput.placeholder = show ? "Message Claude…" : "Prompt or tap mic…";
     if (targetId !== chatTarget) {
       chatTarget = targetId;
       document.dispatchEvent(new CustomEvent("sheepit:chat-target", { detail: targetId }));
@@ -4281,13 +4316,14 @@
     state.chatVisible = false;
     if (!headless) state.paneView = "transcript";
     elChatView.classList.add("hidden");
-    elPromptForm.parentElement.classList.remove("chat-covered");
+    elPromptForm.classList.remove("chat-mode");
     chatTarget = "";
     renderAgentBar();
-    if (headless) {
-      fetchAgents();
-      if (!wide.matches) openPicker();
-    }
+    if (headless) fetchAgents();
+    // This event always means "back to the flock" - a pane's chat included,
+    // or the Claude Code transcript it falls back to (a view its own button
+    // is hidden for) shows behind it instead of the project list.
+    if (!wide.matches) openPicker();
   });
   wide.addEventListener("change", () => renderAgentBar());
 
@@ -4391,6 +4427,35 @@
   elAgentList.addEventListener("pointerdown", touchList, { passive: true });
   elAgentList.addEventListener("pointermove", touchList, { passive: true });
   elAgentList.addEventListener("wheel", touchList, { passive: true });
+
+  // Touch dragging uses the long press below. A mouse has no long press, so
+  // start carrying a project once its heading or row moves a few pixels.
+  let pointerDrag = null;
+  elAgentList.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0 || state.groups.length < 2) return;
+    const group = e.target.closest(".agent-group");
+    const row = group && group.querySelector(".agent-row");
+    if (row) pointerDrag = { row, x: e.clientX, y: e.clientY };
+  });
+  window.addEventListener("pointermove", (e) => {
+    if (!pointerDrag) return;
+    if (!drag && Math.hypot(e.clientX - pointerDrag.x, e.clientY - pointerDrag.y) < 5) return;
+    if (!drag) {
+      startDrag(pointerDrag.row, pointerDrag.y);
+      state.swiping = true;
+    }
+    e.preventDefault();
+    dragTo(e.clientY);
+  }, { passive: false });
+  window.addEventListener("pointerup", () => {
+    if (!pointerDrag) return;
+    pointerDrag = null;
+    if (drag) endDrag();
+  });
+  window.addEventListener("pointercancel", () => {
+    pointerDrag = null;
+    if (drag) endDrag();
+  });
 
   elAgentList.addEventListener("touchstart", (e) => {
     touchList();
@@ -4666,10 +4731,6 @@
   elBtnNewWorkspace.addEventListener("click", openNewAnything);
   elBtnCloseNewSheet.addEventListener("click", closeNewSheet);
 
-  elBtnRefresh.addEventListener("click", () => {
-    triggerHaptic();
-    loop();
-  });
 
   function closeComposerMenu() {
     elComposerMenuPanel.classList.add("hidden");
@@ -4702,6 +4763,7 @@
 
   elPromptInput.addEventListener("input", () => {
     autoResizeTextarea();
+    if (state.chatVisible || state.activeChatId) return;
     scheduleCompletion();
     rememberDraft();
     elBtnSend.disabled = !elPromptInput.value.trim() && !attachStrip.list.length;
@@ -4723,6 +4785,7 @@
   elPromptInput.addEventListener("focus", () => {
     elPromptInput.classList.add("expanded");
     autoResizeTextarea();
+    if (state.chatVisible || state.activeChatId) return;
     setTimeout(() => {
       syncViewportHeight();
       scrollToBottom();
@@ -4766,6 +4829,11 @@
     setCtrlCArmed(true); // a second tap exits the agent the first one stopped
   });
 
+  elComposerStop.addEventListener("click", () => {
+    if (elPromptForm.classList.contains("chat-mode")) return;
+    sendKey("ctrl+c", elComposerStop);
+  });
+
   elBtnEsc.addEventListener("click", () => sendKey("esc", elBtnEsc));
 
   // Pull the desktop's draft into the composer to carry on editing it here.
@@ -4779,12 +4847,6 @@
     autoResizeTextarea();
   });
   elBtnCopy.addEventListener("click", copyHistory);
-
-  elLinesSelect.addEventListener("change", (e) => {
-    state.linesCount = parseInt(e.target.value, 10) || 400;
-    savePref("sheepit.lines", String(state.linesCount));
-    fetchHistory(true, true);
-  });
 
   /* One vocabulary for both key rows. #keys-bar sends a name to Herdr over
      agent.send_keys (sendKey, below) and asks nothing more of this table; the
@@ -6701,8 +6763,10 @@
   document.addEventListener("pointerdown", unlockAudio, { once: true });
   document.addEventListener("touchstart", unlockAudio, { once: true });
   autoResizeTextarea();
-  loop();
-  startPolling();
+  loadServerOrder().finally(() => {
+    loop();
+    startPolling();
+  });
 })();
 
 
@@ -6721,8 +6785,8 @@
 
   const $ = (id) => document.getElementById("chat-" + id);
   const elChat = $("chat-view");
-  const elMessages = $("messages"), elInput = $("input");
-  const elSend = $("btn-send"), elStop = $("btn-stop");
+  const elMessages = $("messages"), elInput = document.getElementById("prompt-input");
+  const elSend = document.getElementById("btn-send"), elStop = $("btn-stop");
   const elStrip = $("attach-strip"), elAttachInput = $("attach-input");
   const elBtnScrollBottom = $("btn-scroll-bottom");
 
@@ -7160,10 +7224,11 @@
 
   function attachFiles(files) {
     if (!current) return;
-    return attachStrip.add(files);
+    return attachStrip.add(files).then(() => {
+      elSend.disabled = !elInput.value.trim() && !attachStrip.list.length;
+    });
   }
 
-  $("btn-attach").addEventListener("click", () => elAttachInput.click());
   elAttachInput.addEventListener("change", () => { attachFiles([...elAttachInput.files]); elAttachInput.value = ""; });
   elInput.addEventListener("paste", (e) => {
     const files = [...(e.clipboardData ? e.clipboardData.files : [])].filter((f) => f.type.startsWith("image/"));
@@ -7331,7 +7396,8 @@
      headless chat's goes to its own process, where one sent mid-answer waits
      its turn inside Claude Code the way typing ahead in the terminal does. */
   function grow() {
-    SheepItComposer.resizeTextarea(elInput);
+    SheepItComposer.resizeTextarea(elInput, Math.max(140, Math.round(window.innerHeight * 0.4)));
+    elSend.disabled = !elInput.value.trim() && !attachStrip.list.length;
   }
   elInput.addEventListener("input", grow);
   elInput.addEventListener("keydown", (e) => {
@@ -7347,10 +7413,11 @@
     // Enter sends on a keyboard with a shift key; the phone's return is a newline.
     if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) {
       e.preventDefault();
-      $("composer").requestSubmit();
+      document.getElementById("prompt-form").requestSubmit();
     }
   });
   async function submitMessage() {
+    if (elChat.classList.contains("hidden")) return;
     const text = elInput.value;
     if (attachStrip.list.some((a) => !a.name)) return; // still uploading
     const images = attachStrip.list.map((a) => a.name);
@@ -7375,8 +7442,12 @@
     } catch (err) { alert(err.message); }
     elSend.disabled = false;
   }
-  SheepItComposer.bindSubmit($("composer"), submitMessage);
-  elStop.addEventListener("click", () => current && api("/api/chat/stop", { id: current.id }).catch(() => {}));
+  SheepItComposer.bindSubmit(document.getElementById("prompt-form"), submitMessage);
+  elStop.addEventListener("click", () => {
+    if (!elChat.classList.contains("hidden") && current) {
+      api("/api/chat/stop", { id: current.id }).catch(() => {});
+    }
+  });
   $("btn-delete").addEventListener("click", async () => {
     if (!current || !confirm("Delete this chat? The Claude Code session itself stays.")) return;
     await api("/api/chat/delete", { id: current.id }).catch(() => {});

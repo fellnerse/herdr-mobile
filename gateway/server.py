@@ -54,6 +54,34 @@ WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
 # The dispatch thread, once `run` starts it. Held so a freshly queued prompt can
 # nudge it awake instead of waiting out a poll.
 SCHEDULER = None
+PROJECT_ORDER_PATH = sched_config.STATE_DIR / "project-order.json"
+PROJECT_ORDER_LOCK = threading.Lock()
+
+
+def load_project_order() -> list[str]:
+    try:
+        value = json.loads(PROJECT_ORDER_PATH.read_text(encoding="utf-8"))
+        if isinstance(value, list):
+            return [key for key in value if isinstance(key, str)][:500]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def save_project_order(value) -> bool:
+    if not isinstance(value, list) or len(value) > 500 or any(
+        not isinstance(key, str) or len(key) > 4096 for key in value
+    ):
+        return False
+    try:
+        PROJECT_ORDER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = PROJECT_ORDER_PATH.with_suffix(".tmp")
+        with PROJECT_ORDER_LOCK:
+            temporary.write_text(json.dumps(value), encoding="utf-8")
+            temporary.replace(PROJECT_ORDER_PATH)
+        return True
+    except OSError:
+        return False
 
 
 
@@ -947,6 +975,14 @@ class HerdrHandler(BaseHTTPRequestHandler):
             _API_ROUTES["GET"][path](self, qs)
             return
 
+        if path == "/api/project-order":
+            self.send_json({
+                "ok": True,
+                "saved": PROJECT_ORDER_PATH.exists(),
+                "order": load_project_order(),
+            })
+            return
+
 
         # API: List all active agents
         if path == "/api/agents":
@@ -1207,6 +1243,14 @@ class HerdrHandler(BaseHTTPRequestHandler):
         # Check registered custom API routes
         if path in _API_ROUTES["POST"]:
             _API_ROUTES["POST"][path](self, body)
+            return
+
+        if path == "/api/project-order":
+            order = body.get("order") if isinstance(body, dict) else None
+            if not save_project_order(order):
+                self.send_json({"ok": False, "error": "Invalid project order"}, 400)
+                return
+            self.send_json({"ok": True})
             return
 
         # API: Register a Web Push subscription
