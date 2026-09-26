@@ -107,6 +107,7 @@
   const elToggleBleat = document.getElementById("toggle-bleat");
   const elToggleMachine = document.getElementById("toggle-machine");
   const elPushHint = document.getElementById("push-hint");
+  const elBtnTestPush = document.getElementById("btn-test-push");
   const elGlobalSettingsView = document.getElementById("global-settings-view");
   const elBtnCloseGlobalSettings = document.getElementById("btn-close-global-settings");
   const elBtnFlockSettings = document.getElementById("btn-flock-settings");
@@ -4896,8 +4897,10 @@
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       elTogglePush.checked = Boolean(sub);
+      elBtnTestPush.disabled = !sub;
       setPushHint(sub ? "on for this device" : "");
     } catch (err) {
+      elBtnTestPush.disabled = true;
       setPushHint("unavailable");
     }
   }
@@ -4920,6 +4923,7 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ subscription: sub.toJSON() }),
     });
+    elBtnTestPush.disabled = false;
     setPushHint("on for this device");
     triggerHaptic();
   }
@@ -4935,8 +4939,24 @@
       });
       await sub.unsubscribe();
     }
+    elBtnTestPush.disabled = true;
     setPushHint("");
   }
+
+  elBtnTestPush.addEventListener("click", async () => {
+    elBtnTestPush.disabled = true;
+    setPushHint("sending test…");
+    try {
+      const response = await fetch("/api/push/test", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "request failed");
+      setPushHint(result.sent ? "test sent" : "no active subscription found");
+    } catch (err) {
+      setPushHint("test failed: " + err.message);
+    } finally {
+      elBtnTestPush.disabled = !(elTogglePush.checked && Notification.permission === "granted");
+    }
+  });
 
   elTogglePush.addEventListener("change", async (e) => {
     try {
