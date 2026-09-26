@@ -81,7 +81,7 @@ const waiting = (id, pane, prompt) => ({ id, pane_id: pane, state: "waiting", pr
 
 /* The settling grace lives up in the queue's plumbing rather than in the strip
    that draws it, so it is sliced separately. */
-const SETTLE_FROM = "  /* A prompt that is about to go out immediately";
+const SETTLE_FROM = "  /* A prompt that is about to go out should never";
 const SETTLE_TO = "  function quotaIsStale() {";
 
 function loadSettle(state) {
@@ -111,6 +111,8 @@ function loadSettle(state) {
   s.holdBack(21);
   check("a prompt just accepted is not owed yet",
         s.stillOwed([waiting(21, "w3:p1", "go")]).length, 0);
+  check("a normal two-second dispatch does not flash a queued card",
+        s.stillOwed([waiting(21, "w3:p1", "go")], Date.now() + 2000).length, 0);
   check("but one queued a moment ago is",
         s.stillOwed([waiting(21, "w3:p1", "go")], Date.now() + s.QUEUE_SETTLE_MS + 1).length,
         1);

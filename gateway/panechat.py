@@ -32,6 +32,7 @@ from pathlib import Path
 import chat
 import tokens
 from herdr_rpc import call_herdr_rpc
+from scheduler import db as sched_db
 
 # What a phone opening a long session is handed: the end of it.
 KEEP = 400
@@ -430,7 +431,67 @@ class PaneChat:
             return matches[0]
         if len(matches) == 1:
             return matches[0]
+        if matched := self._codex_log_by_sent_prompt(matches):
+            return matched
         return self._codex_log_by_title(matches)
+
+    def _codex_log_by_sent_prompt(self, matches):
+        """Use this pane's delivered prompts when Codex has no session ID.
+
+        The terminal title is a short summary and often shares no words with
+        the thread's first prompt. A prompt the gateway delivered to this pane
+        is stronger evidence, provided it appears in exactly one rollout.
+        """
+        if len(matches) < 2 or not sched_db.DB_PATH.exists():
+            return None
+        try:
+            with sqlite3.connect(f"file:{sched_db.DB_PATH}?mode=ro", uri=True,
+                                 timeout=0.2) as conn:
+                recent = [row[0] for row in conn.execute(
+                    "SELECT prompt FROM queued_prompt WHERE pane_id=? AND state='sent' "
+                    "ORDER BY id DESC LIMIT 8", (self.pane_id,)
+                )]
+        except (OSError, sqlite3.Error):
+            return None
+        prompts = []
+        for prompt in recent:
+            if prompt == "/clear":
+                break
+            if prompt:
+                prompts.append(prompt)
+        if not prompts:
+            return None
+        wanted = set(prompts)
+        found = {prompt: [] for prompt in wanted}
+        for path in matches:
+            try:
+                with path.open("rb") as f:
+                    size = path.stat().st_size
+                    f.seek(max(0, size - 1024 * 1024))
+                    lines = f.read().splitlines()
+            except OSError:
+                continue
+            for raw in lines:
+                try:
+                    entry = json.loads(raw)
+                except ValueError:
+                    continue
+                if entry.get("type") != "response_item":
+                    continue
+                item = entry.get("payload") or {}
+                if item.get("type") != "message" or item.get("role") != "user":
+                    continue
+                text = "".join(block.get("text", "") for block in item.get("content") or []
+                               if isinstance(block, dict) and block.get("type") in
+                               ("input_text", "text"))
+                if text in wanted and path not in found[text]:
+                    found[text].append(path)
+        for prompt in prompts:
+            if len(found[prompt]) == 1:
+                return found[prompt][0]
+            if len(found[prompt]) > 1:
+                return None
+        return None
 
     def _codex_log_by_title(self, matches):
         """Use Codex's thread index when Herdr has no session ID.

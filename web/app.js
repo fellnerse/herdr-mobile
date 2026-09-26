@@ -44,6 +44,7 @@
     // about the agents, and most glances at the flock are not asking it.
     machineStrip: false,
     queueSignature: null,
+    queueRequest: 0,
     editingId: null,
     listTouchedAt: 0,
     chatVisited: false,
@@ -2995,18 +2996,16 @@
     failed: "failed",
   };
 
-  /* A prompt that is about to go out immediately should never be drawn as one
-     that is waiting. The ordinary queue is one prompt long: you type it into a
-     free chat with usage left and it leaves within the second, so drawing it
-     the moment the gateway accepts it put a "queued" chip above the composer
-     for a single poll and then took it away again - a flicker that reads as
-     something having gone wrong with the thing you just sent.
+  /* A prompt that is about to go out should never be drawn as one that is
+     waiting. Dispatch can take a few seconds even in a free chat, so drawing
+     it as soon as the gateway accepts it flashes a queue card above the
+     composer and moves the input down before the prompt is delivered.
 
      So a freshly accepted prompt is held back for as long as delivery takes.
      Nothing is hidden beyond that: one that is still waiting when the grace is
      up appears then, and one that failed appears at once, because a failure is
      the case worth interrupting for. */
-  const QUEUE_SETTLE_MS = 1500;
+  const QUEUE_SETTLE_MS = 5000;
 
   function isSettling(prompt, now) {
     const until = state.settling.get(prompt.id);
@@ -3043,10 +3042,11 @@
   }
 
   async function fetchQueue() {
+    const request = ++state.queueRequest;
     try {
       const res = await fetch("/api/queue");
       const data = await res.json();
-      if (!data.ok) return;
+      if (!data.ok || request !== state.queueRequest) return;
       state.queue = stillOwed(data.prompts || []);
       renderChatQueue();
       // The herd is polled before the queue, so the counts on the rows arrive
@@ -6987,6 +6987,7 @@
   let commands = null;         // [{name, description, hint}] for the open chat's project
   let queued = [];             // what the queue is still holding for this pane
   let queueTimer = null;
+  let queueRequest = 0;
   const settling = new Map();  // queue id -> when it stops being "just sent"
 
   async function api(path, body) {
@@ -7513,9 +7514,9 @@
      log, because nothing on this page was holding it. */
   const elQueue = $("queue-strip");
   const QUEUE_EVERY = 5000;
-  // Long enough for the ordinary case - a free pane in an open window - to
-  // deliver without ever drawing a chip that is taken away again.
-  const SETTLE_MS = 1500;
+  // Give ordinary dispatch a few seconds before moving the composer to show
+  // a waiting prompt. The desktop composer uses the same settling interval.
+  const SETTLE_MS = 5000;
 
   function owed(prompts) {
     const now = Date.now();
@@ -7529,10 +7530,11 @@
 
   async function fetchQueue() {
     if (!current || current.kind !== "pane") { queued = []; drawQueue(); return; }
+    const request = ++queueRequest;
     const pane = current.pane_id;
     try {
       const data = await api("/api/queue");
-      if (!current || current.pane_id !== pane) return;
+      if (!current || current.pane_id !== pane || request !== queueRequest) return;
       queued = owed((data.prompts || []).filter((p) => p.pane_id === pane));
     } catch (e) {
       return; // the poll's own error line already says the gateway is away

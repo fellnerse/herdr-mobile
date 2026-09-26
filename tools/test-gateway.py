@@ -2380,7 +2380,9 @@ codex_pane = {"pane_id": "wZ:p1", "agent": "codex", "agent_status": "idle",
               "cwd": "/tmp/codex-project", "terminal_title_stripped": "Update Codex chat view | codex-project",
               "agent_session": None}
 orig_codex_home = tokens.CODEX_HOME
+orig_queue_db = sched_db.DB_PATH
 tokens.CODEX_HOME = codex_home
+sched_db.DB_PATH = codex_home / "queue.sqlite3"
 panechat.call_herdr_rpc = lambda m, p=None, timeout=5.0: {"result": {"pane": dict(codex_pane)}}
 try:
     pc = panechat.get("wZ:p1")
@@ -2393,8 +2395,20 @@ try:
     codex_pane["terminal_title_stripped"] = "codex-project"
     pc.refresh()
     check("Codex: a generic title does not pick another session", pc.path, None)
+    with sched_db.connect() as queue_db:
+        prompt_id = sched_db.add(queue_db, "wZ:p1", "work on the codex chat view")
+        sched_db.update(queue_db, prompt_id, state="sent")
+    pc.refresh()
+    check("Codex: a delivered prompt identifies the pane's rollout", pc.path, codex_paths[0])
+    with sched_db.connect() as queue_db:
+        clear_id = sched_db.add(queue_db, "wZ:p1", "/clear")
+        sched_db.update(queue_db, clear_id, state="sent")
+    pc._adopt(None, None)
+    pc.refresh()
+    check("Codex: prompts before clear do not select the old rollout", pc.path, None)
 finally:
     tokens.CODEX_HOME = orig_codex_home
+    sched_db.DB_PATH = orig_queue_db
     panechat.call_herdr_rpc = orig[0]
 
 # ---- What a turn cost, and only when somebody is billed for it -------------
