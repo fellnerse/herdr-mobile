@@ -2558,6 +2558,7 @@
      until the pane and usage window are ready, but delivers /clear immediately. */
   async function submitPrompt(e) {
     if (e) e.preventDefault();
+    if (state.chatVisible || state.activeChatId) return;
     const images = attachStrip.list;
     if (images.some((image) => !image.name)) return; // still uploading
     const attachmentText = images.map((image) => `@${image.name}`).join(" ");
@@ -7614,12 +7615,15 @@
       document.getElementById("prompt-form").requestSubmit();
     }
   });
+  let sendingMessage = false;
   async function submitMessage() {
     if (elChat.classList.contains("hidden")) return;
+    if (sendingMessage) return;
     const text = elInput.value;
     if (attachStrip.list.some((a) => !a.name)) return; // still uploading
     const images = attachStrip.list.map((a) => a.name);
     if ((!text.trim() && !images.length) || !current) return;
+    sendingMessage = true;
     elSend.disabled = true;
     try {
       const data = await api("/api/chat/send", { id: current.id, text, images });
@@ -7645,7 +7649,10 @@
       }
       fetchQueue();
     } catch (err) { alert(err.message); }
-    elSend.disabled = false;
+    finally {
+      sendingMessage = false;
+      elSend.disabled = false;
+    }
   }
   SheepItComposer.bindSubmit(document.getElementById("prompt-form"), submitMessage);
   elStop.addEventListener("click", () => {
