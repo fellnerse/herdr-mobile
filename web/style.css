@@ -3261,3 +3261,28 @@ footer.input-dock.chat-covered { display: none !important; }
 #chat-chat-view .msg th, #chat-chat-view .msg td { border: 1px solid var(--border-strong); padding: 4px 8px; text-align: left; vertical-align: top; }
 #chat-chat-view .msg th { background: var(--bg-card); font-weight: 600; }
 #chat-chat-view .msg a { color: #7fb2ff; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+
+/* The transcript's jump-to-bottom button sits above its own footer; the chat
+   has no separate footer, its composer, so the button floats just above that
+   instead. Still `position: fixed` (inherited from `.btn-scroll-bottom`), so
+   it tracks the viewport rather than the message list scrolling under it. */
+#chat-chat-view .btn-scroll-bottom {
+  bottom: calc(72px + var(--safe-bottom));
+}
+
+/* On a Mac window the document does not scroll (see the note above
+   `.history-container`), so the chat needs the same internal scroller the
+   transcript gets there: only the messages themselves move, and the composer
+   and its strips stay put at the foot of the column. */
+@media (min-width: 900px) {
+  #chat-chat-view {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  #chat-chat-view .scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}

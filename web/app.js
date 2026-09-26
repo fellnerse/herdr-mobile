@@ -5678,6 +5678,16 @@
       if (requestFit()) consoleState.fitPending = false;
     }, 180);
   }
+  /* xterm keeps its desktop-sized grid while the phone keyboard is open. The
+     console viewport gets shorter, so keep its bottom (where the active prompt
+     and xterm's mobile input target sit) in view as visualViewport animates. */
+  function keepConsoleInputVisible() {
+    if (elConsoleView.classList.contains("hidden") || !keyboardOpen()) return;
+    requestAnimationFrame(() => {
+      if (elConsoleView.classList.contains("hidden") || !keyboardOpen()) return;
+      elConsoleTerm.scrollTop = elConsoleTerm.scrollHeight;
+    });
+  }
 
   function setConsoleSub(text) {
     elConsoleSub.textContent = text;
@@ -5823,8 +5833,11 @@
     if (btn && btn.dataset.key) sendConsoleKey(btn.dataset.key);
   });
   window.addEventListener("resize", fitConsole);
+  window.addEventListener("resize", keepConsoleInputVisible);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", fitConsole);
+    window.visualViewport.addEventListener("resize", keepConsoleInputVisible);
+    window.visualViewport.addEventListener("scroll", keepConsoleInputVisible);
   }
   if (window.ResizeObserver) {
     new ResizeObserver(fitConsole).observe(elConsoleTerm);
@@ -6711,6 +6724,7 @@
   const elMessages = $("messages"), elInput = $("input");
   const elSend = $("btn-send"), elStop = $("btn-stop");
   const elStrip = $("attach-strip"), elAttachInput = $("attach-input");
+  const elBtnScrollBottom = $("btn-scroll-bottom");
 
   let current = null;          // the open chat's summary
   let events = [];
@@ -6944,9 +6958,44 @@
     return "Nothing in this session yet.";
   }
 
+  /* ---- Scrolling. Past 900px the flock sits beside the chat and neither the
+     window nor `#chat-chat-view` scrolls (see style.css), so the messages list
+     is its own scroller there; on a phone the document scrolls instead, the
+     same way it does behind the transcript (see fetchHistory's note in the
+     other half of this file) - `elMessages` itself has `overflow-y: visible`
+     on a phone and reports no scroll of its own, so reading its scrollTop
+     there would always say "at the bottom" and drag you back down on every
+     poll no matter where you had scrolled to. */
+  const chatWide = window.matchMedia("(min-width: 900px)");
+  let userScrolledUp = false;
+
+  function chatScroller() {
+    return chatWide.matches ? elMessages : document.scrollingElement;
+  }
+
+  function scrollChatToBottom(smooth = false) {
+    const scroller = chatScroller();
+    if (smooth) scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    else scroller.scrollTop = scroller.scrollHeight;
+    userScrolledUp = false;
+    elBtnScrollBottom.classList.add("hidden");
+  }
+
+  function onChatScroll() {
+    const scroller = chatScroller();
+    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    userScrolledUp = distance > 80;
+    elBtnScrollBottom.classList.toggle("hidden", !userScrolledUp);
+  }
+
+  elMessages.addEventListener("scroll", onChatScroll, { passive: true });
+  window.addEventListener("scroll", onChatScroll, { passive: true });
+  chatWide.addEventListener("change", onChatScroll);
+  elBtnScrollBottom.addEventListener("click", () => scrollChatToBottom(true));
+
   function render() {
     const running = !!(current && current.running);
-    const nearBottom = elMessages.scrollHeight - elMessages.scrollTop - elMessages.clientHeight < 80;
+    const nearBottom = !userScrolledUp;
     const html = build(events, current).map(itemHtml);
     if (!html.length) html.push(current && current.kind === "pane"
       ? `<div class="empty">${paneEmpty(current)}</div>`
@@ -6962,7 +7011,7 @@
     });
     while (elMessages.children.length > html.length) elMessages.lastElementChild.remove();
     drawn = html;
-    if (nearBottom) window.SheepItScrollToBottom(elMessages);
+    if (nearBottom) scrollChatToBottom();
     elStop.classList.toggle("hidden", !running);
   }
 
@@ -7045,6 +7094,8 @@
     queued = []; settling.clear(); drawQueue();
     loadCommands(chat.id);
     elMessages.innerHTML = "";
+    userScrolledUp = false;
+    elBtnScrollBottom.classList.add("hidden");
     attachStrip.clear();
     const pane = chat.kind === "pane";
     $("btn-delete").classList.toggle("hidden", pane);
@@ -7311,7 +7362,7 @@
       elInput.value = ""; grow();
       hideMenu();
       attachStrip.clear();
-      window.SheepItScrollToBottom(elMessages);
+      scrollChatToBottom();
       render();
       // A pane's prompt is a queue row now. Held back for as long as delivery
       // takes, then shown: one that is still waiting when the grace is up is
