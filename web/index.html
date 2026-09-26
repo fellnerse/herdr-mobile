@@ -9,7 +9,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Sheep It">
-  <meta name="theme-color" content="#12151d">
+  <!-- Safari tints its own status strip and bottom URL bar with this, so it
+       has to be the colour at the screen's edges or it reads as a band laid
+       over the page. The flock is what the app opens on, so this is the
+       flock's background; syncThemeColor in app.js moves it to the surface
+       colour once a chat, whose top and bottom are both chrome, is open. -->
+  <meta name="theme-color" content="#090a0f">
 
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/svg+xml" href="/icon.svg">

@@ -71,6 +71,51 @@ def session_log(session_id: str) -> Path | None:
     return max(found, key=lambda p: p.stat().st_mtime) if found else None
 
 
+def project_dir(cwd: str) -> Path | None:
+    """Where Claude Code keeps the logs of sessions started in `cwd`.
+
+    The directory is the path with everything that is not a letter or a digit
+    turned into a dash - `/Users/me/.config/nix` becomes
+    `-Users-me--config-nix`. Which characters that covers has moved between
+    releases, so the underscore is tried both ways rather than assumed.
+    """
+    if not cwd:
+        return None
+    for pattern in (r"[^A-Za-z0-9]", r"[^A-Za-z0-9_]"):
+        candidate = CLAUDE_PROJECTS / re.sub(pattern, "-", cwd)
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def session_logs(cwd: str, limit: int = 12, days: int = 3) -> list:
+    """The session logs of one working directory, newest first.
+
+    What this is for is finding the session a Herdr pane is running when Herdr
+    itself does not say - so only logs something wrote to recently are worth
+    returning, and only a handful of those.
+    """
+    directory = project_dir(cwd)
+    if not directory:
+        return []
+    floor = time.time() - days * 86400
+    found = []
+    try:
+        for entry in directory.iterdir():
+            if entry.suffix != ".jsonl":
+                continue
+            try:
+                stamp = entry.stat().st_mtime
+            except OSError:
+                continue
+            if stamp >= floor:
+                found.append((stamp, entry))
+    except OSError:
+        return []
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    return [entry for _, entry in found[:limit]]
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 

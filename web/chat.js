@@ -26,6 +26,9 @@
   const openTools = new Set(); // tool cards somebody unfolded
   const picks = new Map();     // request_id -> {question: Set(labels)}
   let commands = null;         // [{name, description, hint}] for the open chat's project
+  let queued = [];             // what the queue is still holding for this pane
+  let queueTimer = null;
+  const settling = new Map();  // queue id -> when it stops being "just sent"
 
   /* iOS: follow the visual viewport, so the composer rides the keyboard. */
   function fitViewport() {
@@ -259,12 +262,20 @@
     return "";
   }
 
+  /* Why a pane's chat is empty. Three different reasons read as one blank
+     screen otherwise, and only the last of them is worth waiting through. */
+  function paneEmpty(chat) {
+    if (!chat.claude) return "There is no Claude Code in this pane.";
+    if (!chat.session) return "Found no session log for this pane yet — it appears once Claude Code has named the session.";
+    return "Nothing in this session yet.";
+  }
+
   function render() {
     const running = !!(current && current.running);
     const nearBottom = elMessages.scrollHeight - elMessages.scrollTop - elMessages.clientHeight < 80;
     const html = build(events, current).map(itemHtml);
     if (!html.length) html.push(current && current.kind === "pane"
-      ? `<div class="empty">${current.claude ? "Nothing in this session yet." : "There is no Claude Code in this pane."}</div>`
+      ? `<div class="empty">${paneEmpty(current)}</div>`
       : `<div class="empty">Ask Claude anything about ${esc(shortDir(current && current.cwd))}.</div>`);
     // Put back only what changed: the rest keeps its node, its image, its scroll.
     html.forEach((h, i) => {
@@ -358,6 +369,7 @@
     if (poll) poll.abort();
     current = chat; events = []; epoch = ""; drawn = []; openTools.clear(); picks.clear();
     commands = null; hideMenu();
+    queued = []; settling.clear(); drawQueue();
     loadCommands(chat.id);
     elMessages.innerHTML = "";
     clearAttached();
@@ -375,6 +387,7 @@
     elChat.classList.remove("hidden");
     if (location.hash !== "#" + chat.id) history.replaceState(null, "", "#" + chat.id);
     render();
+    fetchQueue();
     follow(chat.id);
   }
 
@@ -556,8 +569,95 @@
   elInput.addEventListener("input", () => { browsing = false; updateMenu(); });
   elInput.addEventListener("click", () => { if (!browsing) updateMenu(); });
 
-  /* ---- Composer. A message sent while Claude is still busy waits its turn
-     inside Claude Code, the way typing ahead in the terminal does. */
+  /* ---- The queue. A pane's prompt does not go to the pane: it goes to
+     /api/queue, and the dispatcher delivers it once the pane is free and the
+     subscription has room. That is the whole reason this strip exists - what
+     was sent into a spent window used to vanish between the composer and the
+     log, because nothing on this page was holding it. */
+  const elQueue = $("queue-strip");
+  const QUEUE_EVERY = 5000;
+  // Long enough for the ordinary case - a free pane in an open window - to
+  // deliver without ever drawing a chip that is taken away again.
+  const SETTLE_MS = 1500;
+
+  function owed(prompts) {
+    const now = Date.now();
+    return prompts.filter((p) => {
+      if (p.state === "sent") return false;
+      const until = settling.get(p.id);
+      if (until && now >= until) settling.delete(p.id);
+      return !(settling.has(p.id) && p.state === "waiting");
+    });
+  }
+
+  async function fetchQueue() {
+    if (!current || current.kind !== "pane") { queued = []; drawQueue(); return; }
+    const pane = current.pane_id;
+    try {
+      const data = await api("/api/queue");
+      if (!current || current.pane_id !== pane) return;
+      queued = owed((data.prompts || []).filter((p) => p.pane_id === pane));
+    } catch (e) {
+      return; // the poll's own error line already says the gateway is away
+    }
+    drawQueue();
+  }
+
+  /* Only while there is something to watch: an empty queue costs no requests. */
+  function keepWatching() {
+    if (queueTimer) clearInterval(queueTimer);
+    queueTimer = null;
+    if (!queued.length || !current || current.kind !== "pane") return;
+    queueTimer = setInterval(fetchQueue, QUEUE_EVERY);
+  }
+
+  function drawQueue() {
+    elQueue.classList.toggle("hidden", !queued.length);
+    elQueue.innerHTML = queued.map((p) => {
+      const failed = p.state === "failed";
+      return `<div class="queued${failed ? " failed" : ""}">
+        <span class="queued-state">${esc(failed ? "failed" : "queued")}</span>
+        <span class="queued-text">${esc(p.prompt || "")}</span>
+        ${failed && p.last_error ? `<span class="queued-why">${esc(p.last_error)}</span>` : ""}
+        <span class="queued-acts">
+          <button type="button" class="queued-act" data-q-edit="${p.id}">Edit</button>
+          <button type="button" class="queued-act accent" data-q-send="${p.id}">Send now</button>
+          <button type="button" class="queued-act danger" data-q-delete="${p.id}">Delete</button>
+        </span>
+      </div>`;
+    }).join("");
+    keepWatching();
+  }
+
+  async function queueAct(id, action) {
+    try {
+      await api(`/api/queue/${id}/${action}`, {});
+    } catch (e) {
+      alert(`Could not ${action} the prompt — ${e.message}`);
+    }
+    await fetchQueue();
+  }
+
+  elQueue.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const id = btn.dataset.qSend || btn.dataset.qDelete || btn.dataset.qEdit;
+    if (!id) return;
+    if (btn.dataset.qSend) { queueAct(id, "send"); return; }
+    if (btn.dataset.qDelete) { queueAct(id, "delete"); return; }
+    // Editing takes it back: the text lands in the box it was typed in, where
+    // the keyboard is already open, and sending it queues it again.
+    const row = queued.find((p) => String(p.id) === String(id));
+    if (!row) return;
+    elInput.value = row.prompt || "";
+    grow();
+    elInput.focus();
+    await queueAct(id, "delete");
+  });
+
+  /* ---- Composer. A pane's message waits for the window in the queue; a
+     headless chat's goes to its own process, where one sent mid-answer waits
+     its turn inside Claude Code the way typing ahead in the terminal does. */
   function grow() {
     elInput.style.height = "auto";
     elInput.style.height = elInput.scrollHeight + "px";
@@ -594,6 +694,14 @@
       clearAttached();
       elMessages.scrollTop = elMessages.scrollHeight;
       render();
+      // A pane's prompt is a queue row now. Held back for as long as delivery
+      // takes, then shown: one that is still waiting when the grace is up is
+      // waiting on something, and that is worth a line on the screen.
+      if (data.queued) {
+        settling.set(data.queued, Date.now() + SETTLE_MS);
+        setTimeout(fetchQueue, SETTLE_MS + 50);
+      }
+      fetchQueue();
     } catch (err) { alert(err.message); }
     elSend.disabled = false;
   });

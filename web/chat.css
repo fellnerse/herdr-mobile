@@ -132,6 +132,48 @@ details.tool pre {
   background: var(--bg-surface); border-top: 1px solid var(--border);
 }
 .attach-strip:not(.hidden) + .composer { border-top: 0; }
+
+/* What the queue is holding for this pane. A prompt into a spent window sits
+   here rather than disappearing between the composer and the log. */
+.queue-strip {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 8px 10px; background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+.queue-strip:not(.hidden) + .attach-strip,
+.queue-strip:not(.hidden) + .composer,
+.queue-strip:not(.hidden) + .attach-strip + .composer { border-top: 0; }
+.queued {
+  display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 8px;
+  padding: 9px 11px; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.queued.failed { border-color: rgba(248, 81, 73, 0.45); }
+.queued-state {
+  grid-row: 1; align-self: center; padding: 2px 7px; border-radius: 999px;
+  background: rgba(139, 148, 158, 0.15); color: var(--text-3);
+  font-size: 11px; font-weight: 600;
+}
+.queued.failed .queued-state { background: rgba(248, 81, 73, 0.15); color: var(--err); }
+/* Two lines of a prompt is enough to know which one it is. */
+.queued-text {
+  grid-row: 1; min-width: 0; font-size: 13px; color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.queued-why { grid-column: 1 / -1; font-size: 11px; color: var(--err); }
+/* Three equal buttons across the row: a thumb has the whole width to aim at,
+   and the one that deletes is as far from the one that sends as it can be. */
+.queued-acts { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 3px; }
+.queued-act {
+  flex: 1; min-width: 0; min-height: 42px;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0 10px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text-2); font-family: var(--font-sans); font-size: 13px; font-weight: 600;
+  white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.queued-act:active { filter: brightness(1.3); }
+.queued-act.accent { color: var(--accent); border-color: rgba(47, 129, 247, 0.4); }
+.queued-act.danger { color: var(--err); }
 .thumb { position: relative; flex: none; }
 .thumb img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; display: block; }
 .thumb.loading img { opacity: 0.4; }

@@ -60,36 +60,71 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* The document scrolls, and the flock is what is in it.
+ *
+ * Nothing here is fixed or overflow-hidden, because Safari only folds its URL
+ * bar away when the *document* is what moved: a list that scrolls inside an
+ * element leaves the bar sitting at the bottom of the screen for good, taking
+ * a strip of a phone with it. What that buys has to be paid for by every
+ * screen that is not the flock - `.app-container` and the `.full-view`s take
+ * themselves out of the flow, or the document would be two screens tall and a
+ * flick at the end of the list would carry you into the chat behind it.
+ */
 html, body {
   width: 100%;
-  height: 100%;
+  min-height: 100%;
   /* iOS inflates text it decides is "too small for its block" - and it decides
      per block, so in a diff the short lines (a comment, a closing brace) come
      out bigger than the code around them and read as headings. Every size here
      is deliberate; none of them want boosting. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  /* Matches the input dock so the home-indicator strip never reads as a
-     black band in standalone (home screen) mode. */
-  background-color: var(--bg-surface);
+  /* The colour behind everything, which is what the rubber-band at the end of
+     the list shows and what Safari's own bars are told to match - see the
+     theme-color meta and syncThemeColor in app.js. */
+  background-color: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--font-sans);
+}
+
+/* A screen that covers the flock has to stop the flock scrolling underneath
+   it, or you come back to the list somewhere you never left it. `overflow` on
+   the body is the viewport's, so this is the whole lock - and because nothing
+   about the layout moves, the place you were is still there when it lifts. */
+body:has(.full-view:not(.hidden)),
+body:has(.sheet-backdrop:not(.hidden)) {
   overflow: hidden;
-  position: fixed;
-  top: 0;
-  left: 0;
 }
 
 /* App Container layout */
 .app-container {
   display: flex;
   flex-direction: column;
+  /* Out of the flow, because the document belongs to the flock: a chat is
+     exactly one screen tall and has its own scrollers inside it, so leaving
+     it in would only add a second screen to scroll past. It stays rendered
+     behind the flock rather than display:none - the transcript is kept warm
+     on purpose, and an unrendered one loses where it was scrolled to. */
+  position: fixed;
+  top: 0;
+  left: 0;
   /* --app-height tracks the visual viewport (set in JS) so the keyboard
      shrinks the transcript rather than pushing the header off screen. */
   height: var(--app-height, 100dvh);
   transform: translateY(var(--app-offset, 0px));
   width: 100vw;
   background-color: var(--bg-base);
+}
+
+/* Warm, but not on screen. The flock is in the flow and the chat is fixed
+   behind it, so the rubber-band at the end of the list slides the flock up
+   while the chat stays pinned to the viewport - and a strip of somebody's
+   transcript appears under the last project. Painting nothing there leaves
+   the body's own colour, which is what the bounce is supposed to show.
+   `visibility` rather than `display`, so the box is still laid out and the
+   transcript keeps where it was scrolled to. */
+body:has(.agent-picker:not(.hidden)) .app-container {
+  visibility: hidden;
 }
 
 /* Header: agent switcher + settings gear, no branding */
@@ -278,25 +313,38 @@ html, body {
   border-color: var(--accent-primary);
 }
 
-/* Full-screen project picker */
+/* The project picker, which is the page - the one thing in the document's
+   flow, so that scrolling the list is scrolling the document and Safari puts
+   its URL bar away. Tall enough to fill the screen on its own so the chat
+   behind it never shows through; no taller, or there would be a strip of
+   nothing to scroll past at the end of a short list. */
 .agent-picker {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
+  position: relative;
+  z-index: 1;
+  min-height: 100dvh;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
-  padding-top: var(--safe-top);
 }
 
 .agent-picker.hidden { display: none; }
 
 .picker-head {
   flex-shrink: 0;
+  /* The list is the document now, so the head holds itself at the top rather
+     than being a sibling above a scrolling box. It carries the status-bar
+     inset for the same reason: the padding that used to sit on the picker
+     would scroll away with everything else and put the title under the
+     clock. */
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 12px 12px 16px;
+  padding-top: calc(12px + var(--safe-top));
+  background: var(--bg-base);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -325,9 +373,7 @@ html, body {
 .picker-new:active { filter: brightness(0.9); }
 
 .agent-list {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  flex: 1 0 auto;
   padding: 8px 12px max(12px, var(--safe-bottom)) 12px;
 }
 
@@ -366,7 +412,10 @@ html, body {
 
 .agent-group-head {
   position: sticky;
-  top: -8px;
+  /* Under the picker head, whose height app.js measures into --picker-head-h:
+     both are sticky against the same viewport now, and a heading that stopped
+     at 0 would slide behind the title. */
+  top: calc(var(--picker-head-h, 56px) - 8px);
   z-index: 1;
   display: flex;
   align-items: baseline;
@@ -2866,22 +2915,35 @@ html, body {
 }
 
 @media (min-width: 900px) {
+  /* Two columns that do not move: there is no URL bar to fold away here, so
+     the window is the frame and each column scrolls inside it. This is the
+     one place the document itself must not scroll - a page that scrolled
+     would carry the flock off the top of a screen that has room for it. */
   body {
     display: flex;
     width: 100vw;
     height: 100vh;
+    overflow: hidden;
   }
 
   .agent-picker {
-    position: relative;
-    inset: auto;
-    z-index: 1;
     order: -1;
     flex: 0 0 auto;
     width: var(--flock-width);
+    min-height: 0;
     height: var(--app-height, 100vh);
     border-right: 1px solid var(--border-subtle);
   }
+
+  /* Back to a box with its own overflow, and a head that is the top of it. */
+  .agent-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .agent-group-head { top: -8px; }
 
   /* Closing it is what a phone does. Here it is the furniture. */
   .agent-picker.hidden { display: flex; }
@@ -2902,6 +2964,14 @@ html, body {
     width: auto;
     min-width: 0;
     position: relative;
+    top: auto;
+    left: auto;
+  }
+
+  /* The flock is always open here, and the chat is the column beside it
+     rather than something behind it - nothing to hide. */
+  body:has(.agent-picker:not(.hidden)) .app-container {
+    visibility: visible;
   }
 
   /* Both of these say "go back to the list", and the list never left. */

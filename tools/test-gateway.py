@@ -1011,7 +1011,15 @@ with tempfile.TemporaryDirectory() as tmp:
 check("gemini model is not 3p", quota._model_is_3p("google-antigravity/gemini-3.8-flash"), False)
 check("claude opus is 3p", quota._model_is_3p("Claude Opus 4.6 (Thinking)"), True)
 check("gpt model is 3p", quota._model_is_3p("gpt-5.2"), True)
-check("current('antigravity') maps to agy", quota.current("antigravity", ttl=0).agent, "agy")
+# Only the alias is under test here, so the source is stubbed: reaching the
+# real one needs an OMP install, and a machine without one used to abort the
+# whole suite at this line.
+_agy_source = quota.SOURCES["agy"]
+quota.SOURCES["agy"] = lambda: quota.Quota((), None, False, agent="agy")
+try:
+    check("current('antigravity') maps to agy", quota.current("antigravity", ttl=0).agent, "agy")
+finally:
+    quota.SOURCES["agy"] = _agy_source
 
 # -- typing into somebody's session -----------------------------------------
 
@@ -2060,6 +2068,57 @@ try:
 finally:
     heartbeat.subprocess.run = orig_run
     heartbeat._model_cache.pop("omp", None)
+# ---- One send path ---------------------------------------------------------
+# Every prompt the phone sends - the transcript's, a pane chat's, the queue
+# tool's - goes through this one function, so a window that is out holds all of
+# them. A shell is the exception it has to make: nothing would ever deliver
+# into a pane with no agent in it, so that goes to the terminal as typed input.
+
+_qp_rpc, _qp_add = server.call_herdr_rpc, server.sched_db.add
+qp_panes = {
+    "wA:p1": {"pane_id": "wA:p1", "agent_status": "idle", "workspace_id": "wA",
+              "cwd": "/tmp/proj", "agent_session": {"kind": "id", "value": "s-1"}},
+    "wA:p2": {"pane_id": "wA:p2", "agent_status": "", "cwd": "/tmp/proj"},
+}
+qp_sent, qp_added = [], []
+
+
+def qp_rpc(method, params=None, timeout=5.0):
+    if method == "pane.get":
+        pane = qp_panes.get((params or {}).get("pane_id"))
+        return {"result": {"pane": pane}} if pane else {"result": {}}
+    qp_sent.append((method, params))
+    return {"result": {}}
+
+
+server.call_herdr_rpc = qp_rpc
+server.sched_db.add = lambda conn, **kw: (qp_added.append(kw) or 77)
+try:
+    check("an empty prompt is not queued",
+          server.queue_prompt("wA:p1", "   "), ({"ok": False, "error": "Empty prompt"}, 400))
+    check("a prompt with no pane is not queued",
+          server.queue_prompt("", "hi"), ({"ok": False, "error": "No chat given"}, 400))
+    check("a pane Herdr does not have is not queued",
+          server.queue_prompt("wZ:p9", "hi")[1], 404)
+
+    payload, code = server.queue_prompt("wA:p1", "  fix the login page  ")
+    check("an agent's prompt becomes a queue row", (payload, code), ({"ok": True, "id": 78}, 200))
+    check("recorded with what outlives the pane",
+          {k: qp_added[-1][k] for k in ("pane_id", "prompt", "workspace_id", "session_uuid", "cwd")},
+          {"pane_id": "wA:p1", "prompt": "fix the login page", "workspace_id": "wA",
+           "session_uuid": "s-1", "cwd": "/tmp/proj"})
+    check("and never sent to the pane behind the queue's back", qp_sent, [])
+
+    payload, code = server.queue_prompt("wA:p2", "claude")
+    check("a shell is typed into instead, since nothing would deliver to it",
+          (payload, code), ({"ok": True, "delivered": "terminal"}, 200))
+    check("as text and a return",
+          qp_sent, [("pane.send_text", {"pane_id": "wA:p2", "text": "claude"}),
+                    ("pane.send_keys", {"pane_id": "wA:p2", "keys": ["enter"]})])
+    check("and no row is kept for it", len(qp_added), 1)
+finally:
+    server.call_herdr_rpc, server.sched_db.add = _qp_rpc, _qp_add
+
 # ---- A Herdr pane read as a chat -------------------------------------------
 # The session log Claude Code writes is the transcript; a tool call with no
 # result in a blocked pane is the permission prompt.
@@ -2146,19 +2205,117 @@ try:
     check("pane chat: a new session (/clear) reads from the top",
           (pc.epoch != before, since, events, nxt), (True, 0, [], 0))
 
-    try:
-        pc.send("hi", [])
-        failures.append("FAIL pane chat: a blocked pane should refuse a message")
-    except ValueError:
-        pass
+    # A message leaves through the queue, never through agent.prompt: one send
+    # path is what makes a spent window hold what was typed into the chat view
+    # as well as what was typed into the transcript.
+    queue_calls = []
+
+    def fake_queue(pane_id, prompt):
+        queue_calls.append((pane_id, prompt))
+        return {"ok": True, "id": len(queue_calls)}, 200
+
+    panechat.init(fake_queue)
+    check("pane chat: a pane sitting on a question holds the message rather than refusing it",
+          (pc.send("hold this", []), queue_calls[-1]), (1, ("wX:p1", "hold this")))
     fake_pane["agent_status"] = "idle"
     pc.refresh()
-    pc.send("hi", [])
-    check("pane chat: a message is agent.prompt", sent[-1], ("agent.prompt", {"target": "wX:p1", "text": "hi"}))
+    check("pane chat: a message is a queue row", (pc.send("hi", []), queue_calls[-1]),
+          (2, ("wX:p1", "hi")))
+    check("pane chat: nothing is sent straight to the pane any more",
+          [m for m, _ in sent if m == "agent.prompt"], [])
+
+    panechat.init(lambda pane_id, prompt: ({"ok": False, "error": "Empty prompt"}, 400))
+    try:
+        pc.send("hi", [])
+        failures.append("FAIL pane chat: a queue that refused a prompt should say so")
+    except ValueError as e:
+        check("pane chat: the queue's refusal is what reaches the page", str(e), "Empty prompt")
+
     check("pane chat: a pane Herdr does not have is no chat",
           panechat.get("not a pane"), None)
 finally:
     panechat.call_herdr_rpc, panechat.tokens.session_log = orig
+    panechat._queue = None
+
+# ---- Finding the session Herdr does not name -------------------------------
+# This Herdr carries no `agent_session` at all, so the log is found by hand:
+# the project directory comes from the cwd, and the pane's own title picks
+# between the sessions a repository has accumulated. Picking wrong here shows
+# somebody else's conversation as yours, so the tie is what is tested.
+
+projects = Path(tempfile.mkdtemp(prefix="sheepit-projects-"))
+one = projects / "-tmp-two"
+one.mkdir()
+ALPHA = "11111111-0000-4000-8000-000000000000"
+BETA = "22222222-0000-4000-8000-000000000000"
+
+
+def titled(session_id, title, text):
+    """A session log as Claude Code writes one: the title again on every turn."""
+    path = one / f"{session_id}.jsonl"
+    path.write_text(
+        json.dumps({"type": "ai-title", "aiTitle": title, "sessionId": session_id}) + "\n"
+        + entry("user", text)
+        + json.dumps({"type": "ai-title", "aiTitle": title, "sessionId": session_id}) + "\n")
+    return path
+
+
+alpha = titled(ALPHA, "Alpha work", "what alpha asked")
+time.sleep(0.01)
+beta = titled(BETA, 'Beta "quoted" work', "what beta asked")
+
+untitled = {"pane_id": "wY:p1", "agent": "claude", "agent_status": "idle",
+            "cwd": "/tmp/two", "foreground_cwd": "/tmp/two",
+            "terminal_title_stripped": 'Beta "quoted" work'}
+
+orig_projects = tokens.CLAUDE_PROJECTS
+tokens.CLAUDE_PROJECTS = projects
+panechat.call_herdr_rpc = lambda m, p=None, timeout=5.0: (
+    {"result": {"pane": dict(untitled)}} if m == "pane.get" else {"result": {}})
+try:
+    check("project dir: every character that is not a letter or a digit is a dash",
+          tokens.project_dir("/tmp/two"), one)
+    check("project dir: a cwd nothing was ever started in has none",
+          tokens.project_dir("/tmp/nowhere"), None)
+    check("session logs: newest first",
+          tokens.session_logs("/tmp/two"), [beta, alpha])
+    check("log title: the last one written, quotes and all",
+          panechat.log_title(beta), 'Beta "quoted" work')
+
+    pc = panechat.get("wY:p1")
+    check("no agent_session: the pane's title picks its log",
+          (pc.session, [e.get("text") for e in pc.events]),
+          (BETA, ["what beta asked"]))
+    check("no agent_session: found means found", pc.summary()["session"], True)
+
+    # The same pane retitled is a different session: /clear, or one renamed.
+    untitled["terminal_title_stripped"] = "Alpha work"
+    pc.refresh()
+    check("a retitled pane is looked up again",
+          (pc.session, [e.get("text") for e in pc.events]),
+          (ALPHA, ["what alpha asked"]))
+
+    # And the tie it must refuse: a title matching nothing, with two to choose
+    # from. An empty chat is better than the wrong conversation.
+    untitled["terminal_title_stripped"] = "Claude Code"
+    pc.refresh()
+    check("a pane too new to be titled is not guessed at",
+          (pc.session, pc.events, pc.summary()["session"]), (None, [], False))
+    check("but the pane is still a Claude Code one", pc.summary()["claude"], True)
+
+    untitled["agent"] = None
+    pc.refresh()
+    check("a pane with no agent is not Claude Code either", pc.summary()["claude"], False)
+
+    # One session in the directory is no tie at all, so an untitled pane in a
+    # repository with a single log is still found.
+    beta.unlink()
+    untitled["agent"] = "claude"
+    pc.refresh()
+    check("with one log there is nothing to get wrong", pc.session, ALPHA)
+finally:
+    tokens.CLAUDE_PROJECTS = orig_projects
+    panechat.call_herdr_rpc = orig[0]
 
 # ---- What a turn cost, and only when somebody is billed for it -------------
 # `claude` prices every turn whether or not the tokens are invoiced, so the

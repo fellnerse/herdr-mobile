@@ -35,9 +35,17 @@ from herdr_rpc import call_herdr_rpc
 KEEP = 400
 # How often a waiting poll looks at the log and the pane again.
 POLL = 0.5
+# How much of a log's end is read to find out which session it is. Claude Code
+# writes its title line again on every turn, so the newest one is always within
+# a few thousand bytes of the end however long the session has run.
+IDENTIFY_BYTES = 128 * 1024
+# How long a working pane's log may stay silent before we suspect it is not
+# that pane's log any more.
+QUIET_AFTER = 20.0
 
 COMMAND_NAME = re.compile(r"<command-name>([^<]*)</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>([^<]*)</command-args>")
+AI_TITLE = re.compile(r'"(?:aiTitle|agentName)"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
 
 def slim_log(entry: dict) -> dict | None:
@@ -63,6 +71,44 @@ def slim_log(entry: dict) -> dict | None:
     return {"type": "prompt", "text": text, "images": []} if text else None
 
 
+# path -> (the size it was read at, the title found in it). Reading a tail is
+# cheap but not free, and a log that has not grown cannot have been retitled.
+_TITLES: dict = {}
+
+
+def log_title(path: Path) -> str:
+    """The title Claude Code last wrote into a session log.
+
+    It writes the same string Herdr reports as the pane's terminal title, and
+    writes it again on every turn - so the end of the file carries the current
+    one however long the session has run, and a tail is enough to identify a
+    log without reading the megabytes in front of it.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    seen = _TITLES.get(path)
+    if seen and seen[0] == size:
+        return seen[1]
+    try:
+        with open(path, "rb") as f:
+            if size > IDENTIFY_BYTES:
+                f.seek(size - IDENTIFY_BYTES)
+            chunk = f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    found = AI_TITLE.findall(chunk)
+    title = ""
+    if found:
+        try:
+            title = json.loads('"' + found[-1] + '"')
+        except ValueError:
+            title = found[-1]
+    _TITLES[path] = (size, title)
+    return title
+
+
 class PaneChat:
     def __init__(self, pane_id: str):
         self.pane_id = pane_id
@@ -70,6 +116,10 @@ class PaneChat:
         self.pane: dict = {}
         self.session = None
         self.path: Path | None = None
+        # The pane title the log now being tailed was picked for, and when that
+        # log last grew: between them they say when to go looking again.
+        self.title_seen = None
+        self.grew_at = 0.0
         self.offset = 0
         self.tail = b""
         self.events: list[dict] = []
@@ -97,6 +147,15 @@ class PaneChat:
     def dir(self) -> Path:
         return chat.CHAT_DIR / "panes" / self.pane_id.replace(":", "-")
 
+    @property
+    def is_claude(self) -> bool:
+        """Whether there is a Claude Code in this pane at all."""
+        return self.pane.get("agent") == "claude"
+
+    @property
+    def title(self) -> str:
+        return self.pane.get("terminal_title_stripped") or ""
+
     def refresh(self) -> bool:
         """Read the pane and whatever the log gained; False for a pane that is gone."""
         res = call_herdr_rpc("pane.get", {"pane_id": self.pane_id})
@@ -104,16 +163,81 @@ class PaneChat:
         if not pane:
             return False
         self.pane = pane
-        session = pane.get("agent_session") or {}
-        sid = session.get("value") if pane.get("agent") == "claude" and session.get("kind") == "id" else None
-        if sid != self.session:
-            self.session, self.path = sid, None
-            self._restart()
-        if self.session and not self.path:
-            self.path = tokens.session_log(self.session)  # written with the first message
+        self._resolve()
         self._read_log()
         self._raise_ask()
         return True
+
+    def _adopt(self, session, path):
+        """Start again on another session - or on none."""
+        self.session, self.path = session, path
+        self.title_seen = self.title
+        self.grew_at = time.time()
+        self._restart()
+
+    def _resolve(self):
+        """Which session this pane is in, and so which log there is to tail.
+
+        Herdr says so in `agent_session`, on a version that carries one. Where
+        it does not, the log is found by hand: Claude Code files its sessions
+        under a directory named after the cwd and writes the pane's own title
+        into each of them, so the title is what picks between the several a
+        repository accumulates.
+
+        The picking is not redone every poll. It stands until the pane's title
+        changes, or until a working pane's log has gone quiet for a while -
+        which is what a `/clear` into a fresh session looks like from here.
+        """
+        if not self.is_claude:
+            if self.session or self.path:
+                self._adopt(None, None)
+            return
+
+        session = self.pane.get("agent_session") or {}
+        if session.get("kind") == "id" and session.get("value"):
+            sid = session["value"]
+            if sid != self.session:
+                self._adopt(sid, tokens.session_log(sid))
+            elif not self.path:
+                # The log is written with the first message, not with the pane.
+                self.path = tokens.session_log(sid)
+            return
+
+        if self.path and self.title == self.title_seen and not self._gone_quiet():
+            return
+        path = self._find_log()
+        if path != self.path:
+            self._adopt(path.stem if path else None, path)
+        else:
+            self.title_seen = self.title
+            self.grew_at = time.time()
+
+    def _gone_quiet(self) -> bool:
+        """The pane is working and the log we are watching is not: wrong log.
+
+        A long tool call is quiet too, so this is allowed to be wrong - being
+        wrong costs one directory scan, and the scan finds the same log again.
+        """
+        return self.status == "working" and time.time() - self.grew_at > QUIET_AFTER
+
+    def _find_log(self) -> "Path | None":
+        """The log of the session this pane is in, by its title; None for
+        nothing certain enough to show.
+
+        A pane too new to have been given a title cannot be told from its
+        neighbours, and the one place that must not guess is a repository with
+        several sessions in it - somebody else's conversation drawn as yours is
+        worse than an empty screen, and the title arrives within a turn or two.
+        """
+        logs = tokens.session_logs(self.cwd)
+        if not logs:
+            return None
+        title = self.title
+        if title and title != "Claude Code":
+            for path in logs:
+                if log_title(path) == title:
+                    return path
+        return logs[0] if len(logs) == 1 else None
 
     def _restart(self):
         self.offset, self.tail, self.events, self.model = 0, b"", [], ""
@@ -128,6 +252,7 @@ class PaneChat:
                 self._restart()  # rewritten under us: read it again
             if size == self.offset:
                 return
+            self.grew_at = time.time()
             with open(self.path, "rb") as f:
                 f.seek(self.offset)
                 data = self.tail + f.read(size - self.offset)
@@ -181,12 +306,16 @@ class PaneChat:
     # ---- what chat.py's routes call --------------------------------------
 
     def summary(self) -> dict:
-        title = self.pane.get("terminal_title_stripped") or ""
+        title = self.title
         if not title or title == "Claude Code":
             title = self.cwd.rsplit("/", 1)[-1] or self.pane_id
+        # Two different nothings: a pane running no Claude Code, and one whose
+        # session has not been found. They read identically to somebody looking
+        # at an empty chat, so the page is told which it is.
         return {"id": "pane:" + self.pane_id, "kind": "pane", "pane_id": self.pane_id,
                 "title": title, "cwd": self.cwd, "model": self.model, "mode": "",
-                "status": self.status, "claude": bool(self.session),
+                "status": self.status, "claude": self.is_claude,
+                "session": bool(self.session),
                 "running": self.status == "working", "pending": list(self.pending)}
 
     def read(self, since: int, epoch: str, wait: float) -> tuple[int, list, int]:
@@ -218,16 +347,29 @@ class PaneChat:
             raise ValueError(res["error"].get("message") or "Herdr refused the keys")
 
     def send(self, text: str, images: list):
-        if not self.session:
+        """Queue a prompt for the pane. The id of the row, or None for one that
+        went straight into a shell.
+
+        A pane sitting on a question is no longer refused: the queue holds text
+        typed at it until the question is answered, which keeps the message
+        rather than making somebody remember what they had written.
+        """
+        if not self.is_claude:
             raise ValueError("There is no Claude Code in this pane")
-        if self.status == "blocked":
-            raise ValueError("It is waiting on a question - answer that first")
+        if not self.session:
+            raise ValueError("Found no session log for this pane yet")
         # An image goes as its path, which Claude Code reads like any file.
         paths = ["@" + str(self.dir / n) for n in images if chat.read_image(self.dir, n)[0] is not None]
         text = "\n".join([text.strip()] + paths).strip()
-        res = call_herdr_rpc("agent.prompt", {"target": self.pane_id, "text": text})
-        if "error" in res:
-            raise ValueError(res["error"].get("message") or "Herdr refused the prompt")
+        if _queue is None:
+            raise ValueError("The queue is not running")
+        payload, _ = _queue(self.pane_id, text)
+        if not payload.get("ok"):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                error = error.get("message")
+            raise ValueError(error or "The queue refused the prompt")
+        return payload.get("id")
 
     def answer(self, request_id: str, behavior: str, answers: dict | None = None):
         with self.lock:
@@ -273,6 +415,16 @@ class PaneChat:
 
 _PANES: dict[str, PaneChat] = {}
 _LOCK = threading.Lock()
+# How a prompt leaves here. The gateway hands over its queue, so a pane read as
+# a chat sends the same way the transcript does - `agent.prompt` from here
+# would be a second door into a window the queue is holding shut.
+_queue = None
+
+
+def init(queue_fn) -> None:
+    """queue_fn(pane_id, prompt) -> (payload, status), as /api/queue answers."""
+    global _queue
+    _queue = queue_fn
 
 
 def get(pane_id: str) -> PaneChat | None:

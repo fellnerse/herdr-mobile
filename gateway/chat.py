@@ -598,11 +598,14 @@ def handle_send(handler, body):
         handler.send_json({"ok": False, "error": "Need a chat and something to say"}, 400)
         return
     try:
-        chat.send(text, images)
+        # A pane's send joins the queue and comes back with the row's id, so the
+        # page can show what is being held; a headless chat has no pane to queue
+        # for and answers with nothing.
+        queued = chat.send(text, images)
     except ValueError as e:
         handler.send_json({"ok": False, "error": str(e)}, 400)
         return
-    handler.send_json({"ok": True, "chat": chat.summary()})
+    handler.send_json({"ok": True, "chat": chat.summary(), "queued": queued})
 
 
 def handle_answer(handler, body):

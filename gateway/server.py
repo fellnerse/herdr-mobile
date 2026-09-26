@@ -454,8 +454,63 @@ def chat_notify(title: str, body: str, url: str) -> None:
         threading.Thread(target=push.broadcast, daemon=True).start()
 
 
+def queue_prompt(pane_id: str, prompt: str) -> tuple:
+    """Queue one prompt for one pane; the payload and status to answer with.
+
+    There is one of these because there is one send path: whatever the phone is
+    looking at - the transcript, a pane read as a chat, the queue tool - a
+    prompt joins the queue and the dispatcher decides when the pane and the
+    window can take it. Sending straight to `agent.prompt` from a second place
+    is how a spent window gets written into anyway.
+    """
+    prompt = (prompt or "").strip()
+    pane_id = (pane_id or "").strip()
+    if not prompt:
+        return {"ok": False, "error": "Empty prompt"}, 400
+    if not pane_id:
+        return {"ok": False, "error": "No chat given"}, 400
+
+    pane = call_herdr_rpc("pane.get", {"pane_id": pane_id}).get("result", {}).get("pane")
+    if not pane:
+        return {"ok": False, "error": f"No such chat: {pane_id}"}, 404
+
+    # A pane with no agent in it is a shell, and the queue has nothing to
+    # deliver into: holding here waits on an agent that nothing will ever
+    # start. So it goes to the terminal as typed input, which is also what
+    # lets `claude` sent from the phone open the session.
+    status = pane.get("agent_status")
+    if not status or status == "unknown":
+        res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
+        if "error" not in res:
+            res = call_herdr_rpc(
+                "pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]}
+            )
+        if "error" in res:
+            return res, 400
+        return {"ok": True, "delivered": "terminal"}, 200
+
+    conn = sched_db.connect()
+    try:
+        prompt_id = sched_db.add(
+            conn,
+            pane_id=pane_id,
+            prompt=prompt,
+            # Recorded now so a prompt can outlive the pane it was queued
+            # for: this is what a reboot resumes from.
+            workspace_id=pane.get("workspace_id"),
+            session_uuid=(pane.get("agent_session") or {}).get("value"),
+            cwd=pane.get("cwd"),
+        )
+    finally:
+        conn.close()
+    if SCHEDULER is not None:
+        SCHEDULER.wake()
+    return {"ok": True, "id": prompt_id}, 200
+
+
 chat.init_chat_routes(register_api_route, chat_dirs, chat_notify)
 chat.register_kind("pane", panechat.get)
+panechat.init(queue_prompt)
 heartbeat.set_notifier(chat_notify)
 
 
@@ -1181,54 +1236,8 @@ class HerdrHandler(BaseHTTPRequestHandler):
         # that pane is free and the subscription has room - which, for an idle
         # pane in an open window, is within the second.
         if path == "/api/queue":
-            prompt = (body.get("prompt") or "").strip()
-            pane_id = (body.get("pane_id") or "").strip()
-            if not prompt:
-                self.send_json({"ok": False, "error": "Empty prompt"}, 400)
-                return
-            if not pane_id:
-                self.send_json({"ok": False, "error": "No chat given"}, 400)
-                return
-
-            pane = call_herdr_rpc("pane.get", {"pane_id": pane_id}).get("result", {}).get("pane")
-            if not pane:
-                self.send_json({"ok": False, "error": f"No such chat: {pane_id}"}, 404)
-                return
-
-            # A pane with no agent in it is a shell, and the queue has nothing
-            # to deliver into: holding here waits on an agent that nothing will
-            # ever start. So it goes to the terminal as typed input, which is
-            # also what lets `claude` sent from the phone open the session.
-            status = pane.get("agent_status")
-            if not status or status == "unknown":
-                res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
-                if "error" not in res:
-                    res = call_herdr_rpc(
-                        "pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]}
-                    )
-                if "error" in res:
-                    self.send_json(res, 400)
-                    return
-                self.send_json({"ok": True, "delivered": "terminal"})
-                return
-
-            conn = sched_db.connect()
-            try:
-                prompt_id = sched_db.add(
-                    conn,
-                    pane_id=pane_id,
-                    prompt=prompt,
-                    # Recorded now so a prompt can outlive the pane it was
-                    # queued for: this is what a reboot resumes from.
-                    workspace_id=pane.get("workspace_id"),
-                    session_uuid=(pane.get("agent_session") or {}).get("value"),
-                    cwd=pane.get("cwd"),
-                )
-            finally:
-                conn.close()
-            if SCHEDULER is not None:
-                SCHEDULER.wake()
-            self.send_json({"ok": True, "id": prompt_id})
+            payload, code = queue_prompt(body.get("pane_id"), body.get("prompt"))
+            self.send_json(payload, code)
             return
 
         # API: act on a queued prompt. /api/queue/{id}/{delete|update}

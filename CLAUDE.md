@@ -10,7 +10,9 @@ Herdr's UNIX sockets and serves a home-screen web app to an iPhone over
 Tailscale. `README.md` describes the features from the user's side; `docs/`
 carries the detail (`gateway.md` — running and routes, `push.md` — iOS
 notifications, `design.md` — the sheep, the parsing, the console,
-`scheduler.md` — the prompt queue and the usage windows it waits for).
+`scheduler.md` — the prompt queue and the usage windows it waits for,
+`views.md` — the console, the transcript and the chat, and the plan folding
+them into one).
 
 ## Hard constraints
 
@@ -178,7 +180,11 @@ its `label`, not its `number` — see `tabNumber`.
 **The queue waits for the window.** Prompts from the phone go to `/api/queue`
 rather than straight to an agent: `gateway/scheduler/` holds them in SQLite and
 `dispatch.py` sends them as soon as the pane can take one (or immediately, via
-`/api/queue/{id}/send`). **Only a window that is actually out holds a prompt** —
+`/api/queue/{id}/send`). **One function queues them all** — `queue_prompt` in
+`server.py`, which the route and `panechat.send` both call, the latter through
+the hook `panechat.init` is handed at startup. A second call to `agent.prompt`
+with somebody's prompt in it is a hole in the hold the size of whatever view
+made it, which is exactly what the chat view was until `docs/views.md` phase 1. **Only a window that is actually out holds a prompt** —
 100% or a lock that was earned, never `threshold` and never an unreadable
 reading; a hold is forever, since nothing retries what the sweep declined to
 send. `quota.py` reads usage per agent, since Claude and Codex
@@ -312,6 +318,27 @@ refuses paths that escape the pane's directory.
 - **iOS keyboard and layout**: height is driven from `visualViewport` rather
   than `dvh`, with `interactive-widget=resizes-content`. Don't "simplify" it
   back to CSS viewport units.
+- **The flock is the document; everything else is fixed over it.** Safari only
+  folds its URL bar away when the *document* scrolled, so on a phone
+  `.agent-picker` is the one thing in the flow (`.picker-head` sticky, carrying
+  the safe-area inset) and `.app-container` and every `.full-view` are
+  `position: fixed` out of it — otherwise the page is two screens tall and the
+  end of the list runs into the chat. Past 900px it inverts: `body` is
+  `overflow: hidden` and each column scrolls itself, because a window has no
+  URL bar to fold and a document that scrolled would carry the flock off the
+  top of it. Three things follow, and each is a bug if forgotten: a screen laid
+  over the flock locks `body` (`:has(.full-view:not(.hidden))`) or you come
+  back to the list somewhere you never left it; closing the flock empties the
+  flow, so the scroll position is kept by hand (`keepFlockScroll`); the chat
+  waiting behind the flock is `visibility: hidden` while it is open, since the
+  rubber-band at the end of the list slides the flock up and leaves whatever is
+  pinned behind it showing; and the
+  drag-to-reorder arithmetic reads the list's box live rather than caching it
+  (`pointInList`), since the list now slides under the finger.
+- **`theme-color` is the colour at the screen's edges, not a brand colour.**
+  Safari paints its status strip and its URL bar with it, so anything but what
+  is actually under them reads as a shade laid over the page — which is what
+  `syncThemeColor` moves between the flock's base colour and a chat's surface.
 - **Naming.** Everything belonging to this repo is SheepIt — `SHEEPIT_*`,
   `~/.config/sheepit/`, `com.sheepit.*`. *Herdr* and *Tailscale* are named only
   where they are literally meant (Herdr's sockets and RPC, Tailscale's commands).

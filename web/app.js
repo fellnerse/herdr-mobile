@@ -68,6 +68,7 @@
   const elAgentSelectName = document.getElementById("agent-select-name");
   const elTabStrip = document.getElementById("tab-strip");
   const elAgentPicker = document.getElementById("agent-picker");
+  const elPickerHead = elAgentPicker.querySelector(".picker-head");
   const elAgentList = document.getElementById("agent-list");
   const elBtnClosePicker = document.getElementById("btn-close-picker");
   const elBtnNewWorkspace = document.getElementById("btn-new-workspace");
@@ -2414,6 +2415,52 @@
     return { ...data, refusal: (error && error.message) || error || "refused" };
   }
 
+  /* Safari paints its status strip and its bottom URL bar in theme-color, and
+     anything but the colour actually under them reads as a shade laid over the
+     page - which is what put a band across the Projects header. The flock's
+     edges are the base colour; a chat's are its header and its input dock,
+     both the surface colour. So the meta follows whichever is on screen rather
+     than naming one of the two and being wrong about the other. Past 900px
+     both are up at once and the flock owns the left edge, so it wins. */
+  const elThemeColor = document.querySelector('meta[name="theme-color"]');
+
+  function syncThemeColor() {
+    if (!elThemeColor) return;
+    const onFlock = state.pickerOpen || wide.matches;
+    elThemeColor.setAttribute("content", onFlock ? "#090a0f" : "#12151d");
+  }
+
+  /* The flock is the document, which is what lets Safari fold its URL bar
+     away - and the price of that is that closing the flock takes the only
+     thing in the flow out of it, so the page has nowhere left to be scrolled
+     to and the browser puts it back at zero. Remember where the list was and
+     hand it back, or every chat you come out of drops you at the top of it.
+     Past 900px the flock is a column with its own scrollTop and none of this
+     applies. */
+  let flockScroll = 0;
+
+  function keepFlockScroll() {
+    if (wide.matches) return;
+    flockScroll = window.scrollY;
+  }
+
+  function restoreFlockScroll() {
+    if (wide.matches || !flockScroll) return;
+    // After the layout: the picker is only just back in the flow, so until it
+    // has been laid out the document is still one screen tall and a scroll
+    // would clamp to nothing.
+    requestAnimationFrame(() => window.scrollTo(0, flockScroll));
+  }
+
+  /* A project heading sticks below the picker head, and the head's height is
+     the status bar inset plus whatever the title and the button come to - a
+     number only the browser knows, and one that changes with the notch and
+     with rotation. Measure it into the variable the CSS reads. */
+  function measurePickerHead() {
+    const h = elPickerHead ? elPickerHead.getBoundingClientRect().height : 0;
+    if (h) document.documentElement.style.setProperty("--picker-head-h", `${h}px`);
+  }
+
   /* Home. Not a sheet over a chat any more: this is the screen the app starts
      on and the one a chat is backed out of. */
   function showFlock() {
@@ -2423,6 +2470,8 @@
     renderQuota();
     fetchQuota();
     syncPickerChrome();
+    syncThemeColor();
+    restoreFlockScroll();
   }
 
   function openPicker() {
@@ -2434,8 +2483,10 @@
     // On a Mac the flock is the left column: there is nothing to close, and
     // hiding it would leave the chat alone on a very wide screen.
     if (wide.matches) return;
+    keepFlockScroll();
     state.pickerOpen = false;
     elAgentPicker.classList.add("hidden");
+    syncThemeColor();
   }
 
   /* The X means "back to what I was reading", so it is only there once there
@@ -4778,11 +4829,15 @@
       state.pickerOpen = !elAgentPicker.classList.contains("hidden");
     }
     syncPickerChrome();
+    syncThemeColor();
   });
 
   // A hand on the list, by any of the ways it can be on one: while it is, the
   // order is held exactly where it was last drawn.
   elAgentList.addEventListener("scroll", touchList, { passive: true });
+  // The list only has a scroll event of its own while it is a column. On a
+  // phone the document is what moved, so that is where the hand is heard.
+  window.addEventListener("scroll", touchList, { passive: true });
   elAgentList.addEventListener("pointerdown", touchList, { passive: true });
   elAgentList.addEventListener("pointermove", touchList, { passive: true });
   elAgentList.addEventListener("wheel", touchList, { passive: true });
@@ -4875,6 +4930,23 @@
     swipe = null;
   }, { passive: true });
 
+  /* Whichever of the two is actually scrolling: on a phone the flock is the
+     document, past 900px it is a column with its own overflow. */
+  function listScroller() {
+    return wide.matches ? elAgentList : document.scrollingElement;
+  }
+
+  /* A finger's height in the list's own coordinates, which is what every
+     position below is measured in. The list's box has to be read now rather
+     than remembered: when the document is the scroller the list itself slides
+     up under the finger, and a top captured when the drag began is wrong by
+     however far the page has gone since. In the other case the box stands
+     still and scrollTop moves instead - reading both covers the two, since
+     whichever is not scrolling contributes nothing. */
+  function pointInList(y) {
+    return y - elAgentList.getBoundingClientRect().top + elAgentList.scrollTop;
+  }
+
   /* Carrying a project.
 
      Every position is measured once, when the project comes up, and in the
@@ -4905,11 +4977,10 @@
       heights,
       from,
       to: from,
-      listTop,
       // The gap the CSS leaves between projects, read off the layout rather
       // than written down twice.
       gap: groups.length > 1 ? tops[1] - (tops[0] + heights[0]) : 0,
-      grab: y - listTop + scroll - tops[from],
+      grab: pointInList(y) - tops[from],
       y,
     };
     group.classList.add("dragging");
@@ -4921,7 +4992,7 @@
 
   function dragTo(y) {
     drag.y = y;
-    const top = y - drag.listTop + elAgentList.scrollTop - drag.grab;
+    const top = pointInList(y) - drag.grab;
     drag.group.style.transform = `translateY(${top - drag.tops[drag.from]}px)`;
 
     // Where it would land: the first slot whose middle the carried project has
@@ -4953,14 +5024,21 @@
 
   function edgeScroll() {
     if (!drag) return;
-    const box = elAgentList.getBoundingClientRect();
+    /* The edges to carry a project past are the ones you can see. Past 900px
+       that is the column's own box; on a phone the list runs off both ends of
+       the screen, so the screen is what its edges are. */
+    const vv = window.visualViewport;
+    const box = wide.matches
+      ? elAgentList.getBoundingClientRect()
+      : { top: 0, bottom: vv ? vv.height : window.innerHeight };
     let by = 0;
     if (drag.y < box.top + DRAG_EDGE) by = -DRAG_SPEED;
     else if (drag.y > box.bottom - DRAG_EDGE) by = DRAG_SPEED;
     if (by) {
-      const before = elAgentList.scrollTop;
-      elAgentList.scrollTop += by;
-      if (elAgentList.scrollTop !== before) dragTo(drag.y);
+      const scroller = listScroller();
+      const before = scroller.scrollTop;
+      scroller.scrollTop += by;
+      if (scroller.scrollTop !== before) dragTo(drag.y);
     }
     requestAnimationFrame(edgeScroll);
   }
@@ -5224,6 +5302,15 @@
     window.visualViewport.addEventListener("scroll", syncViewportHeight);
     syncViewportHeight();
   }
+
+  /* The picker head's height, which the project headings stick below. It is
+     re-read rather than worked out because it is the status bar inset plus a
+     button, and both of those change with the device and with rotation. */
+  if (elPickerHead && window.ResizeObserver) {
+    new ResizeObserver(measurePickerHead).observe(elPickerHead);
+  }
+  window.addEventListener("orientationchange", measurePickerHead);
+  measurePickerHead();
 
   /* Web Push. iOS only allows this for a PWA opened from the home screen,
      and only when permission is requested inside a user gesture - hence the
