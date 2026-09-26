@@ -173,15 +173,16 @@ class TerminalStream:
             w.bool(False)  # pixel_mouse
         self._send(w.to_bytes())
 
-    def scroll(self, direction: str, lines: int = 3):
+    def scroll(self, direction: str, lines: int = 3,
+               column: int | None = None, row: int | None = None):
         """Wheel scrolling in the attached terminal's own scrollback."""
         w = BinWriter()
         w.variant(CM_ATTACH_SCROLL)
         w.variant(0)  # AttachScrollSource::Wheel
         w.variant(0 if direction == "up" else 1)
         w.varint(max(1, min(0xFFFF, int(lines))))
-        w.option(None, lambda v: w.varint(v))  # column
-        w.option(None, lambda v: w.varint(v))  # row
+        w.option(column, lambda v: w.varint(v))
+        w.option(row, lambda v: w.varint(v))
         w.u8(0)  # crossterm KeyModifiers bits
         self._send(w.to_bytes())
 

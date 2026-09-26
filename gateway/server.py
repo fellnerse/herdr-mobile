@@ -955,7 +955,15 @@ class HerdrHandler(BaseHTTPRequestHandler):
             stream.resize(cols, rows)
         elif kind == "scroll":
             direction = "up" if msg.get("direction") == "up" else "down"
-            stream.scroll(direction, clamp_int(msg.get("lines"), 1, 100, 3))
+            column, row = msg.get("column"), msg.get("row")
+            size = stream.size
+            if (size and isinstance(column, int) and not isinstance(column, bool)
+                    and isinstance(row, int) and not isinstance(row, bool)):
+                column = min(max(column, 0), size[0] - 1)
+                row = min(max(row, 0), size[1] - 1)
+            else:
+                column = row = None
+            stream.scroll(direction, clamp_int(msg.get("lines"), 1, 100, 3), column, row)
 
     def do_GET(self):
         self.head_only = self.command == "HEAD"

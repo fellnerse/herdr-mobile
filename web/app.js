@@ -5696,23 +5696,49 @@
 
   /* Herdr owns the scrollback, so a gesture here is a request, not a local
      move: wheel notches and finger drags both become lines for it to scroll. */
+  function consoleCellAt(clientX, clientY) {
+    const term = consoleState.term;
+    const screen = elConsoleTerm.querySelector(".xterm-screen");
+    if (!term || !screen || !term.cols || !term.rows) return {};
+    const rect = screen.getBoundingClientRect();
+    if (!rect.width || !rect.height) return {};
+    return {
+      column: Math.max(0, Math.min(term.cols - 1,
+        Math.floor((clientX - rect.left) / (rect.width / term.cols)))),
+      row: Math.max(0, Math.min(term.rows - 1,
+        Math.floor((clientY - rect.top) / (rect.height / term.rows)))),
+    };
+  }
+
   function attachConsoleScroll() {
     elConsoleTerm.addEventListener(
       "wheel",
       (e) => {
         if (!consoleState.ws) return;
         e.preventDefault();
-        // xterm treats wheel input as terminal keys in mouse tracking mode.
-        // Capture the gesture before xterm so it cannot send arrow-up bytes.
+        // Herdr uses the cell beneath the wheel to route mouse-aware apps.
+        // Capture before xterm so one wheel movement is sent only once.
         e.stopImmediatePropagation();
-        consoleState.scrollAcc += e.deltaY;
+        // Wheel deltas can be pixels (trackpads), lines (many mice and
+        // Firefox), or pages. Convert to pixels before accumulating so a
+        // line-mode wheel notch does not take many turns to move one line.
+        const delta = e.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? e.deltaY * 40
+          : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? e.deltaY * consoleState.rows * 40
+            : e.deltaY;
+        if (consoleState.scrollAcc && Math.sign(delta) !== Math.sign(consoleState.scrollAcc)) {
+          consoleState.scrollAcc = 0;
+        }
+        consoleState.scrollAcc += delta;
         const lines = Math.trunc(consoleState.scrollAcc / 40);
         if (!lines) return;
         consoleState.scrollAcc -= lines * 40;
         sendConsoleControl({
           type: "scroll",
           direction: lines < 0 ? "up" : "down",
-          lines: Math.min(20, Math.abs(lines)),
+          lines: Math.min(100, Math.abs(lines)),
+          ...consoleCellAt(e.clientX, e.clientY),
         });
       },
       { passive: false, capture: true }
@@ -5739,6 +5765,7 @@
         type: "scroll",
         direction: moved < 0 ? "up" : "down",
         lines: Math.min(10, Math.max(1, Math.round(Math.abs(moved) / 24))),
+        ...consoleCellAt(e.touches[0].clientX, y),
       });
     }, { passive: false });
     elConsoleTerm.addEventListener("touchend", () => { touchY = null; }, { passive: true });

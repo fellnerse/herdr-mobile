@@ -200,6 +200,35 @@ stream = stream_for(20)
 stream.resize(100, 30)
 check("resize 20", sent_frames(stream)[0], bytes([terminal.CM_RESIZE, 100, 30, 0, 0]))
 
+# Wheel positions are zero-based cells. Mouse-aware terminal apps need these
+# options to route the wheel under the pointer instead of ignoring it.
+stream = stream_for(22)
+stream.scroll("up", 3, 4, 5)
+check("positioned wheel scroll", sent_frames(stream)[0],
+      bytes([terminal.CM_ATTACH_SCROLL, 0, 0, 3, 1, 4, 1, 5, 0]))
+stream = stream_for(22)
+stream.scroll("down", 2)
+check("wheel scroll without position", sent_frames(stream)[0],
+      bytes([terminal.CM_ATTACH_SCROLL, 0, 1, 2, 0, 0, 0]))
+
+class ScrollReceiver:
+    size = (80, 24)
+
+    def __init__(self):
+        self.calls = []
+
+    def scroll(self, *args):
+        self.calls.append(args)
+
+
+receiver = ScrollReceiver()
+server.HerdrHandler.handle_terminal_control(
+    receiver, b'{"type":"scroll","direction":"up","lines":3,"column":4,"row":5}')
+check("wheel control forwards cell", receiver.calls, [("up", 3, 4, 5)])
+server.HerdrHandler.handle_terminal_control(
+    receiver, b'{"type":"scroll","direction":"down","lines":2,"column":false,"row":5}')
+check("invalid wheel cell is omitted", receiver.calls[-1], ("down", 2, None, None))
+
 # A protocol whose codec was never verified is refused rather than guessed at.
 check("22 is supported", terminal.supported_protocol(22), True)
 check("20 is supported", terminal.supported_protocol(20), True)
