@@ -519,15 +519,9 @@
         // a project whose tabs are all plain shells is still worth opening.
         const first = state.agents.find((a) => a.has_agent) || state.agents[0];
         if (first) {
-          /* Chosen, not opened, while the flock is on screen: the chat behind
-             it is loaded and ready, but nothing drags you into it. A workspace
-             closed from a chat still lands you in the next one. */
-          // On desktop, Claude panes open in Chat and other panes open in
-          // Console; there is no Normal pane view there. Phones keep the flock
-          // as their landing page and open panes directly.
-          selectAgent(first.pane_id, wide.matches
-            ? first.agent !== "claude"
-            : (first.agent === "claude" || !state.pickerOpen));
+          // Reload into the pane's default view: Chat when this pane supports
+          // it, otherwise Normal on mobile or Console on desktop.
+          selectAgent(first.pane_id);
         } else {
           state.activePaneId = null;
           syncPickerChrome();
@@ -576,6 +570,10 @@
     return row.workspace_label || row.name || row.pane_id;
   }
 
+  function paneHasChat(agent) {
+    return !!agent && ["claude", "codex"].includes(agent.agent);
+  }
+
   // Header button showing the current project
   function renderAgentBar() {
     /* A headless chat has no pane, transcript, Console or Changed Files view;
@@ -602,7 +600,7 @@
     elViewSwitcher.classList.toggle("hidden", !agent);
     elBtnChanges.classList.remove("hidden");
     document.getElementById("chat-btn-delete").classList.add("hidden");
-    const chattable = !!(agent && agent.agent === "claude");
+    const chattable = paneHasChat(agent);
     const chatShowing = chattable && (state.chatVisible || (wide.matches && state.paneView === "chat"));
     if (!chatShowing) {
       const working = !!agent && agent.status === "working";
@@ -616,7 +614,7 @@
       elAgentSelectName.textContent = state.agents.length ? "Select project" : "No agents";
     }
     elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
-    // Pane chat currently reads Claude Code's session log format.
+    // Pane chat reads both Claude Code and Codex session logs.
     elBtnPaneChat.classList.toggle("hidden", !chattable);
     elBtnViewNormal.classList.toggle("hidden", chattable || wide.matches);
     const consoleShowing = !elConsoleView.classList.contains("hidden");
@@ -2214,10 +2212,7 @@
     syncThemeColor();
   }
 
-  /* The X means "back to what I was reading", so it is only there once there
-     is something to go back to. On a fresh start there is not: a pane is
-     selected behind the flock, but nobody chose it, and an X that opens a chat
-     you never asked for is a door out of the home screen into a stranger. */
+  /* The X returns from the flock to the pane once one has been opened. */
   function canLeaveFlock() {
     return Boolean(state.chatVisited && state.activePaneId) && !wide.matches;
   }
@@ -2226,72 +2221,50 @@
     elBtnClosePicker.classList.toggle("hidden", !canLeaveFlock());
   }
 
-  /* ------------------------------------------- The views a pane is read in ---
-   *
-   * The console and the changed files are a reading of one pane. On a phone
-   * they have the screen to themselves, so the pane under them cannot change
-   * while they are open. Past 900px the flock is the column beside them and
-   * choosing what the other half shows is the whole of what it is for - so
-   * picking another row re-aims the view that is open rather than leaving it
-   * showing the pane you walked away from, and a headless chat, which has no
-   * pane for either of them to read, closes them.
-   *
-   * The tokens page and the settings are nobody's pane and stay as they are.
-   * ------------------------------------------------------------------------ */
-  function retargetPaneViews() {
-    if (!elConsoleView.classList.contains("hidden")) openConsole();
-    if (!elChangesView.classList.contains("hidden")) openChanges();
-  }
+  /* Console and changed files belong to the pane that opened them. Switching
+     tabs closes those views so the new pane can show its default surface. */
 
   function closePaneViews() {
     if (!elConsoleView.classList.contains("hidden")) closeConsole();
     if (!elChangesView.classList.contains("hidden")) closeChanges();
   }
 
-  /* Open a pane's chat. `open` false selects it without leaving the flock -
-     which is how the app starts: a pane is ready to talk to, but the herd is
-     still what you are looking at. */
+  /* Select a pane and start at its first available view. */
   function selectAgent(paneId, open = true) {
     if (open) state.chatVisited = true; // there is now a chat to go back to
     // A pane takes the column back off whatever headless chat had it.
-    const hadChat = state.activeChatId;
     state.activeChatId = null;
-    state.chatVisible = false;
-    if (state.activePaneId === paneId) {
-      if (hadChat) renderAgentBar();
-      if (open) closePicker();
-      if (open && elConsoleView.classList.contains("hidden")) {
-        if (!wide.matches) stopPolling();
-        openConsole();
-      }
-      return;
-    }
+    const pane = state.agents.find((agent) => agent.pane_id === paneId);
+    const hasChat = paneHasChat(pane);
+    const changed = state.activePaneId !== paneId;
     if (open) closePicker();
-    setCtrlCArmed(false);
-    // What is in the composer was written for the pane being left.
-    rememberDraft(state.activePaneId);
-    touchAgent(paneId);
-    state.activePaneId = paneId;
-    resetRecall();
-    restoreDraft(paneId);
-    attachStrip.clear();
-    state.historyText = "";
-    // A redraw held for a selection belonged to the pane being left; letting
-    // it out now would paint the old chat into the new one's view.
-    state.heldHistory = null;
-    elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
+    if (changed) {
+      setCtrlCArmed(false);
+      rememberDraft(state.activePaneId);
+      touchAgent(paneId);
+      state.activePaneId = paneId;
+      resetRecall();
+      restoreDraft(paneId);
+      attachStrip.clear();
+      state.historyText = "";
+      state.heldHistory = null;
+      elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
+    }
+    state.paneView = hasChat ? "chat" : "transcript";
+    state.chatVisible = hasChat;
+    savePref("sheepit.view", state.paneView);
     if (open) triggerHaptic();
 
+    closePaneViews();
     renderAgentBar();
     syncPickerChrome();
-    renderChatQueue();
-    retargetPaneViews();
-    fetchHistory(true);
-    // Opening a pane from the flock enters its terminal by default. Chat is
-    // still opened explicitly from the chat action.
+    if (changed) {
+      renderChatQueue();
+      fetchHistory(true);
+    }
     if (open) {
       if (!wide.matches) stopPolling();
-      openConsole();
+      if (wide.matches && !hasChat) openConsole();
     }
   }
 
@@ -4341,7 +4314,7 @@
     // you are reading the pane's raw output instead.
     elHistoryContainer.classList.toggle("hidden", show);
     elPromptForm.classList.toggle("chat-mode", show);
-    elPromptInput.placeholder = show ? "Message Claude…" : "Prompt or tap mic…";
+    elPromptInput.placeholder = show ? "Message agent…" : "Prompt or tap mic…";
     // The composer is initially measured while its app pane may still be
     // display:none behind the flock. Measure again after the mobile view has
     // been laid out so its first appearance has the right height.
@@ -4409,7 +4382,7 @@
 
   function openAsChat(paneId) {
     const agent = state.agents.find((a) => a.pane_id === paneId);
-    if (!agent || !["claude", "codex"].includes(agent.agent)) return false;
+    if (!paneHasChat(agent)) return false;
     rememberDraft(state.activePaneId);
     selectAgent(paneId, false);
     if (!wide.matches) closePicker();
@@ -6943,7 +6916,7 @@
 
   // Init
   loadPrefs();
-  // The flock, not a chat: what the app opens on is the whole herd.
+  // Show the flock while the agent list loads, then open the first pane.
   showFlock();
   // The first touch anywhere is what buys the page the right to make noise.
   document.addEventListener("pointerdown", unlockAudio, { once: true });
@@ -6977,6 +6950,7 @@
   const elBtnScrollBottom = $("btn-scroll-bottom");
 
   let current = null;          // the open chat's summary
+  let targetRequest = 0;       // ignore a chat fetch after another view wins
   let events = [];
   let epoch = "";
   let poll = null;             // AbortController of the running long poll
@@ -7360,17 +7334,21 @@
   document.addEventListener("sheepit:chat-target", (event) => {
     const id = event.detail;
     if (id) openById(id);
-    else backToFlock();
+    else clearChat();
   });
 
-  /* There is nothing else on this page. The chats are rows in the flock now,
-     alongside the panes - a list of them here was a second place to look,
-     which is how a chat left holding a question went unanswered for a day. */
-  function backToFlock() {
+  function clearChat() {
+    targetRequest++;
     if (poll) poll.abort();
     poll = null; current = null;
     elChat.classList.add("hidden");
     if (location.hash) history.replaceState(null, "", location.pathname);
+  }
+
+  /* A dismissed chat goes back to the flock. Clearing its target while
+     switching panes only closes the old chat; it does not open the flock. */
+  function backToFlock() {
+    clearChat();
     document.dispatchEvent(new CustomEvent("sheepit:chat-close"));
   }
 
@@ -7388,8 +7366,15 @@
      `pane:<pane id>` for a Herdr pane read as a chat. `chat.get` resolves
      both, so there is one way in. */
   async function openById(id) {
-    try { openChat((await api(`/api/chat/events?id=${encodeURIComponent(id)}`)).chat); }
-    catch (e) { alert(e.message); backToFlock(); }
+    const request = ++targetRequest;
+    try {
+      const data = await api(`/api/chat/events?id=${encodeURIComponent(id)}`);
+      if (request === targetRequest) openChat(data.chat);
+    } catch (e) {
+      if (request !== targetRequest) return;
+      alert(e.message);
+      backToFlock();
+    }
   }
 
   /* ---- Images: scaled down on the phone, kept by the gateway, sent inline.
