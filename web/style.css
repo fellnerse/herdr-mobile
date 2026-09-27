@@ -31,19 +31,21 @@
      reports - orange so it reads as yours rather than as the agent's. */
   --status-queued: #f0883e;
 
-  /* Transcript roles */
-  --role-user: #7ee787;
-  --role-user-bg: rgba(126, 231, 135, 0.07);
+  /* Default transcript and diff text */
   --role-assistant: #d1d7e0;
-  --role-tool: #8b949e;
-  --role-meta: #a371f7;
-  --role-tip: #58a6ff;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --font-mono: "SF Mono", Menlo, Monaco, Consolas, "Courier New", monospace;
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* How wide the flock is once it stops being a sheet and becomes the left
+     column - see the desktop section at the foot of this file. A phone's
+     width, near enough: the rows, the sheep and the usage strip were all
+     drawn to fit one. Everything that opens beside it is offset by this, so
+     it is a variable rather than the same number written twice. */
+  --flock-width: 380px;
 }
 
 * {
@@ -53,73 +55,82 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* The document scrolls, and the flock is what is in it.
+ *
+ * Nothing here is fixed or overflow-hidden, because Safari only folds its URL
+ * bar away when the *document* is what moved: a list that scrolls inside an
+ * element leaves the bar sitting at the bottom of the screen for good, taking
+ * a strip of a phone with it. What that buys has to be paid for by every
+ * screen that is not the flock - `.app-container` and the `.full-view`s take
+ * themselves out of the flow, or the document would be two screens tall and a
+ * flick at the end of the list would carry you into the chat behind it.
+ */
 html, body {
   width: 100%;
-  height: 100%;
+  min-height: 100%;
   /* iOS inflates text it decides is "too small for its block" - and it decides
      per block, so in a diff the short lines (a comment, a closing brace) come
      out bigger than the code around them and read as headings. Every size here
      is deliberate; none of them want boosting. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  /* Matches the input dock so the home-indicator strip never reads as a
-     black band in standalone (home screen) mode. */
-  background-color: var(--bg-surface);
+  /* The colour behind everything, which is what the rubber-band at the end of
+     the list shows and what Safari's own bars are told to match - see the
+     theme-color meta and syncThemeColor in app.js. */
+  background-color: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--font-sans);
+}
+
+/* A screen that covers the flock has to stop the flock scrolling underneath
+   it, or you come back to the list somewhere you never left it. `overflow` on
+   the body is the viewport's, so this is the whole lock - and because nothing
+   about the layout moves, the place you were is still there when it lifts. */
+body:has(.full-view:not(.hidden)),
+body:has(.sheet-backdrop:not(.hidden)) {
   overflow: hidden;
-  position: fixed;
-  top: 0;
-  left: 0;
 }
 
 /* App Container layout */
 .app-container {
   display: flex;
   flex-direction: column;
-  /* --app-height tracks the visual viewport (set in JS) so the keyboard
-     shrinks the transcript rather than pushing the header off screen. */
-  height: var(--app-height, 100dvh);
-  transform: translateY(var(--app-offset, 0px));
-  width: 100vw;
+  /* Keep the page in document flow so iOS can scroll the whole transcript and
+     collapse its browser chrome, as it does on the project list. */
+  position: relative;
+  min-height: 100dvh;
+  width: 100%;
   background-color: var(--bg-base);
 }
 
-/* Header: agent switcher + settings gear, no branding */
+.app-header { position: sticky; top: 0; }
+
+/* The flock and the chat share one document scroller now (see the note atop
+   this file), so only one of them can be in flow at a time - `display: none`
+   takes the other out of it entirely, or its `min-height: 100dvh` sits above
+   or below the flock as a screen of blank, unscrollable space. app.js keeps
+   each side's own scroll position (`flockScroll` / restoreFlockScroll) across
+   the swap, since the browser has nothing to remember it by once the element
+   it belonged to stops being laid out. */
+body:has(.agent-picker:not(.hidden)) .app-container {
+  display: none;
+}
+
+/* Header: agent switcher, no branding */
 .app-header {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  background: rgba(18, 21, 29, 0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: var(--bg-surface);
   border-bottom: 1px solid var(--border-subtle);
   padding-top: var(--safe-top);
   padding-right: 8px;
   z-index: 10;
 }
 
-.header-gear {
-  position: relative;
-  flex-shrink: 0;
-}
 
-
-.conn-dot {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--status-unknown);
-  border: 1.5px solid var(--bg-surface);
-  transition: background 0.3s;
-}
-
-.conn-dot.connected { background: var(--status-idle); }
-.conn-dot.disconnected { background: var(--status-blocked); }
 
 .icon-btn {
   text-decoration: none;
@@ -175,18 +186,20 @@ html, body {
   color: var(--text-muted);
 }
 
-/* The tabs of the worktree you are in, under the header. One line, scrolled
-   sideways when there are more tabs than fit - it must never take a second row
-   off the transcript, which is the whole screen this app is. */
+/* The current worktree's tabs form the second row of the shared header, so
+   they remain available in the transcript, chat, and Console. */
 .tab-strip {
-  flex-shrink: 0;
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle);
 }
+.tab-strip.hidden { display: none; }
 
 /* The chips are what scrolls; the plus beside them stays put. */
 .tab-chips {
@@ -271,25 +284,38 @@ html, body {
   border-color: var(--accent-primary);
 }
 
-/* Full-screen project picker */
+/* The project picker, which is the page - the one thing in the document's
+   flow, so that scrolling the list is scrolling the document and Safari puts
+   its URL bar away. Tall enough to fill the screen on its own so the chat
+   behind it never shows through; no taller, or there would be a strip of
+   nothing to scroll past at the end of a short list. */
 .agent-picker {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
+  position: relative;
+  z-index: 1;
+  min-height: 100dvh;
   background: var(--bg-base);
   display: flex;
   flex-direction: column;
-  padding-top: var(--safe-top);
 }
 
 .agent-picker.hidden { display: none; }
 
 .picker-head {
   flex-shrink: 0;
+  /* The list is the document now, so the head holds itself at the top rather
+     than being a sibling above a scrolling box. It carries the status-bar
+     inset for the same reason: the padding that used to sit on the picker
+     would scroll away with everything else and put the title under the
+     clock. */
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 12px 12px 16px;
+  padding-top: calc(12px + var(--safe-top));
+  background: var(--bg-base);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -318,9 +344,7 @@ html, body {
 .picker-new:active { filter: brightness(0.9); }
 
 .agent-list {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  flex: 1 0 auto;
   padding: 8px 12px max(12px, var(--safe-bottom)) 12px;
 }
 
@@ -339,6 +363,7 @@ html, body {
 .agent-group.dragging {
   z-index: 3;
   transition: none;
+  cursor: grabbing;
 }
 
 .agent-group.dragging .agent-row {
@@ -359,7 +384,11 @@ html, body {
 
 .agent-group-head {
   position: sticky;
-  top: -8px;
+  cursor: grab;
+  /* Under the picker head, whose height app.js measures into --picker-head-h:
+     both are sticky against the same viewport now, and a heading that stopped
+     at 0 would slide behind the title. */
+  top: calc(var(--picker-head-h, 56px) - 8px);
   z-index: 1;
   display: flex;
   align-items: baseline;
@@ -380,13 +409,6 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.agent-group-count {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
 }
 
 /* Cut another worktree off this project. A heading is 12px tall and a thumb is
@@ -410,15 +432,6 @@ html, body {
 
 .agent-group-add:active {
   color: var(--accent-primary);
-}
-
-/* The only thing in a heading worth colouring: somebody is waiting on you. */
-.agent-group-waiting {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  color: var(--status-blocked);
 }
 
 /* Row sits in a clipping wrapper so its actions can hide behind it. */
@@ -460,19 +473,78 @@ html, body {
 .agent-row-action.remove { background: #7d1d1d; }
 .agent-row-action:active { filter: brightness(0.88); }
 
-/* A mouse cannot swipe, so the drawer is opened by a right-click instead - and
-   the row needs to say it has one. The hint only exists where there is a
-   pointer that can hover, since a phone has the gesture already. */
+/* A mouse cannot swipe, so the drawer behind a row is a gesture it does not
+   have. The row shows its actions directly on hover: rename, close, and
+   remove for a linked worktree. Removing asks before deleting the checkout.
+
+   Hidden outright where there is no hover to reveal them: a phone has the
+   gesture already, and two more tap targets on a row are two things to hit by
+   accident. Only the media query below turns them on. */
+.row-tools,
+.pen-head-tools {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+/* On a row the corner is the only free space - the sheep has the left, the name
+   the middle, the badge the right - so the icons go where the "…" was: above
+   the badge, which stays where it is. Hovering a row must not take anything off
+   it, least of all the status it is there to say. */
+.row-tools {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+}
+
+/* A pen's title is the exception: it carries no badge to stand clear of, and a
+   13px line has no corner to speak of, so its pair sits in the flow at the end
+   of the name. Only the placement differs - .pen-head-tools is the same two
+   icons, revealed the same way. */
+
+.row-tool {
+  display: flex;
+  padding: 3px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
 @media (hover: hover) and (pointer: fine) {
-  .agent-row-wrap:hover .agent-row::after {
-    content: "\2026";
-    position: absolute;
-    top: 2px;
-    right: 6px;
-    font-family: var(--font-mono);
-    font-size: 14px;
-    line-height: 1;
-    color: var(--text-muted);
+  /* Laid out whether or not the pointer is on the row, so nothing jumps
+     sideways the moment it is - only the ink arrives. */
+  .row-tools,
+  .pen-head-tools {
+    display: flex;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+
+  .agent-row-wrap:hover .row-tools,
+  .agent-row-wrap:hover .pen-head-tools {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .row-tool:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* Closing stops every agent behind the icon, and asks before it does. It is
+     the one here that says what it is before it is pressed. */
+  .row-tool.danger:hover {
+    color: var(--status-blocked);
+  }
+
+  /* And the drawer these replace is gone from here: it is a swipe, a machine
+     with a pointer has no swipe, and duplicate actions behind the row would
+     give it two sets of controls.
+     `app.js` gives the right-click back to the browser for the same reason. */
+  .agent-row-actions {
+    display: none;
   }
 }
 
@@ -560,6 +632,106 @@ html, body {
   font-size: 10px;
   font-weight: 600;
   color: var(--text-muted);
+}
+
+/* Which tab of a worktree this row is, on the rows of a pen that has its tabs
+   out. Same ink as the count it replaces there - what it says is where in the
+   strip you would find this one, not something the row is claiming. */
+.row-tab {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* ---- A pen with its tabs out ---------------------------------------------
+ *
+ * A worktree with a second tab in it draws both of them: one sheep each,
+ * indented under a single title and joined to it by a bracket down the left.
+ * The title is the worktree, which is what Close and Remove have always acted
+ * on; the animals are the tabs.
+ */
+.pen {
+  margin-bottom: 8px;
+}
+
+/* The title. Deliberately not a card: a worktree is not a thing that is doing
+   something, and giving it the same surface as its tabs made a pen of two read
+   as three agents. */
+/* The same card colour as the tabs under it, because the title is part of the
+   pen rather than a heading over it - and opaque either way: the drawer sits
+   behind the row, so a see-through title has Rename and Close showing through
+   it before anybody has swiped anything. */
+.agent-row.pen-head {
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-card);
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.agent-row.pen-head:active {
+  background: var(--bg-hover);
+}
+
+.pen-head-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The tabs themselves, indented far enough to leave the bracket its room. */
+.pen-tabs {
+  margin-left: 16px;
+}
+
+/* The bracket: a trunk down the left of the pen and an elbow into each tab,
+   ending at the last one rather than running past it. It hangs on this element
+   rather than on the row's wrapper, because the wrapper clips to its own
+   corners so a swipe can hide behind it - a line drawn there is a line nobody
+   ever sees. */
+.pen-tab {
+  position: relative;
+}
+
+.pen-tab::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: -8px;
+  bottom: 0;
+  width: 2px;
+  background: var(--border-strong);
+}
+
+/* Down to the last sheep's middle and no further, which is what makes the
+   bracket read as holding these tabs rather than pointing past them. */
+.pen-tab:last-child::before {
+  bottom: auto;
+  height: calc(50% + 8px);
+}
+
+/* The pen's own gap below it does for the last tab as well, or a pen ends in
+   twice the space between two of them. */
+.pen-tab:last-child .agent-row-wrap {
+  margin-bottom: 0;
+}
+
+.pen-tab::after {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  width: 8px;
+  height: 2px;
+  background: var(--border-strong);
 }
 
 /* The row's headline is what the agent is doing, which is a sentence rather
@@ -675,9 +847,37 @@ html, body {
 .agent-row.active .sheep-edge { fill: var(--bg-hover); }
 .agent-row.active .sheep-lid { stroke: var(--bg-hover); }
 
-/* Nobody home: the empty pasture is the one drawing with no breed behind it,
+/* Nobody home: the shell window is the one drawing with no breed behind it,
    so it keeps a colour of its own. */
 .sheep-wrap.unknown { color: var(--status-unknown); }
+
+/* The screen is the darkest thing on the row - darker than the card, which is
+   what makes it read as a screen rather than a panel. Everything on it is the
+   text colour, since that is what a terminal puts there. */
+.shell-screen { fill: var(--bg-base); }
+
+.shell-frame {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  opacity: 0.55;
+}
+
+.shell-prompt {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.8;
+}
+
+/* The fleece is the whole animal at a glance; the legs, head and ear behind it
+   are the same white turned down, which is the only shading a shape this small
+   can carry. The eye is the screen showing through. */
+.shell-sheep-fleece { fill: var(--text-primary); }
+.shell-sheep-under { fill: var(--text-primary); opacity: 0.6; }
+.shell-sheep-eye { fill: var(--bg-base); }
 
 /* The field under the sheep: what its subscription has left, drawn as blades
    that shorten together rather than blades that disappear. Stroked rather than
@@ -716,7 +916,7 @@ html, body {
 
 .sheep-wrap.blocked { animation: sheep-alert 1.2s ease-in-out infinite; }
 
-/* The sleeping sheep only breathes; the empty pasture does not move at all. */
+/* The sleeping sheep only breathes; a shell does not move at all. */
 .sheep-wrap.done {
   animation: sheep-breathe 3.6s ease-in-out infinite;
 }
@@ -853,13 +1053,22 @@ html, body {
 
 /* Scrollable History */
 .history-container {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  /* Grows, not just sits: with no active agent or a short transcript, `0 0
+     auto` left the sticky input dock stranded right after this instead of at
+     the bottom of the screen, since nothing filled the rest of `min-height:
+     100dvh`. Growing costs nothing once the transcript is actually taller
+     than the viewport - there is no extra space left to hand out. */
+  flex: 1 0 auto;
+  overflow-y: visible;
+  overflow-x: clip;
   -webkit-overflow-scrolling: touch;
   padding: 10px 12px 12px 12px;
   position: relative;
 }
+
+/* The transcript and Chat messages share the page flow. Hide the inactive
+   transcript while Chat is open so it cannot appear above the conversation. */
+.history-container.hidden { display: none; }
 
 /* A long press has to catch the text, not the tap highlight. The transcript
    only needs saying out loud; the console has to be talked out of xterm's own
@@ -879,12 +1088,11 @@ html, body {
   color: var(--role-assistant);
 }
 
-/* Transcript blocks, coloured by speaker */
+/* The pane transcript, shown verbatim with its terminal colors. */
 .t-block {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  margin: 6px 0;
 }
 
 .t-block a {
@@ -894,112 +1102,12 @@ html, body {
   word-break: break-all;
 }
 
-.t-block span a {
-  color: inherit;
-}
+.t-block span a { color: inherit; }
 
-.t-assistant {
-  color: var(--role-assistant);
-}
-
-.t-user {
-  color: var(--role-user);
-  background: var(--role-user-bg);
-  border-left: 2px solid var(--role-user);
-  border-radius: 0 6px 6px 0;
-  padding: 6px 10px;
-  margin: 10px 0;
-  font-family: var(--font-sans);
-  font-size: 14px;
-}
-
-.t-tool {
-  color: var(--role-tool);
-  font-size: 12px;
-  padding-left: 8px;
-  border-left: 1px solid var(--border-subtle);
-}
-
-.t-meta {
-  color: var(--role-meta);
-  font-size: 12px;
-  font-style: italic;
-}
-
-.t-tip {
-  color: var(--role-tip);
-  font-size: 12px;
-}
-
-.t-status {
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: pre-wrap;
-}
-
-/* The prompt an agent is waiting on: its options are the reason the phone is
-   in your hand, so it gets a card of its own rather than blending into prose. */
-.t-select {
-  color: var(--text-primary);
-  background: var(--bg-card);
-  border: 1px solid var(--accent-primary);
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin: 10px 0;
-  font-size: 13px;
-}
-
-/* The plain view: one block for the whole pane, in the terminal's own colours
-   and nothing else. No role colouring - a marker the parser reads wrongly is
-   exactly what this view exists to show. */
-.t-plain {
+.t-transcript {
   color: var(--text-secondary);
   margin: 0;
   font-size: 12px;
-}
-
-/* Tables keep their alignment and scroll sideways instead of wrapping. */
-.t-table {
-  white-space: pre;
-  overflow-x: auto;
-  font-size: 11px;
-  color: var(--role-tool);
-  padding-bottom: 2px;
-}
-
-/* The terminal's full-width input-box borders become a hairline. */
-.t-rule {
-  height: 1px;
-  background: var(--border-subtle);
-  margin: 12px 0;
-}
-
-/* Same, but the border carried the session title. */
-.t-rule-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 14px 0 10px 0;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.t-rule-label::before,
-.t-rule-label::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--border-subtle);
-}
-
-.t-rule-label span {
-  flex-shrink: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  letter-spacing: 0.3px;
 }
 
 .history-empty {
@@ -1041,13 +1149,25 @@ html, body {
 /* Bottom Input Dock */
 .input-dock {
   flex-shrink: 0;
+  /* The document is the scroller now (see the note atop this file), so
+     without this the dock is just the last flex item and scrolls off with
+     the rest of the transcript. Sticky keeps it pinned to the bottom of the
+     viewport the way it sat when `.app-container` itself was fixed, while
+     leaving the scroll that collapses Safari's chrome alone. */
+  position: sticky;
+  bottom: 0;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
-  /* No vertical padding: the input row sits flush against the bottom edge.
-     The home-indicator inset is reclaimed entirely - iOS keeps the indicator
-     legible over content on its own. */
-  padding: 0 10px 0 10px;
+  /* Leave breathing room below the input controls, including the home
+     indicator area when the PWA runs edge to edge. */
+  padding: 0 10px calc(var(--safe-bottom) + 10px);
   z-index: 10;
+}
+
+/* iOS can retain the home indicator inset while the keyboard is open. The
+   keyboard owns that bottom area, so don't reserve it a second time. */
+.keyboard-open .input-dock {
+  padding-bottom: 0;
 }
 
 /* Prompt Form */
@@ -1093,13 +1213,20 @@ html, body {
 
 /* Key palette: single keypresses for the agent's confirmation prompts. */
 .keys-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 6px 0 2px 0;
+  background: var(--bg-surface);
+  z-index: 12;
 }
 
 .keys-bar.hidden { display: none; }
+#prompt-form.chat-mode .keys-bar { display: none; }
 
 /* Two fixed rows: every key stays reachable without a sideways swipe. Rows
    wrap rather than squeeze when a prompt lists more options than usual. */
@@ -1148,10 +1275,6 @@ html, body {
 .key-no { color: #ff7b72; border-color: rgba(248, 81, 73, 0.3); }
 .key-enter { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }
 
-.header-keys.active {
-  background: var(--bg-hover);
-  color: var(--accent-primary);
-}
 
 /* Row mirrors the composer below it: text on the left, a round action button
    on the right at the same size and offset as Send, so the two line up. */
@@ -1218,22 +1341,95 @@ html, body {
 
 
 .prompt-form {
+  position: relative;
   display: flex;
   align-items: flex-end;
-  gap: 6px;
-  padding: 5px 0;
+  gap: 8px;
+  padding: 8px 0;
   margin: 0;
 }
+.prompt-form.hidden { display: none !important; }
 
-/* The three buttons travel together. Beside a one-line box they sit in a row,
-   the way they always have; once the box has grown they turn into a column in
-   the height the box itself just made, rather than pushing the composer
-   wider. Bottom-up, so send stays where the thumb last left it. */
-.prompt-actions {
+
+.prompt-actions { display: contents; }
+.prompt-form > .prompt-input { order: 5; }
+.prompt-actions > #btn-recall { order: 1; }
+.prompt-actions > #btn-attach { order: 2; }
+.prompt-actions > #btn-paste-image { order: 2; }
+.prompt-actions > #chat-btn-slash { order: 3; }
+.prompt-actions > #btn-keys { order: 3; }
+.prompt-actions > #composer-menu { order: 4; }
+.prompt-actions > #btn-send { order: 6; }
+.prompt-actions > #chat-btn-stop { order: 7; }
+
+.composer-menu { position: relative; display: flex; }
+.btn-more[aria-expanded="true"] { background: var(--bg-hover); color: var(--accent-primary); }
+.btn-keys { font-size: 17px; }
+.chat-only { display: none !important; }
+#prompt-form.chat-mode #chat-btn-slash { display: inline-flex !important; }
+#prompt-form.chat-mode #chat-btn-stop { display: inline-flex !important; }
+#prompt-form.chat-mode #chat-btn-stop.hidden { display: none !important; }
+#prompt-form.chat-mode #chat-btn-stop {
+  width: 38px; height: 38px; border: 0; border-radius: 50%;
+  background: var(--status-blocked); color: #fff;
+  align-items: center; justify-content: center;
+}
+#prompt-form:not(.chat-mode) .normal-stop.normal-visible { display: inline-flex !important; }
+#prompt-form:not(.chat-mode) .normal-stop.hidden { display: none !important; }
+#prompt-form .normal-stop {
+  width: 38px; height: 38px; border: 0; border-radius: 50%;
+  background: var(--status-blocked); color: #fff;
+  align-items: center; justify-content: center;
+}
+#prompt-form.chat-mode .normal-only { display: none !important; }
+#prompt-form.chat-mode #btn-attach,
+#prompt-form.chat-mode #chat-btn-slash {
+  width: 38px; height: 38px; border: 0; border-radius: 0;
+  background: transparent; color: var(--text-secondary);
+}
+#prompt-form.chat-mode #btn-attach:active,
+#prompt-form.chat-mode #chat-btn-slash:active { background: var(--bg-hover); }
+#prompt-form #btn-recall { display: none !important; }
+.composer-menu-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
   display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
+  flex-direction: column;
+  gap: 2px;
+  width: min(220px, 72vw);
+  padding: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.composer-menu-panel.hidden { display: none; }
+.composer-menu-item {
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+}
+.composer-menu-item:active { background: var(--bg-hover); }
+.composer-menu-item.active { color: var(--accent-primary); }
+.composer-menu-setting { padding: 8px 10px 2px; color: var(--text-muted); font-size: 11px; }
+.composer-menu-select {
+  width: 100%;
+  min-height: 36px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
 }
 
 .prompt-form.stacked .prompt-actions {
@@ -1262,6 +1458,7 @@ html, body {
 }
 
 .btn-attach:active { background: var(--bg-hover); color: var(--text-primary); }
+.btn-attach.active { background: var(--bg-hover); color: var(--accent-primary); }
 
 /* Uploading: the clip turns and the button stops taking taps, because a
    second screenshot queued behind the first is how you end up with two. */
@@ -1301,49 +1498,17 @@ html, body {
 .attach-strip::-webkit-scrollbar { display: none; }
 .attach-strip.hidden { display: none; }
 
-.attach-chip {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  max-width: 62vw;
-  padding: 4px 4px 4px 4px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-}
-
-.attach-chip img {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  object-fit: cover;
-  display: block;
-}
-
-.attach-name {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.attach-drop {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  font-size: 17px;
-  line-height: 1;
+/* One thumbnail, from #composer.js's createAttachStrip - shared with chat's
+   composer, which is where this shape came from. No filename: the picture is
+   the point, and a path belongs in nothing the phone shows you any more. */
+.thumb { position: relative; flex-shrink: 0; }
+.thumb img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; display: block; }
+.thumb.loading img { opacity: 0.4; }
+.thumb button {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
+  border: 0; background: var(--bg-card); color: var(--text-primary); font-size: 14px; line-height: 20px; padding: 0;
   cursor: pointer;
 }
-
-.attach-drop:active { background: var(--bg-hover); color: var(--text-primary); }
 
 .attach-error {
   padding: 6px 10px;
@@ -1357,15 +1522,15 @@ html, body {
   flex: 1;
   min-width: 0;
   background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-strong);
   border-radius: 18px;
-  padding: 8px 12px;
+  padding: 8px 14px;
   font-family: var(--font-sans);
   font-size: 16px; /* 16px keeps iOS from zooming on focus */
   line-height: 18px;
   color: var(--text-primary);
   resize: none;
-  max-height: 120px;
+  max-height: 40vh;
   outline: none;
   transition: border-color 0.2s;
 }
@@ -1404,10 +1569,10 @@ html, body {
 .btn-recall.hidden { display: none; }
 
 .btn-send {
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
-  background: var(--accent-gradient);
+  background: var(--accent-primary);
   border: none;
   color: #ffffff;
   display: flex;
@@ -1416,20 +1581,15 @@ html, body {
   flex-shrink: 0;
   cursor: pointer;
   transition: transform 0.15s, opacity 0.2s;
-  box-shadow: 0 2px 8px rgba(47, 129, 247, 0.4);
+  box-shadow: none;
 }
 
-/* The paper-plane glyph's mass sits up and right inside its viewBox, so a
-   flex-centred icon reads as off-centre; nudge it back. */
-.btn-send svg {
-  display: block;
-  transform: translate(-1px, 1px);
-}
+.btn-send svg { display: block; }
 
 .btn-send:active { transform: scale(0.92); }
 
 .btn-send:disabled {
-  opacity: 0.3;
+  opacity: 0.4;
   cursor: default;
   box-shadow: none;
 }
@@ -1439,7 +1599,9 @@ html, body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
-  z-index: 20;
+  /* Full-screen views such as the console sit above the app chrome. A sheet
+     opened from the flock still needs to cover and dim those views too. */
+  z-index: 40;
 }
 
 .settings-sheet {
@@ -1447,7 +1609,7 @@ html, body {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 21;
+  z-index: 41;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-strong);
   border-radius: 16px 16px 0 0;
@@ -1488,33 +1650,12 @@ html, body {
 
 .sheet-row input[type="checkbox"]:disabled { opacity: 0.4; }
 
-/* A row whose setting the current view has taken over. */
-.sheet-row.row-muted label { opacity: 0.45; }
-
 .sheet-agent-text {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-.sheet-title {
-  color: var(--text-primary);
-  font-size: 14px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sheet-cwd {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-family: var(--font-mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  direction: rtl; /* keep the tail of long paths visible */
-  text-align: left;
-}
 
 .sheet-row select {
   background: var(--bg-card);
@@ -1530,31 +1671,6 @@ html, body {
   width: 20px;
   height: 20px;
   accent-color: var(--accent-primary);
-}
-
-.mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.mode-btn:active { background: var(--bg-hover); }
-
-.mode-btn svg { color: var(--text-muted); }
-
-.sheet-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 14px;
 }
 
 .sheet-btn {
@@ -2045,7 +2161,9 @@ html, body {
    The console and the changed files
 
    Both take the whole screen the way the project picker does: on a phone a
-   half-view of a terminal or a diff is no view at all.
+   half-view of a terminal or a diff is no view at all. Past 900px the screen
+   they take is the right-hand column, and the flock keeps the left - see the
+   desktop section at the foot of this file.
    --------------------------------------------------------------------------- */
 /* `inset: 0` is the layout viewport, which on iOS is taller than what you can
    actually see: the bottom of the view - the console's key row, the last rows
@@ -2071,6 +2189,11 @@ html, body {
 }
 
 .full-view.hidden { display: none; }
+#console-view.full-view {
+  top: var(--app-header-height, calc(var(--safe-top) + 52px));
+  height: calc(var(--app-height, 100dvh) - var(--app-header-height, calc(var(--safe-top) + 52px)));
+  padding-top: 0;
+}
 
 .view-head {
   flex-shrink: 0;
@@ -2120,6 +2243,56 @@ html, body {
   border-color: var(--accent-primary);
 }
 
+.view-switcher {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+.view-switcher.hidden { display: none !important; }
+.view-switcher button {
+  flex: none;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 12px/1.2 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.view-switcher button[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+}
+.console-status {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 10px;
+  max-width: min(70%, 280px);
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(18, 21, 29, 0.92);
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.console-status.hidden { display: none !important; }
+
+@media (max-width: 520px) {
+  .app-header.console-open { gap: 2px; padding-right: 5px; }
+  .view-switcher button { padding: 5px 6px; font-size: 11px; }
+}
+
 /* The terminal itself. xterm draws its own rows; all this owns is the room
    they get and the padding that keeps them off the notch. */
 .console-term {
@@ -2139,14 +2312,45 @@ html, body {
 .console-keys {
   flex-shrink: 0;
   display: flex;
-  gap: 6px;
+  gap: 4px;
+  /* The visual viewport already ends at the top of the software keyboard.
+     Adding the home-indicator inset here too leaves an oversized gap and
+     makes the row appear to jump upward when the keyboard opens. */
+  margin-bottom: 10px;
   padding: 8px 10px;
   overflow-x: auto;
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-surface);
 }
 
-.console-keys .key-btn { flex: 1 0 auto; min-width: 46px; }
+.console-keys .key-btn {
+  flex: 1 1 30px;
+  min-width: 30px;
+  height: 44px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.console-keys .console-attach-btn { flex: 0 0 40px; }
+
+.console-keys .key-btn svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The terminal key shortcuts are touch controls. */
+@media (min-width: 900px) {
+  #console-keys {
+    display: none !important;
+  }
+}
 
 /* A count on the header button: how many files the agent has touched. */
 #btn-changes {
@@ -2171,19 +2375,14 @@ html, body {
 
 .changes-count.hidden { display: none; }
 #btn-pane-chat.hidden { display: none; }
+#btn-view-normal.hidden { display: none; }
+#chat-btn-delete.hidden { display: none; }
 
-/* The chat of the pane on the right, covering its transcript: a desktop's
-   version of opening chat.html. */
-.pane-chat-frame {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  z-index: 20;
-  background: var(--bg-base);
+/* Normal is the phone's transcript surface. It is not a desktop pane view,
+   even if stale markup or app state forgets to add the hidden class. */
+@media (min-width: 900px) {
+  #btn-view-normal { display: none !important; }
 }
-.pane-chat-frame.hidden { display: none; }
 
 .changes-list {
   flex: 1;
@@ -2656,6 +2855,11 @@ html, body {
  * on the left that nothing closes - the chat opens beside it, and the back
  * button and the X that got you between them have nothing left to do.
  *
+ * Everything else the app opens goes in that same right-hand column: the
+ * console, the changed files, the tokens page and the settings. One column is
+ * the list of what there is, the other is whatever you asked to see of it, and
+ * nothing in the app covers the list.
+ *
  * The breakpoint is repeated once in app.js, which needs to know that closing
  * the flock is not a thing here.
  * --------------------------------------------------------------------------- */
@@ -2673,33 +2877,70 @@ html, body {
 }
 
 @media (min-width: 900px) {
+  /* Two columns that do not move: there is no URL bar to fold away here, so
+     the window is the frame and each column scrolls inside it. This is the
+     one place the document itself must not scroll - a page that scrolled
+     would carry the flock off the top of a screen that has room for it. */
   body {
     display: flex;
     width: 100vw;
     height: 100vh;
+    overflow: hidden;
   }
 
   .agent-picker {
-    position: relative;
-    inset: auto;
-    z-index: 1;
     order: -1;
     flex: 0 0 auto;
-    /* A phone's width, near enough: the rows, the sheep and the usage strip
-       were all drawn to fit one, and nothing here has to be re-thought. */
-    width: 380px;
+    width: var(--flock-width);
+    min-height: 0;
     height: var(--app-height, 100vh);
     border-right: 1px solid var(--border-subtle);
   }
 
+  /* Back to a box with its own overflow, and a head that is the top of it. */
+  .agent-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .agent-group-head { top: -8px; }
+
   /* Closing it is what a phone does. Here it is the furniture. */
   .agent-picker.hidden { display: flex; }
+
+  /* The console, the diff, the tokens page and the settings are the right
+     column's contents too, not a curtain over the window: what the flock is
+     for is picking what the other half shows, and a view that covered it took
+     that away - you had to close the console to get at the list that said
+     which pane the console would be of. So they start where the flock ends,
+     and switching rows underneath one keeps it open and re-aims it. */
+  .full-view {
+    left: var(--flock-width);
+    width: calc(100vw - var(--flock-width));
+  }
 
   .app-container {
     flex: 1 1 auto;
     width: auto;
     min-width: 0;
     position: relative;
+    top: auto;
+    left: auto;
+  }
+
+  /* On desktop the window stays fixed, so only the transcript column scrolls. */
+  .history-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* The flock is always open here, and the chat is the column beside it
+     rather than something behind it - nothing to hide. */
+  body:has(.agent-picker:not(.hidden)) .app-container {
+    display: flex;
   }
 
   /* Both of these say "go back to the list", and the list never left. */
@@ -2745,3 +2986,376 @@ html, body {
 /* The X only means something while there is a chat behind the flock to go
    back to - on a fresh start there is not. */
 .icon-btn.hidden { display: none; }
+
+/* ------------------------------------------------------------- The + sheet
+ *
+ * Every "+" in the app asks the same way: what kind of new thing, and then
+ * whatever that answer needs. A choice is a whole row rather than a radio
+ * button, because a thumb picking between two things on a phone wants a
+ * target, not a dot - and because each of them has a line of explanation
+ * underneath that a radio label has nowhere to put.
+ * ------------------------------------------------------------------------ */
+
+.new-sheet-title {
+  margin: 0 0 10px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.new-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  text-align: left;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.new-choice:active {
+  border-color: var(--accent-primary);
+  filter: brightness(1.15);
+}
+
+.new-choice-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--bg-surface);
+  color: var(--accent-primary);
+}
+
+.new-choice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.new-choice-name { font-weight: 600; }
+
+.new-choice-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* The second step: the settings the answer needs, and the button that does it. */
+.new-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.new-field select,
+.new-field input {
+  width: 100%;
+  padding: 9px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.new-row {
+  display: flex;
+  gap: 10px;
+}
+
+.new-go {
+  width: 100%;
+  padding: 12px;
+  margin: 2px 0 8px 0;
+  background: var(--accent-primary);
+  border: none;
+  border-radius: 11px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+}
+
+.new-go:active { filter: brightness(0.9); }
+
+.new-go[disabled] { opacity: 0.5; }
+
+/* A chat's sheep carries a speech bubble over its rump - see CHAT_BUBBLE. It
+   is outlined in the card's colour like the face and the ears, so it reads as
+   something laid over the fleece rather than a hole in it. */
+.sheep-bubble .bubble-body {
+  fill: var(--bg-card);
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.sheep-bubble .bubble-dot {
+  fill: currentColor;
+}
+
+/* Integrated chat view styles: all page-specific selectors stay inside this view. */
+#chat-chat-view {
+  --text: var(--text-primary); --text-2: var(--text-secondary); --text-3: var(--text-muted);
+  --accent: var(--accent-primary); --ok: var(--status-idle); --err: var(--status-blocked);
+  --work: var(--status-working); --border: var(--border-subtle);
+  position: relative; z-index: 6;
+  background: var(--bg-base); display: flex;
+  /* `1 0 auto`, same reason as `.history-container` above: an empty or brand
+     new chat is shorter than the screen, and without growth the composer
+     ends up stranded right under it instead of pinned to the bottom. */
+  flex-direction: column; min-height: 0; flex: 1 0 auto;
+}
+#chat-chat-view.hidden { display: none; }
+#chat-chat-view .hidden { display: none !important; }
+#chat-chat-view .bar { display: none !important; }
+@keyframes chat-pulse { 50% { opacity: 0.35; } }
+#chat-chat-view { flex: 1 0 auto; display: flex; flex-direction: column; min-height: 0; }
+/* Grows for the same reason `#chat-chat-view` itself does: a new or empty
+   chat's messages are shorter than the screen, and without this the composer
+   sits right under them instead of at the bottom the sticky input dock would
+   put it at on the plain transcript. */
+#chat-chat-view .scroll { flex: 1 0 auto; overflow-y: visible; padding: 12px 14px; }
+#chat-chat-view .bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) 10px 8px;
+  background: var(--bg-surface); border-bottom: 1px solid var(--border);
+}
+#chat-chat-view .bar-titles { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#chat-chat-view .bar-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#chat-chat-view .bar > .bar-title { flex: 1; }
+#chat-chat-view .bar-sub { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#chat-chat-view .icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 10px; border: 0;
+  background: transparent; color: var(--text-2); text-decoration: none;
+}
+#chat-chat-view .icon-btn:active { background: var(--bg-card); }
+#chat-chat-view textarea {
+  font: inherit; color: var(--text); background: var(--bg-input);
+  border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 10px;
+}
+#chat-chat-view .empty { color: var(--text-3); text-align: center; padding: 24px 0; }
+#chat-chat-view .messages { display: flex; flex-direction: column; gap: 10px; }
+#chat-chat-view .msg { max-width: 100%; overflow-wrap: anywhere; }
+#chat-chat-view .msg.user {
+  align-self: flex-end; max-width: 85%; white-space: pre-wrap;
+  background: #1f3a63; border-radius: 16px 16px 4px 16px; padding: 8px 12px;
+}
+#chat-chat-view .msg.assistant p { margin: 0 0 8px; }
+#chat-chat-view .msg.assistant p:last-child { margin-bottom: 0; }
+#chat-chat-view .msg.assistant h1, #chat-chat-view .msg.assistant h2, #chat-chat-view .msg.assistant h3 { font-size: 16px; margin: 10px 0 6px; }
+#chat-chat-view .msg.assistant ul { margin: 0 0 8px; padding-left: 20px; }
+#chat-chat-view .msg code { font-family: var(--font-mono); font-size: 13px; background: var(--bg-card); padding: 1px 4px; border-radius: 4px; }
+#chat-chat-view .msg pre {
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.4;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; overflow-x: auto; margin: 0 0 8px; white-space: pre;
+}
+#chat-chat-view .msg pre code { background: none; padding: 0; }
+#chat-chat-view .msg.error { color: var(--err); font-size: 13px; white-space: pre-wrap; font-family: var(--font-mono); }
+#chat-chat-view .msg.meta { color: var(--text-3); font-size: 12px; text-align: center; }
+#chat-chat-view details.tool {
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface);
+  font-size: 13px;
+}
+#chat-chat-view details.tool summary {
+  list-style: none; padding: 7px 10px; display: flex; gap: 8px; align-items: center;
+  color: var(--text-2); cursor: pointer;
+}
+#chat-chat-view details.tool summary::-webkit-details-marker { display: none; }
+#chat-chat-view details.tool summary .name { color: var(--text); font-weight: 600; flex: none; }
+#chat-chat-view details.tool summary .arg { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+#chat-chat-view details.tool summary .state { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--work); animation: chat-pulse 1.2s ease-in-out infinite; }
+#chat-chat-view details.tool.ok summary .state { background: var(--ok); animation: none; }
+#chat-chat-view details.tool.err summary .state { background: var(--err); animation: none; }
+#chat-chat-view details.tool.stale summary .state { background: var(--text-3); animation: none; }
+#chat-chat-view details.tool pre {
+  margin: 0; padding: 8px 10px; border-top: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 320px; overflow-y: auto; color: var(--text-2);
+}
+#chat-chat-view .typing { display: inline-flex; gap: 4px; padding: 4px 0; }
+#chat-chat-view .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: chat-pulse 1s infinite; }
+#chat-chat-view .typing i:nth-child(2) { animation-delay: 0.2s; }
+#chat-chat-view .typing i:nth-child(3) { animation-delay: 0.4s; }
+/* The conversation and the transcript both feed the shared composer in the
+   bottom dock. */
+#chat-chat-view .msg.user .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
+#chat-chat-view .msg.user .imgs img { max-width: 100%; max-height: 220px; border-radius: 10px; display: block; }
+#chat-chat-view .msg.user .imgs:last-child { margin-bottom: 2px; }
+#chat-chat-view .attach-strip {
+  display: flex; gap: 8px; overflow-x: auto; padding: 8px 10px 0;
+  background: var(--bg-surface); border-top: 1px solid var(--border);
+}
+#chat-chat-view .attach-strip:not(.hidden) + .composer { border-top: 0; }
+#chat-chat-view .queue-strip {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 8px 10px; background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+#chat-chat-view .queue-strip:not(.hidden) + .attach-strip, #chat-chat-view .queue-strip:not(.hidden) + .composer, #chat-chat-view .queue-strip:not(.hidden) + .attach-strip + .composer { border-top: 0; }
+#chat-chat-view .queued {
+  display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 8px;
+  padding: 9px 11px; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+#chat-chat-view .queued.failed { border-color: rgba(248, 81, 73, 0.45); }
+#chat-chat-view .queued-state {
+  grid-row: 1; align-self: center; padding: 2px 7px; border-radius: 999px;
+  background: rgba(139, 148, 158, 0.15); color: var(--text-3);
+  font-size: 11px; font-weight: 600;
+}
+#chat-chat-view .queued.failed .queued-state { background: rgba(248, 81, 73, 0.15); color: var(--err); }
+#chat-chat-view .queued-text {
+  grid-row: 1; min-width: 0; font-size: 13px; color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+#chat-chat-view .queued-why { grid-column: 1 / -1; font-size: 11px; color: var(--err); }
+#chat-chat-view .queued-acts { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 3px; }
+#chat-chat-view .queued-act {
+  flex: 1; min-width: 0; min-height: 42px;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0 10px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text-2); font-family: var(--font-sans); font-size: 13px; font-weight: 600;
+  white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+#chat-chat-view .queued-act:active { filter: brightness(1.3); }
+#chat-chat-view .queued-act.accent { color: var(--accent); border-color: rgba(47, 129, 247, 0.4); }
+#chat-chat-view .queued-act.danger { color: var(--err); }
+#chat-chat-view .thumb { position: relative; flex: none; }
+#chat-chat-view .thumb img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; display: block; }
+#chat-chat-view .thumb.loading img { opacity: 0.4; }
+#chat-chat-view .thumb button {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
+  border: 0; background: var(--bg-card); color: var(--text); font-size: 14px; line-height: 20px; padding: 0;
+}
+#chat-chat-view .attach {
+  flex: none; width: 38px; height: 38px; border: 0; background: transparent; color: var(--text-2);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+#chat-chat-view .ask {
+  border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg-card);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 14px;
+}
+#chat-chat-view .ask.open { border-color: var(--work); }
+#chat-chat-view .ask-arg { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+#chat-chat-view .ask details summary { color: var(--text-3); font-size: 12px; cursor: pointer; }
+#chat-chat-view .ask details pre { margin: 6px 0 0; max-height: 260px; overflow: auto; white-space: pre-wrap; }
+#chat-chat-view .ask-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+#chat-chat-view .ask-state { color: var(--text-3); font-size: 12px; }
+#chat-chat-view .btn {
+  font: inherit; font-weight: 600; color: var(--text); background: var(--bg-surface);
+  border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 14px;
+}
+#chat-chat-view .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+#chat-chat-view .btn.danger { color: var(--err); }
+#chat-chat-view .q { display: flex; flex-direction: column; gap: 6px; }
+#chat-chat-view .q-text { font-weight: 600; }
+#chat-chat-view .q-text em { font-weight: 400; color: var(--text-3); font-style: normal; }
+#chat-chat-view .opt {
+  font: inherit; text-align: left; color: var(--text); background: var(--bg-surface);
+  border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 12px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+#chat-chat-view .opt span { font-size: 12px; color: var(--text-2); }
+#chat-chat-view .opt.on { border-color: var(--accent); background: rgba(47, 129, 247, 0.15); }
+#chat-chat-view .opt:disabled:not(.on) { opacity: 0.5; }
+#chat-chat-view .slash {
+  font: 600 20px/1 var(--font-mono);
+}
+.input-dock .slash-menu {
+  max-height: min(40dvh, 320px); overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column; padding: 4px 0;
+}
+.input-dock .slash-menu.hidden { display: none; }
+.input-dock .slash-item {
+  font: inherit; text-align: left; color: var(--text-primary); background: transparent; border: 0;
+  padding: 8px 14px; display: flex; flex-direction: column; gap: 2px;
+}
+.input-dock .slash-item:active { background: var(--bg-card); }
+.input-dock .slash-name { font-family: var(--font-mono); font-size: 14px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+.input-dock .slash-name i { font-style: normal; font-weight: 400; color: var(--text-muted); }
+.input-dock .slash-name em { margin-left: auto; font-style: normal; font-family: var(--font-sans); font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.input-dock .slash-desc { font-size: 12px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.input-dock .slash-empty { color: var(--text-muted); font-size: 13px; padding: 10px 14px; }
+#chat-chat-view .cmd {
+  font-family: var(--font-mono); font-size: 14px; font-weight: 600;
+  background: rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 1px 6px;
+}
+.input-dock .slash-name { white-space: nowrap; min-width: 0; }
+.input-dock .slash-name i { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#chat-chat-view .msg .table { overflow-x: auto; margin: 0 0 8px; }
+#chat-chat-view .msg table { border-collapse: collapse; font-size: 13px; }
+#chat-chat-view .msg th, #chat-chat-view .msg td { border: 1px solid var(--border-strong); padding: 4px 8px; text-align: left; vertical-align: top; }
+#chat-chat-view .msg th { background: var(--bg-card); font-weight: 600; }
+#chat-chat-view .msg a { color: #7fb2ff; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+
+/* The transcript's jump-to-bottom button sits above its own footer; the chat
+   has no separate footer, its composer, so the button floats just above that
+   instead. Still `position: fixed` (inherited from `.btn-scroll-bottom`), so
+   it tracks the viewport rather than the message list scrolling under it. */
+#chat-chat-view .btn-scroll-bottom {
+  bottom: calc(72px + var(--safe-bottom));
+}
+
+/* On a Mac window the document does not scroll (see the note above
+   `.history-container`), so the chat needs the same internal scroller the
+   transcript gets there: only the messages themselves move, and the composer
+   and its strips stay put at the foot of the column. */
+@media (min-width: 900px) {
+  #chat-chat-view {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  #chat-chat-view .scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* On phones, keep the composer controls together above a full-width input.
+   The desktop composer stays on its existing single row. */
+@media (max-width: 899px) {
+  .prompt-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .prompt-form > .prompt-input {
+    order: 0;
+    grid-row: 2;
+    width: 100%;
+    min-width: 0;
+  }
+  .prompt-form > .prompt-actions {
+    display: flex;
+    grid-row: 1;
+    flex-direction: row;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .prompt-form.stacked > .prompt-actions {
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+}

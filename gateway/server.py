@@ -31,6 +31,7 @@ import machine
 import wsproto
 import chat
 import panechat
+import codex_queue
 import heartbeat
 from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
 from terminal import TerminalStream, TerminalError
@@ -54,6 +55,34 @@ WEB_DIR = (Path(__file__).resolve().parent.parent / "web").resolve()
 # The dispatch thread, once `run` starts it. Held so a freshly queued prompt can
 # nudge it awake instead of waiting out a poll.
 SCHEDULER = None
+PROJECT_ORDER_PATH = sched_config.STATE_DIR / "project-order.json"
+PROJECT_ORDER_LOCK = threading.Lock()
+
+
+def load_project_order() -> list[str]:
+    try:
+        value = json.loads(PROJECT_ORDER_PATH.read_text(encoding="utf-8"))
+        if isinstance(value, list):
+            return [key for key in value if isinstance(key, str)][:500]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def save_project_order(value) -> bool:
+    if not isinstance(value, list) or len(value) > 500 or any(
+        not isinstance(key, str) or len(key) > 4096 for key in value
+    ):
+        return False
+    try:
+        PROJECT_ORDER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = PROJECT_ORDER_PATH.with_suffix(".tmp")
+        with PROJECT_ORDER_LOCK:
+            temporary.write_text(json.dumps(value), encoding="utf-8")
+            temporary.replace(PROJECT_ORDER_PATH)
+        return True
+    except OSError:
+        return False
 
 
 
@@ -263,7 +292,11 @@ def build_agent_rows(ws_list: list, tabs: list, panes: list, agents_raw: list) -
     agent pane and says so; a tab with no agent at all still gets a single row
     for its own pane, which is what keeps an empty workspace reachable.
     """
-    by_pane = {a.get("pane_id"): a for a in agents_raw}
+    # pane.list carries the same agent identity as pane.get. During an idle
+    # transition agent.list can briefly omit a pane, which otherwise turns its
+    # chat tab into a shell icon and hides the conversation on the phone.
+    by_pane = {p.get("pane_id"): p for p in panes if p.get("agent")}
+    by_pane.update({a.get("pane_id"): a for a in agents_raw if a.get("pane_id")})
     tabs_by_ws = {}
     for tab in tabs:
         tabs_by_ws.setdefault(tab.get("workspace_id"), []).append(tab)
@@ -413,6 +446,38 @@ def chat_dirs() -> list:
     return sorted(seen.values(), key=lambda d: d["cwd"])
 
 
+def flock_chats(rows: list) -> list:
+    """The headless chats, shaped enough to sit in the flock beside the panes.
+
+    All they are missing is which project they belong under, and a chat's cwd
+    is a project root by construction - `handle_new` refuses any directory the
+    flock has no pane in - so the rows just read are enough to name it without
+    asking Herdr a second time.
+    """
+    try:
+        chats = chat.summaries()
+    except Exception:
+        return []
+    if not chats:
+        return []
+    names = {}
+    for row in rows:
+        root = (row.get("project") or "").rstrip("/")
+        if root and root not in names:
+            names[root] = row.get("project_name") or root.rsplit("/", 1)[-1]
+    out = []
+    for meta in chats:
+        cwd = (meta.get("cwd") or "").rstrip("/")
+        out.append({
+            **meta,
+            "project": cwd,
+            # A chat outlives the panes of its project: the heading still has
+            # to be called something once the last workspace is closed.
+            "project_name": names.get(cwd) or cwd.rsplit("/", 1)[-1] or cwd,
+        })
+    return out
+
+
 def chat_notify(title: str, body: str, url: str) -> None:
     """A chat finished or wants an answer: park it like a pane that stopped,
     with where the notification should open, and push."""
@@ -422,8 +487,91 @@ def chat_notify(title: str, body: str, url: str) -> None:
         threading.Thread(target=push.broadcast, daemon=True).start()
 
 
+def queue_prompt(pane_id: str, prompt: str) -> tuple:
+    """Deliver a command or queue a prompt; return its payload and status.
+
+    There is one of these because there is one send path: whatever the phone is
+    looking at - the transcript, a pane read as a chat, the queue tool - a
+    prompt joins the queue and the dispatcher decides when the pane and the
+    window can take it. `/clear` is a local session command, so it can go
+    straight to the agent without waiting for a turn or a usage window.
+    """
+    prompt = (prompt or "").strip()
+    pane_id = (pane_id or "").strip()
+    if not prompt:
+        return {"ok": False, "error": "Empty prompt"}, 400
+    if not pane_id:
+        return {"ok": False, "error": "No chat given"}, 400
+
+    pane = call_herdr_rpc("pane.get", {"pane_id": pane_id}).get("result", {}).get("pane")
+    if not pane:
+        return {"ok": False, "error": f"No such chat: {pane_id}"}, 404
+
+    # Only a pane without an agent is a shell. Herdr can report an existing
+    # Codex as `unknown`; treating that status as a shell types chat messages
+    # into Codex's composer and reports success without submitting them.
+    status = pane.get("agent_status")
+    if not pane.get("agent"):
+        res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
+        if "error" not in res:
+            res = call_herdr_rpc(
+                "pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]}
+            )
+        if "error" in res:
+            return res, 400
+        return {"ok": True, "delivered": "terminal"}, 200
+
+    if status == "unknown":
+        if pane.get("agent") == "codex":
+            if prompt.startswith("/"):
+                sent_at = time.time()
+                res = send_codex_prompt(pane_id, prompt)
+                if "error" in res:
+                    return res, 400
+                if prompt == "/clear":
+                    panechat.cleared(pane_id, pane, sent_at)
+            else:
+                try:
+                    codex_queue.send(pane_id, prompt)
+                except codex_queue.CodexQueueError as error:
+                    return {"ok": False, "error": str(error)}, 409
+        else:
+            res = call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
+            if "error" in res:
+                return res, 400
+        return {"ok": True, "delivered": "agent"}, 200
+
+    if prompt == "/clear":
+        sent_at = time.time()
+        res = send_codex_prompt(pane_id, prompt) if pane.get("agent") == "codex" else \
+            call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
+        if "error" in res:
+            return res, 400
+        panechat.cleared(pane_id, pane, sent_at)
+        return {"ok": True, "delivered": "agent"}, 200
+
+    conn = sched_db.connect()
+    try:
+        prompt_id = sched_db.add(
+            conn,
+            pane_id=pane_id,
+            prompt=prompt,
+            # Recorded now so a prompt can outlive the pane it was queued
+            # for: this is what a reboot resumes from.
+            workspace_id=pane.get("workspace_id"),
+            session_uuid=(pane.get("agent_session") or {}).get("value"),
+            cwd=pane.get("cwd"),
+        )
+    finally:
+        conn.close()
+    if SCHEDULER is not None:
+        SCHEDULER.wake()
+    return {"ok": True, "id": prompt_id}, 200
+
+
 chat.init_chat_routes(register_api_route, chat_dirs, chat_notify)
 chat.register_kind("pane", panechat.get)
+panechat.init(queue_prompt)
 heartbeat.set_notifier(chat_notify)
 
 
@@ -662,8 +810,6 @@ CSP = "; ".join([
     "media-src 'self'",
     "worker-src 'self'",
     "manifest-src 'self'",
-    # Only the app itself: on a desktop it shows a pane's chat in a frame.
-    "frame-ancestors 'self'",
     "base-uri 'none'",
     "form-action 'none'",
 ])
@@ -842,7 +988,15 @@ class HerdrHandler(BaseHTTPRequestHandler):
             stream.resize(cols, rows)
         elif kind == "scroll":
             direction = "up" if msg.get("direction") == "up" else "down"
-            stream.scroll(direction, clamp_int(msg.get("lines"), 1, 100, 3))
+            column, row = msg.get("column"), msg.get("row")
+            size = stream.size
+            if (size and isinstance(column, int) and not isinstance(column, bool)
+                    and isinstance(row, int) and not isinstance(row, bool)):
+                column = min(max(column, 0), size[0] - 1)
+                row = min(max(row, 0), size[1] - 1)
+            else:
+                column = row = None
+            stream.scroll(direction, clamp_int(msg.get("lines"), 1, 100, 3), column, row)
 
     def do_GET(self):
         self.head_only = self.command == "HEAD"
@@ -862,6 +1016,14 @@ class HerdrHandler(BaseHTTPRequestHandler):
             _API_ROUTES["GET"][path](self, qs)
             return
 
+        if path == "/api/project-order":
+            self.send_json({
+                "ok": True,
+                "saved": PROJECT_ORDER_PATH.exists(),
+                "order": load_project_order(),
+            })
+            return
+
 
         # API: List all active agents
         if path == "/api/agents":
@@ -870,7 +1032,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 self.send_json({"error": e.args[0]}, 500)
                 return
-            self.send_json({"ok": True, "agents": agents})
+            # The headless chats ride along on the same poll: they are rows in
+            # the same list, and a second request for them would be a second
+            # round trip for a list that is already being drawn.
+            self.send_json({"ok": True, "agents": agents,
+                            "chats": flock_chats(agents)})
             return
 
         # API: Who stopped working most recently. A push carries no payload, so
@@ -891,7 +1057,12 @@ class HerdrHandler(BaseHTTPRequestHandler):
         # API: usage windows. Free to ask - it is the same endpoint Claude Code
         # uses for its own limits and costs no tokens.
         if path == "/api/queue/quota":
-            self.send_json({"ok": True, **quota_payload()})
+            # The machine strip is off unless somebody turned it on, and
+            # reading it costs a pass over every counter the host keeps - so
+            # the phone says whether it is looking rather than being handed a
+            # snapshot nobody will draw.
+            want_machine = qs.get("machine", ["1"])[0] != "0"
+            self.send_json({"ok": True, **quota_payload(want_machine)})
             return
 
         # API: what has been spent, hour by hour, out of the agents' own logs.
@@ -996,7 +1167,7 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 pane_id = unquote(parts[3])
                 # A wrong number is tolerated, so a value that is not a
                 # number should not drop the connection either.
-                lines = clamp_int(qs.get("lines", ["100"])[0], 10, 1000, 100)
+                lines = clamp_int(qs.get("lines", ["400"])[0], 10, 1000, 400)
                 source = qs.get("source", ["recent_unwrapped"])[0]
                 # "ansi" keeps the SGR sequences so the client can mirror the
                 # terminal's own colours; "text" is the plain fallback.
@@ -1009,11 +1180,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
                     "strip_ansi": fmt != "ansi",
                 }
 
-                res = call_herdr_rpc("agent.read", dict(read_params, target=pane_id))
-
-                if "error" in res:
-                    # fallback to pane.read if agent.read fails
-                    res = call_herdr_rpc("pane.read", dict(read_params, pane_id=pane_id))
+                # This endpoint displays the terminal's own scrollback. Read
+                # it through pane.read so the requested line count and source
+                # apply to the pane buffer; agent.read can return the agent's
+                # shorter output snapshot instead.
+                res = call_herdr_rpc("pane.read", dict(read_params, pane_id=pane_id))
 
                 if "error" in res:
                     self.send_json(res, 400)
@@ -1115,6 +1286,14 @@ class HerdrHandler(BaseHTTPRequestHandler):
             _API_ROUTES["POST"][path](self, body)
             return
 
+        if path == "/api/project-order":
+            order = body.get("order") if isinstance(body, dict) else None
+            if not save_project_order(order):
+                self.send_json({"ok": False, "error": "Invalid project order"}, 400)
+                return
+            self.send_json({"ok": True})
+            return
+
         # API: Register a Web Push subscription
         if path == "/api/push/subscribe":
             sub = body.get("subscription") or body
@@ -1136,58 +1315,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "sent": push.broadcast()})
             return
 
-        # API: queue a prompt for a chat. The dispatcher delivers it as soon as
-        # that pane is free and the subscription has room - which, for an idle
-        # pane in an open window, is within the second.
+        # API: deliver /clear immediately; queue regular chat prompts until the
+        # pane is free and the subscription has room.
         if path == "/api/queue":
-            prompt = (body.get("prompt") or "").strip()
-            pane_id = (body.get("pane_id") or "").strip()
-            if not prompt:
-                self.send_json({"ok": False, "error": "Empty prompt"}, 400)
-                return
-            if not pane_id:
-                self.send_json({"ok": False, "error": "No chat given"}, 400)
-                return
-
-            pane = call_herdr_rpc("pane.get", {"pane_id": pane_id}).get("result", {}).get("pane")
-            if not pane:
-                self.send_json({"ok": False, "error": f"No such chat: {pane_id}"}, 404)
-                return
-
-            # A pane with no agent in it is a shell, and the queue has nothing
-            # to deliver into: holding here waits on an agent that nothing will
-            # ever start. So it goes to the terminal as typed input, which is
-            # also what lets `claude` sent from the phone open the session.
-            status = pane.get("agent_status")
-            if not status or status == "unknown":
-                res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
-                if "error" not in res:
-                    res = call_herdr_rpc(
-                        "pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]}
-                    )
-                if "error" in res:
-                    self.send_json(res, 400)
-                    return
-                self.send_json({"ok": True, "delivered": "terminal"})
-                return
-
-            conn = sched_db.connect()
-            try:
-                prompt_id = sched_db.add(
-                    conn,
-                    pane_id=pane_id,
-                    prompt=prompt,
-                    # Recorded now so a prompt can outlive the pane it was
-                    # queued for: this is what a reboot resumes from.
-                    workspace_id=pane.get("workspace_id"),
-                    session_uuid=(pane.get("agent_session") or {}).get("value"),
-                    cwd=pane.get("cwd"),
-                )
-            finally:
-                conn.close()
-            if SCHEDULER is not None:
-                SCHEDULER.wake()
-            self.send_json({"ok": True, "id": prompt_id})
+            payload, code = queue_prompt(body.get("pane_id"), body.get("prompt"))
+            self.send_json(payload, code)
             return
 
         # API: act on a queued prompt. /api/queue/{id}/{delete|update}
@@ -1239,8 +1371,13 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 return
 
         # API: Create a workspace
+        # A bare terminal belongs to no project, so it opens in the home
+        # directory rather than wherever Herdr happens to be standing -- a
+        # workspace that inherits a checkout is one the phone then files under
+        # that project's heading, which is not what "+ New > Terminal" asked for.
         if path == "/api/workspaces":
-            res = call_herdr_rpc("workspace.create", {})
+            cwd = (body.get("cwd") or "").strip() or str(Path.home())
+            res = call_herdr_rpc("workspace.create", {"cwd": cwd})
             if "error" in res:
                 self.send_json(res, 400)
                 return
@@ -1453,9 +1590,8 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
                 return
 
-        # Prompts do not have a direct route any more: everything the phone
-        # sends goes through /api/queue, which is what lets a message typed at
-        # 4am wait for the window instead of failing against an empty one.
+        # Prompts use /api/queue, which lets regular messages wait for a free
+        # pane or usage window. Session commands are handled there immediately.
 
         # API: Send keys (e.g. ctrl+c, esc, enter)
         # /api/agents/{pane_id}/keys
@@ -1818,7 +1954,7 @@ def agent_quota(agent: str) -> dict:
     }
 
 
-def quota_payload() -> dict:
+def quota_payload(include_machine: bool = True) -> dict:
     """What every agent on this machine has left to spend."""
     agents = agents_running() or ["claude"]
     if "codex" in agents:
@@ -1837,11 +1973,25 @@ def quota_payload() -> dict:
         "agents": readings,
         # What the machine itself has left, beside what the subscriptions have:
         # it rides on this poll rather than one of its own, because it is read
-        # at the same moment, for the same glance.
-        "machine": machine.snapshot(),
+        # at the same moment, for the same glance - when the phone is drawing
+        # it at all.
+        "machine": machine.snapshot() if include_machine else None,
         # One line for the whole machine, for anything that wants a yes or no.
         "blocked": all(r["blocked"] for r in readings) if readings else False,
     }
+
+
+def send_codex_prompt(pane_id: str, prompt: str) -> dict:
+    """Paste into Codex, then submit after it has processed the text."""
+    res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
+    if "error" in res:
+        return res
+    time.sleep(0.15)
+    res = call_herdr_rpc("agent.send_keys", {"target": pane_id, "keys": ["ctrl+m"]})
+    if "error" not in res and prompt.startswith("/"):
+        time.sleep(0.15)
+        res = call_herdr_rpc("agent.send_keys", {"target": pane_id, "keys": ["ctrl+m"]})
+    return res
 
 
 def send_now(queued) -> tuple:
@@ -1853,9 +2003,20 @@ def send_now(queued) -> tuple:
     hold what arrives mid-turn and read it when they come up for air, which is
     the same thing the queue was arranging, minus the waiting.
     """
-    res = call_herdr_rpc("agent.prompt", {"target": queued.pane_id, "text": queued.prompt})
+    pane = call_herdr_rpc("pane.get", {"pane_id": queued.pane_id}).get("result", {}).get("pane") or {}
+    if pane.get("agent") == "codex" and not queued.prompt.startswith("/"):
+        try:
+            codex_queue.send(queued.pane_id, queued.prompt)
+            return True, ""
+        except codex_queue.CodexQueueError as error:
+            return False, str(error)
+    res = (send_codex_prompt(queued.pane_id, queued.prompt) if pane.get("agent") == "codex" else
+           call_herdr_rpc("agent.prompt", {"target": queued.pane_id, "text": queued.prompt}))
     if "error" not in res:
         return True, ""
+    if pane.get("agent") == "codex":
+        error = res["error"]
+        return False, error.get("message") if isinstance(error, dict) else str(error)
     # No agent in the pane: it is a shell, and what it wants is keystrokes.
     typed = call_herdr_rpc("pane.send_text",
                            {"pane_id": queued.pane_id, "text": queued.prompt})

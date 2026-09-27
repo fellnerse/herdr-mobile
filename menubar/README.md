@@ -84,3 +84,26 @@ An orphaned gateway from a previous run is reclaimed automatically — but only
 after confirming it is running the same `server.py`, never an unrelated
 process. `caffeinate` is started with `-w <pid>`, so it exits with the app even
 if the app is killed, rather than holding the Mac awake indefinitely.
+
+## If the gateway stops after login
+
+SheepIt retries a failed gateway launch after 5, 10, 20, 40, then 60 seconds
+between attempts. The menu shows **Gateway stopped; retrying** until it starts.
+**Turn Off** cancels pending retries. If the gateway stays up for 30 seconds,
+the next failure starts a fresh 5-second retry cycle.
+
+The app records each launch, exit status, retry, port conflict, and the
+gateway's unbuffered stdout and stderr in `~/Library/Logs/SheepIt/gateway.log`.
+At startup, a log over 1 MiB moves to `gateway.log.old`. Check the log and
+the port before restarting the app:
+
+```bash
+tail -n 100 ~/Library/Logs/SheepIt/gateway.log
+pgrep -fl 'SheepIt|gateway/server.py'
+/usr/sbin/lsof -nP -iTCP:3009 -sTCP:LISTEN
+```
+
+On 2026-09-27, the app was running after a Mac restart but no gateway was
+listening. The gateway started when run directly and after restarting SheepIt.
+The initial failure was not captured, so its cause remains unknown. The log
+now records the next startup failure so it can be diagnosed.

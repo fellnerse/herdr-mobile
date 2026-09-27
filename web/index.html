@@ -7,9 +7,14 @@
 
   <!-- Apple iOS Web App / PWA Capabilities -->
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Sheep It">
-  <meta name="theme-color" content="#12151d">
+  <!-- Safari tints its own status strip and bottom URL bar with this, so it
+       has to be the colour at the screen's edges or it reads as a band laid
+       over the page. The flock is what the app opens on, so this is the
+       flock's background; syncThemeColor in app.js moves it to the surface
+       colour once a chat, whose top and bottom are both chrome, is open. -->
+  <meta name="theme-color" content="#090a0f">
 
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
@@ -22,7 +27,7 @@
 </head>
 <body>
   <div id="app" class="app-container">
-    <!-- Agent switcher: the only thing in the top bar -->
+    <!-- Project and current-view controls share the header. -->
     <header class="app-header">
       <!-- The way back to the flock, which is the page this one opened from -->
       <button id="agent-select" class="agent-select" aria-label="Back to projects">
@@ -32,19 +37,14 @@
         <span id="agent-select-dot" class="agent-dot unknown"></span>
         <span id="agent-select-name" class="agent-select-name">Loading…</span>
       </button>
-      <button type="button" id="btn-console" class="icon-btn" aria-label="Console" title="Console">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2.5" y="4" width="19" height="16" rx="2"></rect>
-          <polyline points="6.5 9 9.5 12 6.5 15"></polyline>
-          <line x1="12" y1="15.5" x2="17" y2="15.5"></line>
-        </svg>
+      <nav id="view-switcher" class="view-switcher hidden" aria-label="Pane view">
+        <button type="button" id="btn-pane-chat" data-view="chat">Chat</button>
+        <button type="button" id="btn-view-normal" data-view="normal">Normal</button>
+        <button type="button" id="btn-console" data-view="console">Console</button>
+      </nav>
+      <button type="button" id="chat-btn-delete" class="icon-btn hidden" aria-label="Delete chat" title="Delete chat">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>
       </button>
-      <!-- The same Claude Code as messages, read from its session log -->
-      <a id="btn-pane-chat" href="/chat.html" class="icon-btn hidden" aria-label="Chat view" title="Chat view">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.8 8.8 0 0 1-4-.9L3 20.5l1.5-4.3A8 8 0 0 1 3.5 11.5 8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4z"></path>
-        </svg>
-      </a>
       <button type="button" id="btn-changes" class="icon-btn" aria-label="Changed files" title="Changed files">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14.5 2.5H6a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -55,32 +55,15 @@
         </svg>
         <span id="changes-count" class="changes-count hidden"></span>
       </button>
-      <button type="button" id="btn-keys" class="icon-btn header-keys" aria-label="Key palette" title="Key palette">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="6" width="20" height="12" rx="2"></rect>
-          <line x1="6" y1="10" x2="6" y2="10"></line>
-          <line x1="10" y1="10" x2="10" y2="10"></line>
-          <line x1="14" y1="10" x2="14" y2="10"></line>
-          <line x1="18" y1="10" x2="18" y2="10"></line>
-          <line x1="8" y1="14" x2="16" y2="14"></line>
-        </svg>
-      </button>
-      <button id="btn-settings" class="icon-btn header-gear" aria-label="Settings" title="Settings">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-        </svg>
-        <span id="conn-indicator" class="conn-dot connected" title="Connection status"></span>
-      </button>
-    </header>
 
-    <!-- The tabs of the worktree you are in. The overview lists worktrees, so
-         this is where a tab is chosen, named and closed. -->
-    <nav id="tab-strip" class="tab-strip hidden" aria-label="Tabs in this worktree"></nav>
+      <!-- The current worktree's tabs stay in the shared header across its
+           transcript, chat, and Console views. -->
+      <nav id="tab-strip" class="tab-strip hidden" aria-label="Tabs in this worktree"></nav>
+
+    </header>
 
     <!-- Scrollable Transcript -->
     <!-- On a desktop, a Claude Code pane's chat, over the transcript -->
-    <iframe id="pane-chat-frame" class="pane-chat-frame hidden" title="Chat"></iframe>
     <main id="history-container" class="history-container">
       <div id="history-content" class="history-content">
         <div class="history-empty">No active agent selected.</div>
@@ -93,8 +76,23 @@
       </button>
     </main>
 
+    <section id="chat-chat-view" class="chat-view hidden">
+
+      <div id="chat-messages" class="scroll messages"></div>
+      <button id="chat-btn-scroll-bottom" class="btn-scroll-bottom hidden" aria-label="Jump to bottom">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <polyline points="19 12 12 19 5 12"></polyline>
+        </svg>
+      </button>
+      <!-- What the queue is holding for this pane, above the box it was typed in -->
+      <div id="chat-queue-strip" class="queue-strip hidden"></div>
+      <div id="chat-attach-strip" class="attach-strip hidden"></div>
+    </section>
+
     <!-- Bottom Input Dock -->
     <footer class="input-dock">
+      <div id="chat-slash-menu" class="slash-menu hidden" role="listbox"></div>
       <!-- What is waiting to go to this chat, above the box it was typed in -->
       <div id="chat-queue" class="chat-queue hidden"></div>
 
@@ -140,7 +138,7 @@
            thumbnail here is only shown while its path is still in it. -->
       <div id="attach-strip" class="attach-strip hidden"></div>
 
-      <form id="prompt-form" class="prompt-form">
+      <form id="prompt-form" class="prompt-form composer">
         <textarea
           id="prompt-input"
           class="prompt-input"
@@ -163,19 +161,34 @@
               <polyline points="6 12 12 6 18 12"></polyline>
             </svg>
           </button>
-          <button type="button" id="btn-attach" class="btn-attach" aria-label="Attach a screenshot or photo" title="Attach an image">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21.4 11.1 12.3 20.2a5.5 5.5 0 0 1-7.8-7.8l9.2-9.1a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.1a1.8 1.8 0 0 1-2.6-2.6l8.5-8.4"></path>
+          <button type="button" id="btn-attach" class="btn-attach" aria-label="Attach image" title="Attach image">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline>
             </svg>
           </button>
+          <button type="button" id="btn-paste-image" class="btn-attach normal-only" aria-label="Paste photo from clipboard" title="Paste photo from clipboard">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5h6M8 15l2.5-2.5L13 15l1.5-1.5L17 16H8z"/><circle cx="15.5" cy="9" r="1"/></svg>
+          </button>
+          <button type="button" id="chat-btn-slash" class="btn-attach slash chat-only" aria-label="Skills and commands">/</button>
+          <input type="file" id="chat-attach-input" accept="image/*" multiple hidden>
+          <button type="button" id="btn-keys" class="btn-attach btn-keys normal-only" aria-label="Keyboard keys" title="Keyboard keys" aria-pressed="false">⌨</button>
+          <div id="composer-menu" class="composer-menu normal-only">
+            <button type="button" id="btn-more" class="btn-attach btn-more" aria-label="More composer actions" title="More" aria-haspopup="menu" aria-expanded="false">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></svg>
+            </button>
+            <div id="composer-menu-panel" class="composer-menu-panel hidden" role="menu" aria-label="Composer actions">
+              <button type="button" id="btn-cycle-mode" class="composer-menu-item" role="menuitem">Agent mode: <span id="mode-current">unknown</span></button>
+              <button type="button" id="btn-copy" class="composer-menu-item" role="menuitem">Copy transcript</button>
+            </div>
+          </div>
           <!-- iOS turns this into Photo Library / Take Photo / Choose File. -->
           <input type="file" id="attach-input" class="attach-input" accept="image/*" multiple>
-          <button type="submit" id="btn-send" class="btn-send" aria-label="Send prompt" disabled>
+          <button type="submit" id="btn-send" class="btn-send send" aria-label="Send prompt" disabled>
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              <line x1="12" y1="19" x2="12" y2="5"></line>
+              <polyline points="5 12 12 5 19 12"></polyline>
             </svg>
           </button>
+          <button type="button" id="chat-btn-stop" class="send stop hidden normal-stop" aria-label="Stop agent" title="Stop agent"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg></button>
         </div>
       </form>
     </footer>
@@ -195,12 +208,6 @@
           <line x1="18" y1="20" x2="18" y2="9"></line>
         </svg>
       </button>
-      <!-- Claude Code as a chat rather than a terminal (proof of concept) -->
-      <a id="btn-chat" href="/chat.html" class="icon-btn" aria-label="Chat" title="Chat">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg>
-      </a>
       <button id="btn-flock-settings" class="icon-btn" aria-label="Global Settings" title="Global Settings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>
@@ -229,33 +236,24 @@
 
   <!-- The console: this pane's own terminal, not a reading of it -->
   <section id="console-view" class="full-view hidden" role="dialog" aria-label="Console">
-    <header class="view-head">
-      <div class="view-head-text">
-        <span class="view-title">Console</span>
-        <span id="console-sub" class="view-sub">connecting…</span>
-      </div>
-      <button id="btn-console-fit" class="view-action" title="Resize the pane to this screen - it moves on the desktop too">Fit</button>
-      <button id="btn-console-keyboard" class="view-action" aria-label="Show keyboard">Keyboard</button>
-      <button id="btn-close-console" class="icon-btn" aria-label="Close console">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18"></line>
-          <line x1="6" y1="6" x2="18" y2="18"></line>
-        </svg>
-      </button>
-    </header>
+    <div id="console-sub" class="console-status hidden" role="status" aria-live="polite"></div>
     <div id="console-term" class="console-term"></div>
     <!-- The keys a touch keyboard has no room for, and the ones a terminal
-         needs most. They send the bytes themselves, not a key name. -->
-    <div class="console-keys">
-      <button type="button" class="key-btn" data-seq="\u001b">esc</button>
-      <button type="button" class="key-btn" data-seq="\t">tab</button>
-      <button type="button" class="key-btn key-no" data-seq="\u0003">^C</button>
-      <button type="button" class="key-btn" data-seq="\u001b[A">↑</button>
-      <button type="button" class="key-btn" data-seq="\u001b[B">↓</button>
-      <button type="button" class="key-btn" data-seq="\u001b[D">←</button>
-      <button type="button" class="key-btn" data-seq="\u001b[C">→</button>
-      <button type="button" class="key-btn key-enter" data-seq="\r">⏎</button>
+         needs most. Same key names as #keys-bar; KEY_VOCAB in app.js looks up
+         the bytes these send instead of an RPC name. -->
+    <div id="console-keys" class="console-keys">
+      <button type="button" id="console-attach" class="key-btn console-attach-btn" aria-label="Attach photo or file" title="Attach photo or file"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21.4 11.1 12.2 20.3a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button>
+      <button type="button" id="console-paste-photo" class="key-btn console-attach-btn" aria-label="Paste photo from clipboard" title="Paste photo from clipboard"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5h6M8 15l2.5-2.5L13 15l1.5-1.5L17 16H8z"/><circle cx="15.5" cy="9" r="1"/></svg></button>
+      <button type="button" class="key-btn" data-key="esc">esc</button>
+      <button type="button" class="key-btn" data-key="tab">tab</button>
+      <button type="button" class="key-btn key-no" data-key="ctrl+c">^C</button>
+      <button type="button" class="key-btn key-arrow" data-key="up" aria-label="Up arrow"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+      <button type="button" class="key-btn key-arrow" data-key="down" aria-label="Down arrow"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14m6-6-6 6-6-6"/></svg></button>
+      <button type="button" class="key-btn key-arrow" data-key="left" aria-label="Left arrow"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 12H5m6-6-6 6 6 6"/></svg></button>
+      <button type="button" class="key-btn key-arrow" data-key="right" aria-label="Right arrow"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
+      <button type="button" class="key-btn key-enter" data-key="enter" aria-label="Enter"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 7v5h14M13 6l6 6-6 6"/></svg></button>
     </div>
+    <input type="file" id="console-attach-input" accept="image/*" multiple hidden>
   </section>
 
   <!-- Changed files: what the agent actually did to the working tree -->
@@ -315,7 +313,10 @@
     </header>
     <div id="global-settings-body" class="settings-body">
       <div class="settings-section">
-        <div class="settings-section-title">Notifications</div>
+        <div class="settings-section-head">
+          <div class="settings-section-title">Notifications</div>
+          <button type="button" id="btn-test-push" class="sheet-btn-small" disabled>Send test notification</button>
+        </div>
         <div class="sheet-row">
           <label for="toggle-push">
             Notify when an agent needs you
@@ -329,6 +330,17 @@
             <span class="sheet-hint">a finished turn or a question, while the app is open</span>
           </label>
           <input type="checkbox" id="toggle-bleat">
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Overview</div>
+        <div class="sheet-row">
+          <label for="toggle-machine">
+            Show machine load
+            <span class="sheet-hint">cpu, ram, swap, disk and network of the machine the agents run on</span>
+          </label>
+          <input type="checkbox" id="toggle-machine">
         </div>
       </div>
 
@@ -348,61 +360,20 @@
   <!-- Settings sheet -->
   <div id="sheet-backdrop" class="sheet-backdrop hidden"></div>
 
-  <section id="settings-sheet" class="settings-sheet hidden" aria-label="Settings">
+  <!-- What every "+" asks. One sheet for all of them: at the top of the flock
+       it asks chat or terminal, on a project heading or the tab strip it asks
+       worktree or tab, and the second step is whatever that answer needs. The
+       body is drawn from JS because it is the question that changes. -->
+  <section id="new-sheet" class="settings-sheet new-sheet hidden" role="dialog" aria-label="New">
     <div class="sheet-grip"></div>
-
-    <div class="sheet-row sheet-agent">
-      <div class="sheet-agent-text">
-        <span id="agent-title-text" class="sheet-title">No agent selected</span>
-        <span id="agent-cwd-text" class="sheet-cwd"></span>
-      </div>
-      <span id="agent-status-badge" class="status-badge status-unknown">--</span>
-    </div>
-
-    <div class="sheet-row">
-      <label for="lines-select">Scrollback</label>
-      <select id="lines-select">
-        <option value="50">50 lines</option>
-        <option value="100" selected>100 lines</option>
-        <option value="200">200 lines</option>
-        <option value="400">400 lines</option>
-      </select>
-    </div>
-
-    <div class="sheet-row">
-      <label for="toggle-plain">
-        Plain view
-        <span class="sheet-hint">the pane verbatim, nothing parsed away</span>
-      </label>
-      <input type="checkbox" id="toggle-plain">
-    </div>
-
-    <div class="sheet-row">
-      <label for="toggle-statusbar">Show agent status bar</label>
-      <input type="checkbox" id="toggle-statusbar">
-    </div>
-
-    <div class="sheet-row">
-      <button type="button" id="btn-open-global-settings" class="sheet-btn">Global Settings & Heartbeats →</button>
-    </div>
-    <div class="sheet-row">
-      <label>Agent mode</label>
-      <button id="btn-cycle-mode" class="mode-btn" title="Send shift+tab">
-        <span id="mode-current">unknown</span>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-        </svg>
-      </button>
-    </div>
-
-    <div class="sheet-actions">
-      <button id="btn-refresh" class="sheet-btn">Refresh</button>
-      <button id="btn-copy" class="sheet-btn">Copy transcript</button>
-    </div>
-
-    <button id="btn-close-sheet" class="sheet-btn sheet-close">Done</button>
+    <h2 id="new-sheet-title" class="new-sheet-title">New</h2>
+    <div id="new-sheet-body"></div>
+    <button id="btn-close-new-sheet" class="sheet-btn sheet-close">Cancel</button>
   </section>
 
+
+
+  <script src="/composer.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

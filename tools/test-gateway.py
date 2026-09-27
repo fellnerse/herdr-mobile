@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
 
@@ -33,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
 os.environ["SHEEPIT_STATE_DIR"] = tempfile.mkdtemp(prefix="sheepit-test-")
 
 import bincode  # noqa: E402
+import chat  # noqa: E402
 import gitdiff  # noqa: E402
 import machine  # noqa: E402
 import server  # noqa: E402
@@ -198,6 +200,35 @@ check("resize 22", sent_frames(stream)[0], bytes([terminal.CM_RESIZE, 100, 30, 0
 stream = stream_for(20)
 stream.resize(100, 30)
 check("resize 20", sent_frames(stream)[0], bytes([terminal.CM_RESIZE, 100, 30, 0, 0]))
+
+# Wheel positions are zero-based cells. Mouse-aware terminal apps need these
+# options to route the wheel under the pointer instead of ignoring it.
+stream = stream_for(22)
+stream.scroll("up", 3, 4, 5)
+check("positioned wheel scroll", sent_frames(stream)[0],
+      bytes([terminal.CM_ATTACH_SCROLL, 0, 0, 3, 1, 4, 1, 5, 0]))
+stream = stream_for(22)
+stream.scroll("down", 2)
+check("wheel scroll without position", sent_frames(stream)[0],
+      bytes([terminal.CM_ATTACH_SCROLL, 0, 1, 2, 0, 0, 0]))
+
+class ScrollReceiver:
+    size = (80, 24)
+
+    def __init__(self):
+        self.calls = []
+
+    def scroll(self, *args):
+        self.calls.append(args)
+
+
+receiver = ScrollReceiver()
+server.HerdrHandler.handle_terminal_control(
+    receiver, b'{"type":"scroll","direction":"up","lines":3,"column":4,"row":5}')
+check("wheel control forwards cell", receiver.calls, [("up", 3, 4, 5)])
+server.HerdrHandler.handle_terminal_control(
+    receiver, b'{"type":"scroll","direction":"down","lines":2,"column":false,"row":5}')
+check("invalid wheel cell is omitted", receiver.calls[-1], ("down", 2, None, None))
 
 # A protocol whose codec was never verified is refused rather than guessed at.
 check("22 is supported", terminal.supported_protocol(22), True)
@@ -485,6 +516,14 @@ check("with what it is doing", rows[0]["status"], "working")
 check("and what it is called", rows[0]["title"], "doing a thing")
 check("a tab with no agent is still a row", rows[1]["has_agent"], False)
 check("which says nothing about an agent", rows[1]["status"], "unknown")
+pane_only = pane("w3:p3", "w3", 3)
+pane_only.update(agent="codex", agent_status="idle",
+                 terminal_title_stripped="Codex conversation")
+fallback = server.build_agent_rows(WORKSPACES, TABS,
+                                   [PANES[0], pane_only, PANES[2]], AGENTS)
+check("an idle Codex omitted from agent.list retains its chat identity",
+      (fallback[1]["agent"], fallback[1]["has_agent"], fallback[1]["status"], fallback[1]["title"]),
+      ("codex", True, "idle", "Codex conversation"))
 check("the tab's own label is passed on, numbered or not",
       [r["tab_label"] for r in rows[:2]], ["1", "build"])
 check("as is its number", [r["tab_number"] for r in rows[:2]], [1, 3])
@@ -1010,7 +1049,15 @@ with tempfile.TemporaryDirectory() as tmp:
 check("gemini model is not 3p", quota._model_is_3p("google-antigravity/gemini-3.8-flash"), False)
 check("claude opus is 3p", quota._model_is_3p("Claude Opus 4.6 (Thinking)"), True)
 check("gpt model is 3p", quota._model_is_3p("gpt-5.2"), True)
-check("current('antigravity') maps to agy", quota.current("antigravity", ttl=0).agent, "agy")
+# Only the alias is under test here, so the source is stubbed: reaching the
+# real one needs an OMP install, and a machine without one used to abort the
+# whole suite at this line.
+_agy_source = quota.SOURCES["agy"]
+quota.SOURCES["agy"] = lambda: quota.Quota((), None, False, agent="agy")
+try:
+    check("current('antigravity') maps to agy", quota.current("antigravity", ttl=0).agent, "agy")
+finally:
+    quota.SOURCES["agy"] = _agy_source
 
 # -- typing into somebody's session -----------------------------------------
 
@@ -1209,6 +1256,9 @@ class FakePane:
     def agent_prompt(self, target, text):
         self.sent.append(text)
 
+    def pane_send_text(self, pane_id, text):
+        self.typed.append(text)
+
     def send_line(self, pane_id, text):
         self.typed.append(text)
 
@@ -1246,6 +1296,45 @@ d = Dispatcher(herdr=pane, events=Silent())
 conn = fresh_db()
 check("a pane with an agent and an empty queue is still watched",
       d.watched(conn), ["wA:p1"])
+
+codex_command = FakePane(agent="codex")
+command_db = fresh_db()
+command_id = sched_db.add(command_db, "wA:p1", "/status")
+Dispatcher(herdr=codex_command, events=Silent()).deliver(
+    command_db, sched_db.next_for_pane(command_db, "wA:p1"))
+check("Codex slash command is completed and submitted",
+      (codex_command.typed, codex_command.keys), (["/status"], [["ctrl+m"], ["ctrl+m"]]))
+check("Codex slash command is recorded as sent", sched_db.get(command_db, command_id).state, "sent")
+codex_message = FakePane(agent="codex")
+message_db = fresh_db()
+message_id = sched_db.add(message_db, "wA:p1", "fix the login page")
+import codex_queue  # noqa: E402
+original_codex_send = codex_queue.send
+native_messages = []
+codex_queue.send = lambda pane_id, prompt: native_messages.append((pane_id, prompt))
+try:
+    Dispatcher(herdr=codex_message, events=Silent()).deliver(
+        message_db, sched_db.next_for_pane(message_db, "wA:p1"))
+finally:
+    codex_queue.send = original_codex_send
+check("Codex chat message uses the native session queue",
+      (native_messages, codex_message.typed, codex_message.keys),
+      ([("wA:p1", "fix the login page")], [], []))
+check("Codex chat message is recorded as sent", sched_db.get(message_db, message_id).state, "sent")
+failure_db = fresh_db()
+failure_id = sched_db.add(failure_db, "wA:p1", "message that cannot be queued")
+def fail_codex_send(pane_id, prompt):
+    raise codex_queue.CodexQueueError("session unavailable")
+codex_queue.send = fail_codex_send
+try:
+    Dispatcher(herdr=codex_message, events=Silent()).deliver(
+        failure_db, sched_db.next_for_pane(failure_db, "wA:p1"))
+finally:
+    codex_queue.send = original_codex_send
+check("Codex queue failure remains visible instead of disappearing",
+      (sched_db.get(failure_db, failure_id).state,
+       sched_db.get(failure_db, failure_id).last_error),
+      ("failed", "session unavailable"))
 
 # Hitting the wall parks the pane and puts a resume in front of the queue, with
 # enough recorded on it to survive the pane it belongs to.
@@ -2059,6 +2148,115 @@ try:
 finally:
     heartbeat.subprocess.run = orig_run
     heartbeat._model_cache.pop("omp", None)
+# ---- One send path ---------------------------------------------------------
+# Regular prompts wait for the pane and usage window. /clear goes straight to
+# the agent, and shell input goes straight to the terminal.
+
+_qp_rpc, _qp_add = server.call_herdr_rpc, server.sched_db.add
+_qp_cleared = server.panechat.cleared
+qp_clears = []
+qp_panes = {
+    "wA:p1": {"pane_id": "wA:p1", "agent": "claude", "agent_status": "idle", "workspace_id": "wA",
+              "cwd": "/tmp/proj", "agent_session": {"kind": "id", "value": "s-1"}},
+    "wA:p2": {"pane_id": "wA:p2", "agent_status": "", "cwd": "/tmp/proj"},
+    "wA:p3": {"pane_id": "wA:p3", "agent": "codex", "agent_status": "unknown",
+              "cwd": "/tmp/proj"},
+}
+qp_sent, qp_added = [], []
+
+
+def qp_rpc(method, params=None, timeout=5.0):
+    if method == "pane.get":
+        pane = qp_panes.get((params or {}).get("pane_id"))
+        return {"result": {"pane": pane}} if pane else {"result": {}}
+    qp_sent.append((method, params))
+    return {"result": {}}
+
+
+server.call_herdr_rpc = qp_rpc
+server.sched_db.add = lambda conn, **kw: (qp_added.append(kw) or 77)
+server.panechat.cleared = lambda pane_id, pane, sent_at: qp_clears.append((pane_id, pane, sent_at))
+try:
+    check("an empty prompt is not queued",
+          server.queue_prompt("wA:p1", "   "), ({"ok": False, "error": "Empty prompt"}, 400))
+    check("a prompt with no pane is not queued",
+          server.queue_prompt("", "hi"), ({"ok": False, "error": "No chat given"}, 400))
+    check("a pane Herdr does not have is not queued",
+          server.queue_prompt("wZ:p9", "hi")[1], 404)
+
+    payload, code = server.queue_prompt("wA:p1", "  fix the login page  ")
+    check("an agent's prompt becomes a queue row", (payload, code), ({"ok": True, "id": 77}, 200))
+    check("recorded with what outlives the pane",
+          {k: qp_added[-1][k] for k in ("pane_id", "prompt", "workspace_id", "session_uuid", "cwd")},
+          {"pane_id": "wA:p1", "prompt": "fix the login page", "workspace_id": "wA",
+           "session_uuid": "s-1", "cwd": "/tmp/proj"})
+    check("and never sent to the pane behind the queue's back", qp_sent, [])
+
+    qp_panes["wA:p1"]["agent_status"] = "working"
+    qp_panes["wA:p1"]["agent"] = "codex"
+    payload, code = server.queue_prompt("wA:p1", "  /clear  ")
+    check("/clear is delivered immediately even while the agent is working",
+          (payload, code), ({"ok": True, "delivered": "agent"}, 200))
+    check("/clear completes the Codex slash picker before it is recorded",
+          qp_sent, [("pane.send_text", {"pane_id": "wA:p1", "text": "/clear"}),
+                    ("agent.send_keys", {"target": "wA:p1", "keys": ["ctrl+m"]}),
+                    ("agent.send_keys", {"target": "wA:p1", "keys": ["ctrl+m"]})])
+    check("/clear has no queue row", len(qp_added), 1)
+    check("/clear invalidates the pane chat cache", len(qp_clears), 1)
+    check("/clear invalidates the intended Codex pane", qp_clears[0][0], "wA:p1")
+
+    qp_sent.clear()
+    check("Send now delivers a Codex command", server.send_now(
+          SimpleNamespace(pane_id="wA:p1", prompt="/status")), (True, ""))
+    check("Send now submits the selected Codex command",
+          qp_sent, [("pane.send_text", {"pane_id": "wA:p1", "text": "/status"}),
+                    ("agent.send_keys", {"target": "wA:p1", "keys": ["ctrl+m"]}),
+                    ("agent.send_keys", {"target": "wA:p1", "keys": ["ctrl+m"]})])
+    qp_sent.clear()
+    codex_queue.send = lambda pane_id, prompt: native_messages.append((pane_id, prompt))
+    try:
+        check("Send now delivers a Codex chat message", server.send_now(
+              SimpleNamespace(pane_id="wA:p1", prompt="fix the login page")), (True, ""))
+    finally:
+        codex_queue.send = original_codex_send
+    check("Send now uses the Codex session queue",
+          (native_messages[-1], qp_sent), (("wA:p1", "fix the login page"), []))
+
+    payload, code = server.queue_prompt("wA:p2", "claude")
+    check("a shell is typed into instead, since nothing would deliver to it",
+          (payload, code), ({"ok": True, "delivered": "terminal"}, 200))
+    check("as text and a return",
+          qp_sent[-2:], [("pane.send_text", {"pane_id": "wA:p2", "text": "claude"}),
+                    ("pane.send_keys", {"pane_id": "wA:p2", "keys": ["enter"]})])
+    check("and no row is kept for it", len(qp_added), 1)
+
+    qp_sent.clear()
+    unknown_messages = []
+    codex_queue.send = lambda pane_id, prompt: unknown_messages.append((pane_id, prompt))
+    try:
+        check("unknown Codex sends through its session, not the terminal",
+              server.queue_prompt("wA:p3", "test message"),
+              ({"ok": True, "delivered": "agent"}, 200))
+    finally:
+        codex_queue.send = original_codex_send
+    check("unknown Codex text never becomes terminal input",
+          (unknown_messages, qp_sent), ([("wA:p3", "test message")], []))
+    check("unknown Codex accepts a slash command",
+          server.queue_prompt("wA:p3", "/status"),
+          ({"ok": True, "delivered": "agent"}, 200))
+    check("unknown Codex submits the slash picker",
+          qp_sent, [("pane.send_text", {"pane_id": "wA:p3", "text": "/status"}),
+                    ("agent.send_keys", {"target": "wA:p3", "keys": ["ctrl+m"]}),
+                    ("agent.send_keys", {"target": "wA:p3", "keys": ["ctrl+m"]})])
+    qp_sent.clear()
+    check("unknown Codex accepts /clear",
+          server.queue_prompt("wA:p3", "/clear"),
+          ({"ok": True, "delivered": "agent"}, 200))
+    check("unknown Codex /clear invalidates its chat cache", qp_clears[-1][0], "wA:p3")
+finally:
+    server.call_herdr_rpc, server.sched_db.add = _qp_rpc, _qp_add
+    server.panechat.cleared = _qp_cleared
+
 # ---- A Herdr pane read as a chat -------------------------------------------
 # The session log Claude Code writes is the transcript; a tool call with no
 # result in a blocked pane is the permission prompt.
@@ -2145,19 +2343,289 @@ try:
     check("pane chat: a new session (/clear) reads from the top",
           (pc.epoch != before, since, events, nxt), (True, 0, [], 0))
 
-    try:
-        pc.send("hi", [])
-        failures.append("FAIL pane chat: a blocked pane should refuse a message")
-    except ValueError:
-        pass
+    # A message leaves through the queue, never through agent.prompt: one send
+    # path is what makes a spent window hold what was typed into the chat view
+    # as well as what was typed into the transcript.
+    queue_calls = []
+
+    def fake_queue(pane_id, prompt):
+        queue_calls.append((pane_id, prompt))
+        return {"ok": True, "id": len(queue_calls)}, 200
+
+    panechat.init(fake_queue)
+    check("pane chat: a pane sitting on a question holds the message rather than refusing it",
+          (pc.send("hold this", []), queue_calls[-1]), (1, ("wX:p1", "hold this")))
     fake_pane["agent_status"] = "idle"
     pc.refresh()
-    pc.send("hi", [])
-    check("pane chat: a message is agent.prompt", sent[-1], ("agent.prompt", {"target": "wX:p1", "text": "hi"}))
+    check("pane chat: a message is a queue row", (pc.send("hi", []), queue_calls[-1]),
+          (2, ("wX:p1", "hi")))
+    check("pane chat: nothing is sent straight to the pane any more",
+          [m for m, _ in sent if m == "agent.prompt"], [])
+
+    panechat.init(lambda pane_id, prompt: ({"ok": False, "error": "Empty prompt"}, 400))
+    try:
+        pc.send("hi", [])
+        failures.append("FAIL pane chat: a queue that refused a prompt should say so")
+    except ValueError as e:
+        check("pane chat: the queue's refusal is what reaches the page", str(e), "Empty prompt")
+
     check("pane chat: a pane Herdr does not have is no chat",
           panechat.get("not a pane"), None)
 finally:
     panechat.call_herdr_rpc, panechat.tokens.session_log = orig
+    panechat._queue = None
+
+# ---- Finding the session Herdr does not name -------------------------------
+# This Herdr carries no `agent_session` at all, so the log is found by hand:
+# the project directory comes from the cwd, and the pane's own title picks
+# between the sessions a repository has accumulated. Picking wrong here shows
+# somebody else's conversation as yours, so the tie is what is tested.
+
+projects = Path(tempfile.mkdtemp(prefix="sheepit-projects-"))
+one = projects / "-tmp-two"
+one.mkdir()
+ALPHA = "11111111-0000-4000-8000-000000000000"
+BETA = "22222222-0000-4000-8000-000000000000"
+
+
+def titled(session_id, title, text):
+    """A session log as Claude Code writes one: the title again on every turn."""
+    path = one / f"{session_id}.jsonl"
+    path.write_text(
+        json.dumps({"type": "ai-title", "aiTitle": title, "sessionId": session_id}) + "\n"
+        + entry("user", text)
+        + json.dumps({"type": "ai-title", "aiTitle": title, "sessionId": session_id}) + "\n")
+    return path
+
+
+alpha = titled(ALPHA, "Alpha work", "what alpha asked")
+time.sleep(0.01)
+beta = titled(BETA, 'Beta "quoted" work', "what beta asked")
+
+untitled = {"pane_id": "wY:p1", "agent": "claude", "agent_status": "idle",
+            "cwd": "/tmp/two", "foreground_cwd": "/tmp/two",
+            "terminal_title_stripped": 'Beta "quoted" work'}
+
+orig_projects = tokens.CLAUDE_PROJECTS
+tokens.CLAUDE_PROJECTS = projects
+panechat.call_herdr_rpc = lambda m, p=None, timeout=5.0: (
+    {"result": {"pane": dict(untitled)}} if m == "pane.get" else {"result": {}})
+try:
+    check("project dir: every character that is not a letter or a digit is a dash",
+          tokens.project_dir("/tmp/two"), one)
+    check("project dir: a cwd nothing was ever started in has none",
+          tokens.project_dir("/tmp/nowhere"), None)
+    check("session logs: newest first",
+          tokens.session_logs("/tmp/two"), [beta, alpha])
+    check("log title: the last one written, quotes and all",
+          panechat.log_title(beta), 'Beta "quoted" work')
+
+    pc = panechat.get("wY:p1")
+    check("no agent_session: the pane's title picks its log",
+          (pc.session, [e.get("text") for e in pc.events]),
+          (BETA, ["what beta asked"]))
+    check("no agent_session: found means found", pc.summary()["session"], True)
+
+    # The same pane retitled is a different session: /clear, or one renamed.
+    untitled["terminal_title_stripped"] = "Alpha work"
+    pc.refresh()
+    check("a retitled pane is looked up again",
+          (pc.session, [e.get("text") for e in pc.events]),
+          (ALPHA, ["what alpha asked"]))
+
+    # And the tie it must refuse: a title matching nothing, with two to choose
+    # from. An empty chat is better than the wrong conversation.
+    untitled["terminal_title_stripped"] = "Claude Code"
+    pc.refresh()
+    check("a pane too new to be titled is not guessed at",
+          (pc.session, pc.events, pc.summary()["session"]), (None, [], False))
+    check("but the pane is still a Claude Code one", pc.summary()["claude"], True)
+
+    untitled["agent"] = None
+    pc.refresh()
+    check("a pane with no agent is not Claude Code either", pc.summary()["claude"], False)
+
+    # One session in the directory is no tie at all, so an untitled pane in a
+    # repository with a single log is still found.
+    beta.unlink()
+    untitled["agent"] = "claude"
+    pc.refresh()
+    check("with one log there is nothing to get wrong", pc.session, ALPHA)
+finally:
+    tokens.CLAUDE_PROJECTS = orig_projects
+    panechat.call_herdr_rpc = orig[0]
+
+# ---- Codex panes without an agent_session ----------------------------------
+codex_home = Path(tempfile.mkdtemp(prefix="sheepit-codex-"))
+rollouts = codex_home / "sessions" / "2026" / "09" / "26"
+rollouts.mkdir(parents=True)
+codex_paths = []
+for sid, prompt in (("a" * 36, "work on the codex chat view"),
+                    ("b" * 36, "fix the console layout")):
+    path = rollouts / f"rollout-{sid}.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in (
+        {"type": "session_meta", "payload": {"id": sid, "cwd": "/tmp/codex-project"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "developer",
+                                              "content": [{"type": "input_text", "text": "setup"}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                              "content": [{"type": "input_text", "text": "<environment_context>private</environment_context>"}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                              "content": [{"type": "input_text", "text": prompt}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                              "content": [{"type": "output_text", "text": "On it."}]}},
+        {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                                              "call_id": "call-1", "input": "print(1)"}},
+        {"type": "response_item", "payload": {"type": "custom_tool_call_output",
+                                              "call_id": "call-1", "output": [{"type": "text", "text": "1"}]}},
+    )) + "\n")
+    codex_paths.append(path)
+with sqlite3.connect(codex_home / "state_5.sqlite") as db:
+    db.execute("CREATE TABLE threads (rollout_path TEXT, title TEXT, cwd TEXT, "
+               "archived INTEGER, name TEXT)")
+    db.executemany("INSERT INTO threads VALUES (?, ?, ?, 0, ?)",
+                   [(str(codex_paths[0]), "lets work on the codex chat view",
+                     "/tmp/codex-project", "Fix mobile chat submission"),
+                    (str(codex_paths[1]), "fix the console layout",
+                     "/tmp/codex-project", None)])
+
+codex_pane = {"pane_id": "wZ:p1", "agent": "codex", "agent_status": "idle",
+              "cwd": "/tmp/codex-project", "terminal_title_stripped": "Update Codex chat view | codex-project",
+              "agent_session": None}
+orig_codex_home = tokens.CODEX_HOME
+orig_queue_db = sched_db.DB_PATH
+tokens.CODEX_HOME = codex_home
+sched_db.DB_PATH = codex_home / "queue.sqlite3"
+panechat.call_herdr_rpc = lambda m, p=None, timeout=5.0: {"result": {"pane": dict(codex_pane)}}
+try:
+    pc = panechat.get("wZ:p1")
+    check("Codex: pane title finds the right indexed session", pc.path, codex_paths[0])
+    check("Codex: session ID comes from the rollout metadata", pc.session, "a" * 36)
+    check("Codex: only conversation messages reach chat",
+          [(e["type"], e.get("text")) for e in pc.events],
+          [("prompt", "work on the codex chat view"), ("assistant", None),
+           ("assistant", None), ("tool_results", None)])
+    check("Codex: custom tool output resolves the call", pc.unresolved, {})
+    codex_pane["terminal_title_stripped"] = "Fix mobile chat submission | codex-project"
+    pc.refresh()
+    check("Codex: renamed thread matches its terminal title", pc.path, codex_paths[0])
+    codex_pane["terminal_title_stripped"] = "codex-project"
+    pc.refresh()
+    check("Codex: a generic title does not pick another session", pc.path, None)
+    with sched_db.connect() as queue_db:
+        prompt_id = sched_db.add(queue_db, "wZ:p1", "work on the codex chat view")
+        sched_db.update(queue_db, prompt_id, state="sent")
+    pc.refresh()
+    check("Codex: a delivered prompt identifies the pane's rollout", pc.path, codex_paths[0])
+    with sched_db.connect() as queue_db:
+        clear_id = sched_db.add(queue_db, "wZ:p1", "/clear")
+        sched_db.update(queue_db, clear_id, state="sent")
+    pc._adopt(None, None)
+    pc.refresh()
+    check("Codex: prompts before clear do not select the old rollout", pc.path, None)
+
+    # A direct /clear has no queued row or log entry to signal the chat view.
+    # The old rollout must disappear now and stay excluded on the next poll.
+    codex_pane["terminal_title_stripped"] = "Update Codex chat view | codex-project"
+    codex_pane["agent_session"] = {"kind": "id", "value": "a" * 36}
+    pc.refresh()
+    old_epoch = pc.epoch
+    panechat.cleared("wZ:p1", dict(codex_pane), time.time())
+    check("Codex: /clear empties the visible conversation immediately",
+          (pc.path, pc.events, pc.epoch != old_epoch), (None, [], True))
+    pc.refresh()
+    check("Codex: stale session ID cannot restore cleared history", (pc.path, pc.events), (None, []))
+
+    new_sid = "c" * 36
+    new_path = rollouts / f"rollout-{new_sid}.jsonl"
+    new_path.write_text("\n".join(json.dumps(row) for row in (
+        {"type": "session_meta", "payload": {"id": new_sid, "cwd": "/tmp/codex-project"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                     "content": [{"type": "input_text", "text": "new conversation"}]}},
+    )) + "\n")
+    codex_pane["agent_session"] = {"kind": "id", "value": new_sid}
+    pc.refresh()
+    check("Codex: new rollout replaces cleared history",
+          (pc.path, [e.get("text") for e in pc.events]), (new_path, ["new conversation"]))
+finally:
+    tokens.CODEX_HOME = orig_codex_home
+    sched_db.DB_PATH = orig_queue_db
+    panechat.call_herdr_rpc = orig[0]
+
+original_get, original_which, original_run = (
+    codex_queue.panechat.get, codex_queue.shutil.which, codex_queue.subprocess.run)
+native_invocations = []
+codex_queue.panechat.get = lambda pane_id: SimpleNamespace(
+    is_codex=True, session="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", cwd="/tmp/codex-project")
+codex_queue.shutil.which = lambda name: "/usr/bin/codex"
+codex_queue.subprocess.run = lambda args, **kwargs: (
+    native_invocations.append((args, kwargs)) or SimpleNamespace(returncode=0, stderr="", stdout=""))
+try:
+    codex_queue.send("wZ:p1", "fix the login page")
+    check("Codex: native queue targets the identified session",
+          native_invocations[0][0],
+          ["/usr/bin/codex", "queue", "--thread", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+           "--message", "fix the login page"])
+finally:
+    codex_queue.panechat.get, codex_queue.shutil.which, codex_queue.subprocess.run = (
+        original_get, original_which, original_run)
+
+# ---- What a turn cost, and only when somebody is billed for it -------------
+# `claude` prices every turn whether or not the tokens are invoiced, so the
+# figure only reaches the phone when the credential says it is a bill.
+
+RESULT = {"type": "result", "total_cost_usd": 0.357, "duration_ms": 22815, "num_turns": 3}
+saved = {k: os.environ.pop(k, None) for k in chat.BILLED_PER_TOKEN}
+try:
+    check("a subscription is told how long its turn took and nothing else",
+          (chat.slim(RESULT)["cost"], chat.slim(RESULT)["duration_ms"]), (None, 22815))
+    for key in chat.BILLED_PER_TOKEN:
+        os.environ[key] = "1"
+        check(f"{key} is a bill, so the bill is shown", chat.slim(RESULT)["cost"], 0.357)
+        del os.environ[key]
+    # An empty variable is how a shell unsets one it still exports.
+    os.environ["ANTHROPIC_API_KEY"] = ""
+    check("an empty key is no key", chat.slim(RESULT)["cost"], None)
+finally:
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    for k, v in saved.items():
+        if v is not None:
+            os.environ[k] = v
+
+# ---- The chats as rows in the flock ----------------------------------------
+# They ride along on /api/agents rather than a poll of their own, and all the
+# gateway adds is which project each one belongs under - read off the rows it
+# has just built, so Herdr is not asked a second time.
+
+orig_summaries = chat.summaries
+try:
+    chat.summaries = lambda: [
+        {"id": "aa", "cwd": "/repos/api/", "title": "Fix the parser", "running": True},
+        {"id": "bb", "cwd": "/repos/gone", "title": "", "running": False},
+    ]
+    rows = [{"project": "/repos/api", "project_name": "api"}]
+    out = server.flock_chats(rows)
+    check("a chat is filed under the project its cwd names",
+          [(c["id"], c["project"], c["project_name"]) for c in out],
+          [("aa", "/repos/api", "api"), ("bb", "/repos/gone", "gone")])
+    check("and keeps everything the chat page already reads off it",
+          (out[0]["title"], out[0]["running"]), ("Fix the parser", True))
+    # A chat outlives the panes of its project: the heading still needs a name.
+    check("a project with no panes left is named off its path",
+          server.flock_chats([])[1]["project_name"], "gone")
+
+    chat.summaries = lambda: []
+    check("no chats is no work", server.flock_chats(rows), [])
+
+    def boom():
+        raise RuntimeError("no chats today")
+
+    chat.summaries = boom
+    # The flock is the home screen: chats failing must not take the panes with
+    # them, since the panes are the half that can still be answered.
+    check("a chat store that will not answer costs the list nothing",
+          server.flock_chats(rows), [])
+finally:
+    chat.summaries = orig_summaries
 
 # ---------------------------------------------------------------------------
 

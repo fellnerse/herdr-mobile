@@ -16,6 +16,7 @@
 // AppKit build, and clang is unaffected.
 
 #import <AppKit/AppKit.h>
+#import <fcntl.h>
 #import <signal.h>
 #import <sys/socket.h>
 #import <sys/un.h>
@@ -33,6 +34,11 @@
 @property(copy) NSString *socketPath;
 @property(assign) BOOL tailscaleUp;
 @property(assign) BOOL herdrUp;
+@property(assign) BOOL wantGateway;
+@property(assign) BOOL retryScheduled;
+@property(assign) NSUInteger retryGeneration;
+@property(assign) NSTimeInterval retryDelay;
+@property(copy) NSString *logPath;
 @end
 
 @implementation Controller
@@ -209,7 +215,36 @@
 
 #pragma mark - Lifecycle
 
+- (void)logEvent:(NSString *)message {
+    NSString *line = [NSString stringWithFormat:@"%@ %@\n", NSDate.date, message];
+    int fd = open(self.logPath.fileSystemRepresentation, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (fd < 0) { NSLog(@"%@", message); return; }
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    write(fd, data.bytes, data.length);
+    close(fd);
+}
+
+- (void)prepareLog {
+    NSString *dir = @"~/Library/Logs/SheepIt".stringByExpandingTildeInPath;
+    NSError *error = nil;
+    [NSFileManager.defaultManager createDirectoryAtPath:dir
+                            withIntermediateDirectories:YES attributes:nil error:&error];
+    if (error) NSLog(@"Cannot create SheepIt log directory: %@", error);
+    self.logPath = [dir stringByAppendingPathComponent:@"gateway.log"];
+    NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:self.logPath error:nil];
+    if ([attrs fileSize] > 1024 * 1024) {
+        NSString *old = [self.logPath stringByAppendingString:@".old"];
+        [NSFileManager.defaultManager removeItemAtPath:old error:nil];
+        if (![NSFileManager.defaultManager moveItemAtPath:self.logPath toPath:old error:&error])
+            NSLog(@"Cannot rotate SheepIt log: %@", error);
+    }
+    [self logEvent:@"SheepIt launched"];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
+    [self prepareLog];
+    self.wantGateway = YES;
+    self.retryDelay = 5;
     NSString *envPort = NSProcessInfo.processInfo.environment[@"SHEEPIT_PORT"];
     self.port = envPort.length ? envPort : @"3009";
     self.serverPath = [self resolveServerPath];
@@ -231,14 +266,41 @@
 
 #pragma mark - Processes
 
+- (void)scheduleRetry {
+    if (!self.wantGateway || self.retryScheduled) return;
+    NSTimeInterval delay = self.retryDelay;
+    self.retryDelay = MIN(delay * 2, 60);
+    self.retryScheduled = YES;
+    NSUInteger generation = self.retryGeneration;
+    [self logEvent:[NSString stringWithFormat:@"Retrying gateway in %.0f seconds", delay]];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != self.retryGeneration) return;
+        self.retryScheduled = NO;
+        if (self.wantGateway && !self.isRunning) [self start];
+    });
+    [self render];
+}
+
 - (void)start {
-    if (!self.serverPath) { [self render]; return; }
+    if (self.isRunning) return;
+    self.serverPath = [self resolveServerPath];
+    if (!self.serverPath) {
+        [self logEvent:@"gateway/server.py not found"];
+        [self scheduleRetry];
+        return;
+    }
 
     // Turn On has to work after a Turn Off, so clear anything of ours still on
     // the port before binding; a port held by someone else is worth saying out
     // loud rather than starting a gateway that exits a moment later.
     [self reclaimPort];
-    if ([self portHolder] > 0) { [self warnPortBusy]; [self render]; return; }
+    pid_t holder = [self portHolder];
+    if (holder > 0) {
+        [self logEvent:[NSString stringWithFormat:@"Port %@ is in use by pid %d", self.port, holder]];
+        [self scheduleRetry];
+        return;
+    }
 
     // The gateway is only a proxy onto Herdr's socket, so there has to be a
     // Herdr server on the other end for the phone to show anything at all.
@@ -248,19 +310,48 @@
     // not, and incoming tailnet connections to it are silently dropped.
     NSTask *py = [NSTask new];
     py.executableURL = [NSURL fileURLWithPath:@"/usr/bin/python3"];
-    py.arguments = @[ self.serverPath ];
+    py.arguments = @[ @"-u", self.serverPath ];
     NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
     if (!env[@"HOST"]) env[@"HOST"] = @"127.0.0.1";
     env[@"PORT"] = self.port;
     py.environment = env;
     py.currentDirectoryURL =
         [NSURL fileURLWithPath:self.serverPath].URLByDeletingLastPathComponent;
+    int logFD = open(self.logPath.fileSystemRepresentation, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (logFD >= 0) {
+        NSFileHandle *output = [[NSFileHandle alloc] initWithFileDescriptor:logFD closeOnDealloc:YES];
+        py.standardOutput = output;
+        py.standardError = output;
+    }
     __weak typeof(self) weakSelf = self;
     py.terminationHandler = ^(NSTask *t) {
-        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf render]; });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.server != t) return;
+            [strongSelf logEvent:[NSString stringWithFormat:@"Gateway exited: status %d, reason %ld",
+                                  t.terminationStatus, (long)t.terminationReason]];
+            strongSelf.server = nil;
+            if (strongSelf.caffeinate.isRunning) [strongSelf.caffeinate terminate];
+            strongSelf.caffeinate = nil;
+            [strongSelf render];
+            [strongSelf scheduleRetry];
+        });
     };
-    [py launchAndReturnError:nil];
+    NSError *launchError = nil;
+    if (![py launchAndReturnError:&launchError]) {
+        [self logEvent:[NSString stringWithFormat:@"Cannot launch gateway: %@", launchError]];
+        [self scheduleRetry];
+        return;
+    }
     self.server = py;
+    [self logEvent:[NSString stringWithFormat:@"Started gateway pid %d using %@", py.processIdentifier,
+                    self.serverPath]];
+    NSUInteger generation = self.retryGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
+        if (generation == self.retryGeneration && self.server == py && py.isRunning)
+            self.retryDelay = 5;
+    });
 
     // -s prevents system sleep but lets the display sleep, so the screen still
     // dims and locks normally. -w ties it to our own pid, so even a crash or
@@ -302,6 +393,11 @@
 }
 
 - (void)stop {
+    self.wantGateway = NO;
+    self.retryGeneration++;
+    self.retryScheduled = NO;
+    self.retryDelay = 5;
+    [self logEvent:@"Gateway turned off"];
     if (self.server.isRunning) [self.server terminate];
     if (self.caffeinate.isRunning) [self.caffeinate terminate];
     self.server = nil;
@@ -312,7 +408,8 @@
 }
 
 - (void)toggle:(id)sender {
-    if (self.isRunning) [self stop]; else [self start];
+    if (self.wantGateway) [self stop];
+    else { self.wantGateway = YES; [self start]; }
 }
 
 #pragma mark - Menu
@@ -409,7 +506,7 @@
 
     NSMenu *menu = [NSMenu new];
     [menu addItem:[self header:on ? [NSString stringWithFormat:@"Gateway running on :%@", self.port]
-                                  : @"Gateway stopped"]];
+                                  : (self.wantGateway ? @"Gateway stopped; retrying" : @"Gateway stopped")]];
     [menu addItem:[self header:on ? @"Keeping the Mac awake"
                                   : @"Mac may sleep - no notifications"]];
     if (self.herdrPath || self.herdrUp) {
@@ -427,7 +524,7 @@
     if (!self.serverPath) [menu addItem:[self header:@"server.py not found"]];
     [menu addItem:NSMenuItem.separatorItem];
 
-    NSMenuItem *action = [[NSMenuItem alloc] initWithTitle:(on ? @"Turn Off" : @"Turn On")
+    NSMenuItem *action = [[NSMenuItem alloc] initWithTitle:(self.wantGateway ? @"Turn Off" : @"Turn On")
                                                     action:@selector(toggle:)
                                              keyEquivalent:@"t"];
     action.target = self;
@@ -492,17 +589,6 @@
                              arguments:@[ @"-o", @"command=", @"-p",
                                           [NSString stringWithFormat:@"%d", pid] ]];
     return [cmd containsString:self.serverPath];
-}
-
-- (void)warnPortBusy {
-    NSAlert *alert = [NSAlert new];
-    alert.messageText = [NSString stringWithFormat:@"Port %@ is already in use", self.port];
-    alert.informativeText =
-        @"Another process is serving this port - most likely the launchd "
-        @"agent. Stop it so this app can own the gateway:\n\n"
-        @"launchctl bootout gui/$(id -u)/com.sheepit.gateway";
-    alert.alertStyle = NSAlertStyleWarning;
-    [alert runModal];
 }
 
 @end

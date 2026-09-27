@@ -3,13 +3,19 @@
 (function () {
   let state = {
     agents: [],
+    /* The headless chats, kept apart from the panes on purpose. They are rows
+       in the same list, but they are not panes - no workspace, no tab strip,
+       no transcript - and everything from the badge to the bleat walks
+       `state.agents` assuming one. They join the list at `attachChats`. */
+    chats: [],
     activePaneId: null,
+    // Which headless chat the wide layout's right column is showing, if any.
+    activeChatId: null,
+    chatVisible: false,
     historyText: "",
-    linesCount: 100,
-    showStatusBar: false,
-    plainView: false,
+    linesCount: 400,
     // What a desktop's right column shows of a Claude Code pane.
-    paneView: "chat",
+    paneView: "transcript",
     diffSplit: false,
     numberKeys: 3,
     badgeCount: -1,
@@ -34,7 +40,11 @@
     settling: new Map(),
     quota: null,
     quotaAt: 0,
+    // Off until asked for: the strip answers a question about the laptop, not
+    // about the agents, and most glances at the flock are not asking it.
+    machineStrip: false,
     queueSignature: null,
+    queueRequest: 0,
     editingId: null,
     listTouchedAt: 0,
     chatVisited: false,
@@ -51,19 +61,15 @@
   };
 
   // DOM Elements
-  const elConn = document.getElementById("conn-indicator");
-  const elBtnRefresh = document.getElementById("btn-refresh");
   const elAgentSelect = document.getElementById("agent-select");
   const elAgentSelectDot = document.getElementById("agent-select-dot");
   const elAgentSelectName = document.getElementById("agent-select-name");
   const elTabStrip = document.getElementById("tab-strip");
   const elAgentPicker = document.getElementById("agent-picker");
+  const elPickerHead = elAgentPicker.querySelector(".picker-head");
   const elAgentList = document.getElementById("agent-list");
   const elBtnClosePicker = document.getElementById("btn-close-picker");
   const elBtnNewWorkspace = document.getElementById("btn-new-workspace");
-  const elAgentTitle = document.getElementById("agent-title-text");
-  const elAgentCwd = document.getElementById("agent-cwd-text");
-  const elAgentStatus = document.getElementById("agent-status-badge");
   const elHistoryContainer = document.getElementById("history-container");
   const elHistoryContent = document.getElementById("history-content");
   const elBtnScrollBottom = document.getElementById("btn-scroll-bottom");
@@ -72,48 +78,68 @@
   const elTerminalInput = document.getElementById("terminal-input");
   const elCompleteBar = document.getElementById("complete-bar");
   const elBtnAttach = document.getElementById("btn-attach");
+  const elBtnPasteImage = document.getElementById("btn-paste-image");
   const elAttachInput = document.getElementById("attach-input");
   const elAttachStrip = document.getElementById("attach-strip");
   const elTerminalInputRow = document.getElementById("terminal-input-row");
   const elBtnAdopt = document.getElementById("btn-adopt");
   const elBtnCycleMode = document.getElementById("btn-cycle-mode");
   const elBtnKeys = document.getElementById("btn-keys");
+  const elComposerMenu = document.getElementById("composer-menu");
+  const elBtnMore = document.getElementById("btn-more");
+  const elComposerMenuPanel = document.getElementById("composer-menu-panel");
   const elKeysBar = document.getElementById("keys-bar");
   const elKeysNumbers = document.getElementById("keys-numbers");
   const elModeCurrent = document.getElementById("mode-current");
   const elBtnRecall = document.getElementById("btn-recall");
   const elBtnSend = document.getElementById("btn-send");
+  const elComposerStop = document.getElementById("chat-btn-stop");
   const elBtnCtrlC = document.getElementById("btn-ctrl-c");
   const elBtnEsc = document.getElementById("btn-esc");
+  // The palette opens from the composer's icon row, anchored above the box.
+  elPromptForm.appendChild(elKeysBar);
   const elBtnCopy = document.getElementById("btn-copy");
-  const elLinesSelect = document.getElementById("lines-select");
-  const elBtnSettings = document.getElementById("btn-settings");
-  const elBtnCloseSheet = document.getElementById("btn-close-sheet");
-  const elSheet = document.getElementById("settings-sheet");
   const elSheetBackdrop = document.getElementById("sheet-backdrop");
-  const elToggleStatusBar = document.getElementById("toggle-statusbar");
-  const elTogglePlain = document.getElementById("toggle-plain");
+  const elNewSheet = document.getElementById("new-sheet");
+  const elNewSheetTitle = document.getElementById("new-sheet-title");
+  const elNewSheetBody = document.getElementById("new-sheet-body");
+  const elBtnCloseNewSheet = document.getElementById("btn-close-new-sheet");
   const elTogglePush = document.getElementById("toggle-push");
   const elToggleBleat = document.getElementById("toggle-bleat");
+  const elToggleMachine = document.getElementById("toggle-machine");
   const elPushHint = document.getElementById("push-hint");
+  const elBtnTestPush = document.getElementById("btn-test-push");
   const elGlobalSettingsView = document.getElementById("global-settings-view");
   const elBtnCloseGlobalSettings = document.getElementById("btn-close-global-settings");
   const elBtnFlockSettings = document.getElementById("btn-flock-settings");
-  const elBtnOpenGlobalSettings = document.getElementById("btn-open-global-settings");
   const elBtnAddHeartbeat = document.getElementById("btn-add-heartbeat");
   const elHeartbeatsList = document.getElementById("heartbeats-list");
   const elPickerQuota = document.getElementById("picker-quota");
   const elChatQueue = document.getElementById("chat-queue");
+  const elViewSwitcher = document.getElementById("view-switcher");
   const elBtnConsole = document.getElementById("btn-console");
+  const elBtnViewNormal = document.getElementById("btn-view-normal");
   const elConsoleView = document.getElementById("console-view");
+  const elAppHeader = document.querySelector(".app-header");
+  const syncAppHeaderHeight = () => {
+    document.documentElement.style.setProperty(
+      "--app-header-height",
+      `${elAppHeader.getBoundingClientRect().height}px`,
+    );
+  };
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncAppHeaderHeight).observe(elAppHeader);
+  } else {
+    window.addEventListener("resize", syncAppHeaderHeight);
+  }
+  syncAppHeaderHeight();
   const elConsoleTerm = document.getElementById("console-term");
   const elConsoleSub = document.getElementById("console-sub");
-  const elBtnCloseConsole = document.getElementById("btn-close-console");
-  const elBtnConsoleKeyboard = document.getElementById("btn-console-keyboard");
-  const elBtnConsoleFit = document.getElementById("btn-console-fit");
+  const elConsoleKeys = document.getElementById("console-keys");
   const elBtnChanges = document.getElementById("btn-changes");
   const elBtnPaneChat = document.getElementById("btn-pane-chat");
-  const elPaneChatFrame = document.getElementById("pane-chat-frame");
+  const elChatView = document.getElementById("chat-chat-view");
+  let chatTarget = "";
   const elChangesView = document.getElementById("changes-view");
   const elChangesList = document.getElementById("changes-list");
   const elChangesSub = document.getElementById("changes-sub");
@@ -133,6 +159,12 @@
      in style.css; the layout is the stylesheet's, this is only what the app
      has to know about it. */
   const wide = window.matchMedia("(min-width: 900px)");
+
+  /* Whether this machine has a pointer that can hover, which is what decides
+     between the icons on a row and the drawer behind it. The same query is in
+     `style.css`, which is what actually hides each of them; this is only what
+     the gestures have to know about it. */
+  const mouse = window.matchMedia("(hover: hover) and (pointer: fine)");
 
   function pickerVisible() {
     return wide.matches || !elAgentPicker.classList.contains("hidden");
@@ -205,30 +237,20 @@
     }
   }
 
-  // Set Connection Status
-  function setConnected(connected) {
-    elConn.classList.toggle("connected", connected);
-    elConn.classList.toggle("disconnected", !connected);
-  }
-
   /* ---------------------------------------------------------------------
-   * Transcript parsing
+   * Transcript rows
    *
-   * The pane text is a stripped terminal dump padded to the desktop's
-   * terminal width, so it carries artefacts that read badly on a phone:
-   * full-width horizontal rules around the input box (which wrap into
-   * several lines of dashes) and status-bar lines padded with long runs of
-   * spaces. Classify each line by its leading marker so it can be coloured,
-   * and turn the noise into structure rather than text.
+   * Preserve the pane's screen as it arrived, including the terminal's own
+   * frame and status lines. ANSI SGR colors are retained for legibility; the
+   * small amount of parsing below only feeds the composer mirror and keypad.
    * ------------------------------------------------------------------- */
 
-  const RE_RULE_GLYPH = /[─━┄┅┈┉═—–_=]/g;
   const RE_SGR = /\x1b\[([0-9;]*)m/g;
 
   /* Split one ANSI line into styled runs, carrying the SGR state in `st` so
-     attributes opened on an earlier line keep applying. Only colours the
-     terminal actually sets are emitted; everything else inherits the block's
-     own colour, which keeps the speaker roles readable. */
+     attributes opened on an earlier line keep applying. Only colors the
+     terminal actually sets are emitted; everything else inherits the
+     transcript's default color. */
   function ansiRuns(line, st) {
     const runs = [];
     let last = 0;
@@ -377,270 +399,74 @@
     }
     return out;
   }
-  /* Two agents, two sets of glyphs for the same handful of roles. Claude Code
-     marks a turn with "⏺" and a tool result with "⎿"; Codex uses "•" and "└".
-     `bol` pins a marker to the left margin: Codex's bullet always starts a
-     turn there, while a "•" further in is a list item in somebody's prose. */
-  const MARKERS = [
-    { re: /^❯/, cls: "user" },        // > user message / live input
-    { re: /^⏺/, cls: "assistant" },   // assistant message or tool call
-    { re: /^⎿/, cls: "tool" },        // tool result
-    { re: /^[✻✽✳]/, cls: "meta" }, // "Worked for 1m 8s"
-    { re: /^※/, cls: "tip" },         // tips
-    { re: /^⏵⏵/, cls: "status" }, // "auto mode on ..."
-    { re: /^›\s/, cls: "user" },      // "› what changed in the indexer?"
-    { re: /^•\s/, cls: "assistant", bol: true }, // "• Ran docker compose ps"
-    { re: /^[✓✔✗✘]\s/, cls: "meta", bol: true },  // "✔ You approved codex to ..."
-    { re: /^└\s/, cls: "tool" },                 // "  └ {"acknowledged":true}"
-  ];
-  const RE_BOX = /^[┌┐└┘├┤┬┴┼│╭╮╯╰┏┓┗┛┣┫┳┻╋┃║╔╗╚╝╠╣╦╩╬]/;
-  // "❯ 2. app.bodyweight.plus", "› 1. Yes, proceed (y)" - one choice in a
-  // selection prompt.
-  const RE_OPTION = /^\s*[❯›>]?\s*(\d{1,2})\.\s/;
-  /* The footer a terminal prints under the prompt it is waiting on: Claude
-     Code's "Enter to select", Codex's "Press enter to confirm or esc to
-     cancel". RE_PROMPT_HINT is the half only a prompt says - "Esc to cancel"
-     on its own is also what an autocomplete menu offers. */
+  // Composer and selection hints are read from the raw rows only; they affect
+  // the mirror and keypad, never which transcript rows are shown.
+  const RE_OPTION = /^\s*(?:[❯›>]\s*)?(\d{1,2})\.\s/;
   const RE_PROMPT_HINT = /Enter to select|keys? to navigate|Enter to confirm/i;
   const RE_SELECT_HINT = /Esc to cancel|Esc to reject/i;
-  // The composer's own glyph: "❯" in Claude Code, "›" in Codex.
   const RE_COMPOSER = /^[❯›](?:\s|$)/;
-  // What a composer shows when nothing has been typed into it.
   const RE_PLACEHOLDER = /^(?:ask codex to do anything|try ".*")$/i;
-  /* Codex's footer - its model and the directory it works in - is the only
-     thing it prints under the composer. Claude Code closes the box with a
-     rule instead, so between them they say where the composer ends. */
-  const RE_AGENT_FOOTER = /·\s*[~/]/;
-  // Long runs of rule glyphs anywhere in a line, not just whole-line rules.
-  const RE_INLINE_RULE = /([─━┄┅┈┉═—–_=*.])\1{7,}/g;
-  // Both the composer and a pending prompt sit at the foot of the pane. This
-  // far above it, the same glyphs are something the agent printed.
   const TAIL_REACH = 24;
 
-  /* Is this line one of the terminal's horizontal rules? Returns null if not,
-     otherwise the caption embedded in it - the input box's top border carries
-     the session title ("──────… Get this to work in herdr ─"), which is worth
-     keeping as a heading rather than 200 wrapped dashes. */
-  function ruleLabel(trimmed) {
-    const glyphs = (trimmed.match(RE_RULE_GLYPH) || []).length;
-    if (glyphs < 8) return null;
-    const label = trimmed.replace(RE_RULE_GLYPH, " ").trim();
-    if (!label) return "";
-    // A caption has to contain words; leftover frame glyphs are not one.
-    if (!/[\p{L}\p{N}]/u.test(label)) return "";
-    if (glyphs >= 16 && label.length <= 60) return label;
-    return null; // prose that merely contains a long run of glyphs
-  }
-
-  function classifyLine(line, trimmed) {
-    if (!trimmed) return null;
-    // Markers before boxes: Codex's "└ " tool result would otherwise read as
-    // the bottom-left corner of one.
-    for (const m of MARKERS) {
-      if (m.re.test(m.bol ? line : trimmed)) return m.cls;
-    }
-    if (RE_BOX.test(trimmed)) return "table";
-    if (ruleLabel(trimmed) !== null) return "rule";
-    return null; // continuation of whatever came before
-  }
-
-  /* The terminal's own furniture at the foot of the pane: the composer, and
-     the status bar under it. Claude Code frames the composer in a pair of
-     rules and marks it "❯"; Codex prints "›" with nothing around it at all,
-     then names its model and cwd.
-
-     Anchoring on that glyph rather than on the last pair of rules is what
-     keeps a message whole. A markdown table's separator row is a rule too, so
-     taking the last two of those lifted the tail of the agent's answer into
-     the input mirror - a strip built for one line - and deleted the rest. */
-  function findChrome(raw) {
-    let idx = -1;
-    for (let i = raw.length - 1; i >= Math.max(0, raw.length - TAIL_REACH); i--) {
-      const trimmed = raw[i].trim();
-      if (!RE_COMPOSER.test(trimmed)) continue;
-      // "❯ 1. Yes, proceed" is a choice being offered, not the composer.
-      if (RE_OPTION.test(trimmed)) return null;
-      idx = i;
-      break;
-    }
-    if (idx < 0) return null;
-
-    // Claude Code's box: a rule opens it just above the "❯", the next rule
-    // closes it, and an autocomplete menu can sit in between.
-    let open = -1;
-    for (let i = idx - 1; i >= 0 && idx - i <= 3; i--) {
-      if (ruleLabel(raw[i].trim()) !== null) { open = i; break; }
-      if (raw[i].trim()) break;
-    }
-    let close = -1;
-    if (open >= 0) {
-      for (let i = idx + 1; i < raw.length && i - idx <= 12; i++) {
-        if (ruleLabel(raw[i].trim()) !== null) { close = i; break; }
-      }
-    }
-
-    /* The composer is the last thing in the pane, so nothing may stand under
-       it but blanks and the agent's own footer. An agent quoting a line back
-       - a pasted transcript, the instruction it is acting on - starts it with
-       the same glyph, and mistaking that for the composer lifts it into the
-       one-line mirror and drops every line below it as chrome. */
-    if (close < 0) {
-      for (let i = idx + 1; i < raw.length; i++) {
-        const trimmed = raw[i].trim();
-        if (!trimmed || RE_AGENT_FOOTER.test(trimmed)) continue;
-        if (ruleLabel(trimmed) !== null) continue;
-        return null;
-      }
-    }
-
-    const value = raw
-      .slice(idx, close >= 0 ? close : idx + 1)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(RE_COMPOSER, "")
-      .trim();
-    return {
-      // The opening rule stays: it carries the session title.
-      dropFrom: open >= 0 ? open + 1 : idx,
-      dropTo: close >= 0 ? close : idx,
-      statusFrom: close >= 0 ? close : idx,
-      liveInput: RE_PLACEHOLDER.test(value) ? "" : value,
-    };
-  }
-
-  /* The prompt an agent has stopped on - a tool confirmation, a plan
-     approval, AskUserQuestion. Claude Code frames it in the same pair of
-     rules that otherwise frames its composer; Codex frames it in nothing at
-     all. So find it by what it says - numbered choices and the footer under
-     them - rather than by the furniture around it. Getting this wrong is how
-     the question vanishes from the phone entirely. */
-  function findSelection(raw) {
-    const floor = Math.max(0, raw.length - TAIL_REACH);
-    let hintIdx = -1;
-    for (let i = floor; i < raw.length; i++) {
-      if (RE_PROMPT_HINT.test(raw[i]) || RE_SELECT_HINT.test(raw[i])) hintIdx = i;
-    }
-    let firstOption = -1;
-    let lastOption = -1;
-    const labels = new Set();
-    for (let i = floor; i <= (hintIdx >= 0 ? hintIdx : raw.length - 1); i++) {
-      const m = RE_OPTION.exec(raw[i]);
-      if (!m) continue;
-      if (firstOption < 0) firstOption = i;
-      lastOption = i;
-      labels.add(Number(m[1]));
-    }
-    /* How many choices are on offer - the run of labels from 1, not the
-       highest number seen, so a stray "12." in the text above cannot invent
-       nine keys that answer nothing. */
-    let optionCount = 0;
-    while (labels.has(optionCount + 1)) optionCount++;
-
-    /* A footer only a prompt prints is proof by itself. Numbered choices are
-       not: an agent listing three things to try mid-run looks exactly like a
-       question, and the missing composer is no help - Codex hides its own
-       while it works. So they need a footer under them too. */
-    const promptFooter = hintIdx >= 0 && RE_PROMPT_HINT.test(raw[hintIdx]);
-    if (!promptFooter && !(optionCount >= 2 && hintIdx >= 0)) return null;
-
-    /* Walk up to the head of the prompt: the rule that opens Claude Code's
-       box, or - Codex having no box - the line after the last thing the agent
-       printed for itself. */
-    const head = firstOption >= 0 ? firstOption : hintIdx;
-    let start = Math.max(0, head - TAIL_REACH);
-    for (let i = head - 1; i >= start; i--) {
-      const trimmed = raw[i].trim();
-      if (ruleLabel(trimmed) !== null) { start = i; break; }
-      if (classifyLine(raw[i], trimmed)) { start = i + 1; break; }
-    }
-    return { start, end: Math.max(hintIdx, lastOption), optionCount };
-  }
-
   function parseTranscript(text) {
-    // Tokenise first: every later step works on the plain text, while the
-    // styled runs ride along so rendering can mirror the terminal's colours.
     const st = { fg: null, bg: null, bold: false, italic: false, underline: false };
     const rows = text.split("\n").map((line) => {
       const runs = rtrimRuns(ansiRuns(line.replace(/\r/g, ""), st));
       return { runs, text: runsText(runs) };
     });
-    const raw = rows.map((r) => r.text);
+    const raw = rows.map((row) => row.text);
+    const floor = Math.max(0, raw.length - TAIL_REACH);
+    let liveInput = "";
+    for (let i = raw.length - 1; i >= floor; i--) {
+      const trimmed = raw[i].trim();
+      if (!RE_COMPOSER.test(trimmed) || RE_OPTION.test(trimmed)) continue;
+      const value = trimmed.replace(RE_COMPOSER, "").trim();
+      liveInput = RE_PLACEHOLDER.test(value) ? "" : value;
+      break;
+    }
 
-    const chrome = findChrome(raw);
-    const sel = findSelection(raw);
-    /* Where the two overlap the prompt wins. A question folded into the input
-       mirror is a question nobody ever sees. */
-    const box = sel && chrome && chrome.dropFrom <= sel.end ? null : chrome;
-
-    const liveInput = box ? box.liveInput : "";
-    const statusFrom = box ? box.statusFrom : -1;
-
-    // The status bar names the current mode; shift+tab cycles through them.
     let mode = "";
-    const tail = raw
-      .slice(statusFrom >= 0 ? statusFrom : Math.max(0, raw.length - 6))
-      .join(" ");
-    const m = /\b(auto|plan|manual|accept edits|bypass\w*)\s+mode\b/i.exec(tail);
-    if (m) mode = m[1].toLowerCase();
+    const modeMatch = raw.slice(Math.max(0, raw.length - 6)).join(" ")
+      .match(/\b(auto|plan|manual|accept edits|bypass\w*)\s+mode\b/i);
+    if (modeMatch) mode = modeMatch[1].toLowerCase();
 
-    const blocks = [];
-    let current = "assistant";
-    raw.forEach((line, i) => {
-      /* Drop the composer and everything under it: that is live UI state, not
-         conversation, and rendering it as a past user message is how the
-         phone ends up arguing with the laptop. */
-      if (box && i >= box.dropFrom && i <= box.dropTo) return;
-
-      const trimmed = line.trim();
-      let cls = classifyLine(line, trimmed);
-
-      if (sel && i >= sel.start && i <= sel.end) {
-        // A rule inside the prompt would break it into several cards.
-        if (cls === "rule") { if (i !== sel.start) return; }
-        else cls = "select";
-      } else if (statusFrom >= 0 && i > statusFrom && cls !== "rule") {
-        cls = "status";
+    let hintIndex = -1;
+    for (let i = floor; i < raw.length; i++) {
+      if (RE_PROMPT_HINT.test(raw[i]) || RE_SELECT_HINT.test(raw[i])) hintIndex = i;
+    }
+    let optionCount = 0;
+    if (hintIndex >= 0 && (RE_PROMPT_HINT.test(raw[hintIndex]) || RE_SELECT_HINT.test(raw[hintIndex]))) {
+      const labels = new Set();
+      for (let i = floor; i <= hintIndex; i++) {
+        const option = RE_OPTION.exec(raw[i]);
+        if (option) labels.add(Number(option[1]));
       }
+      while (labels.has(optionCount + 1)) optionCount++;
+    }
+    return { rows, liveInput, mode, optionCount };
+  }
 
-      if (cls === "rule") {
-        const label = ruleLabel(trimmed);
-        const prev = blocks[blocks.length - 1];
-        // Collapse runs of rules, but let a captioned one win.
-        if (prev && prev.cls === "rule") {
-          if (label) prev.label = label;
-          return;
-        }
-        blocks.push({ cls: "rule", label, rows: [] });
-        return;
-      }
+  function transcriptHtml(rows) {
+    return `<div class="t-block t-transcript">${rows
+      .map((row) => runsToHtml(row.runs))
+      .join("\n")}</div>`;
+  }
 
-      if (cls === null) {
-        cls = current; // continuation line inherits the active block
-      } else {
-        current = cls;
-      }
-
-      const last = blocks[blocks.length - 1];
-      if (last && last.cls === cls) last.rows.push(rows[i]);
-      else blocks.push({ cls, rows: [rows[i]] });
-    });
-
-    // Drop leading/trailing empties inside each block, then empty blocks.
-    const kept = blocks.filter((b) => {
-      if (b.cls === "rule") return true;
-      while (b.rows.length && !b.rows[0].text.trim()) b.rows.shift();
-      while (b.rows.length && !b.rows[b.rows.length - 1].text.trim()) b.rows.pop();
-      return b.rows.length > 0;
-    });
-
-    return {
-      blocks: kept,
-      rows,
-      liveInput,
-      mode,
-      optionCount: sel ? sel.optionCount : 0,
-    };
+  function renderTranscript(text) {
+    if (!text) {
+      renderLiveInput("");
+      renderNumberKeys(0);
+      state.mode = "";
+      elModeCurrent.textContent = "unknown";
+      elHistoryContent.innerHTML = '<div class="history-empty">(No output recorded yet)</div>';
+      return;
+    }
+    const parsed = parseTranscript(text);
+    renderLiveInput(parsed.liveInput);
+    renderNumberKeys(parsed.optionCount);
+    state.mode = parsed.mode;
+    elModeCurrent.textContent = parsed.mode || "unknown";
+    elHistoryContent.innerHTML = transcriptHtml(parsed.rows);
   }
 
   /* What the desktop currently has typed into the pane, mirrored above the
@@ -667,115 +493,18 @@
     }).join("");
   }
 
-  /* The pane exactly as it arrived, minus the terminal's own padding: every
-     line in the order the agent drew it, coloured by its own escape codes and
-     classified as nothing at all.
-
-     The parsed view is a set of guesses - which glyph starts a turn, which
-     rules frame the composer, which of the last lines are the status bar - and
-     a guess that goes wrong hides something. Most of what it drops is padding
-     and furniture, but not all of it: a caption on a rule directly under
-     another rule is overwritten by it, a line of the agent's own "=" or "."
-     is read as a rule and collapsed, and everything below Claude Code's input
-     box - usage warnings, background tasks, errors - is filed under the status
-     bar and hidden with it. This view is the answer to "the phone is not
-     showing me something": no classification, no collapsing, nothing
-     dropped. */
-  function plainHtml(rows) {
-    return `<div class="t-block t-plain">${rows
-      .map((row) => runsToHtml(row.runs))
-      .join("\n")}</div>`;
-  }
-
-  function renderTranscript(text) {
-    if (!text) {
-      renderLiveInput("");
-      renderNumberKeys(0);
-      elHistoryContent.innerHTML =
-        '<div class="history-empty">(No output recorded yet)</div>';
-      return;
-    }
-
-    // Resolve each block to its final text, dropping the ones that render
-    // to nothing: an empty input box, or the status bar when hidden.
-    const parsed = parseTranscript(text);
-    renderLiveInput(parsed.liveInput);
-    renderNumberKeys(parsed.optionCount);
-    state.mode = parsed.mode;
-    elModeCurrent.textContent = parsed.mode || "unknown";
-
-    /* Parsing still runs in the plain view: the keypad, the mode and the input
-       mirror are read out of it, and they are as useful when the transcript is
-       drawn verbatim as when it is not. Only the drawing changes. */
-    if (state.plainView) {
-      elHistoryContent.innerHTML = plainHtml(parsed.rows);
-      return;
-    }
-
-    const visible = [];
-    for (const b of parsed.blocks) {
-      if (b.cls === "rule") {
-        visible.push({ cls: "rule", label: b.label });
-        continue;
-      }
-      if (b.cls === "status" && !state.showStatusBar) continue;
-
-      // Tables need their padding; everywhere else a long run of rule glyphs
-      // is decoration that would wrap across several phone lines.
-      const collapse = b.cls !== "table";
-      const rows = b.rows.map((row) => {
-        let runs = row.runs;
-        if (b.cls === "status") {
-          // Status lines are padded across the full terminal width.
-          runs = runs.map((r) => ({ ...r, text: r.text.replace(/\s{3,}/g, "  ·  ") }));
-        }
-        if (collapse) {
-          runs = runs.map((r) => ({ ...r, text: r.text.replace(RE_INLINE_RULE, "$1$1$1") }));
-        }
-        return runs;
-      });
-
-      const plain = rows.map(runsText).join("\n").trim();
-      // A bare marker is an empty prompt box, not content.
-      if (!plain.replace(/^[❯⏺⎿✻✽✳※]/, "").trim()) continue;
-
-      visible.push({ cls: b.cls, html: rows.map(runsToHtml).join("\n") });
-    }
-
-    // Separators only mean something between two blocks.
-    const trimmed = [];
-    for (const b of visible) {
-      if (b.cls === "rule" && (!trimmed.length || trimmed[trimmed.length - 1].cls === "rule")) {
-        continue;
-      }
-      trimmed.push(b);
-    }
-    while (trimmed.length && trimmed[trimmed.length - 1].cls === "rule") trimmed.pop();
-
-    const html = trimmed
-      .map((b) => {
-        if (b.cls !== "rule") {
-          return `<div class="t-block t-${b.cls}">${b.html}</div>`;
-        }
-        return b.label
-          ? `<div class="t-rule-label"><span>${escapeHtml(b.label)}</span></div>`
-          : '<div class="t-rule"></div>';
-      })
-      .join("");
-
-    elHistoryContent.innerHTML =
-      html || '<div class="history-empty">(No output recorded yet)</div>';
-  }
-
   // Fetch Agent List
   async function fetchAgents() {
     try {
       const res = await fetch("/api/agents");
       if (!res.ok) throw new Error("Failed to fetch agents");
       const data = await res.json();
-      setConnected(true);
-
       state.agents = data.agents || [];
+      state.chats = data.chats || [];
+      // Deleted from another phone, or reaped: the column cannot keep showing it.
+      if (state.activeChatId && !state.chats.some((c) => c.id === state.activeChatId)) {
+        state.activeChatId = null;
+      }
       bleatForFinished(state.agents);
       trackActivity();
       orderAgents();
@@ -789,20 +518,13 @@
       ) {
         // The first agent on screen, or failing that the first row there is:
         // a project whose tabs are all plain shells is still worth opening.
-        // Back from the chat view, which names the pane it was showing.
-        const back = location.hash.startsWith("#pane:") ? decodeURIComponent(location.hash.slice(6)) : "";
-        if (back) history.replaceState(null, "", location.pathname);
-        const returned = back && state.agents.find((a) => a.pane_id === back);
-        const first = returned || state.agents.find((a) => a.has_agent) || state.agents[0];
-        if (returned) selectAgent(returned.pane_id, true);
-        else if (first) {
-          /* Chosen, not opened, while the flock is on screen: the chat behind
-             it is loaded and ready, but nothing drags you into it. A workspace
-             closed from a chat still lands you in the next one. */
-          selectAgent(first.pane_id, !state.pickerOpen);
+        const first = state.agents.find((a) => a.has_agent) || state.agents[0];
+        if (first) {
+          // Reload into the pane's default view: Chat when this pane supports
+          // it, otherwise Normal on mobile or Console on desktop.
+          selectAgent(first.pane_id);
         } else {
           state.activePaneId = null;
-          renderActiveAgentMeta();
           syncPickerChrome();
           // Nothing open means nothing to switch between: the strip goes with
           // the chat it belonged to rather than being left standing.
@@ -810,11 +532,9 @@
           elHistoryContent.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
         }
       } else {
-        renderActiveAgentMeta();
       }
     } catch (err) {
       console.warn("fetchAgents error:", err);
-      setConnected(false);
     }
   }
 
@@ -831,9 +551,12 @@
 
   function updateBadge() {
     if (!("setAppBadge" in navigator)) return;
+    /* A chat holding a permission prompt counts the same as a pane holding
+       one: the badge is how many things are waiting on you, and where they
+       are waiting is not something a number on a home screen can say. */
     const waiting = state.agents.filter(
       (a) => a.has_agent && WAITING.includes(a.status)
-    ).length;
+    ).length + state.chats.filter((c) => c.pending && c.pending.length).length;
     if (waiting === state.badgeCount) return;
     state.badgeCount = waiting;
     const done = waiting > 0 ? navigator.setAppBadge(waiting) : navigator.clearAppBadge();
@@ -842,27 +565,64 @@
     });
   }
 
-  /* The worktree, and nothing else: which of its tabs you are in is the strip
-     directly underneath, and the header has no width to spare saying it
-     twice. */
+  /* Keep the project selector on the worktree name; the tab strip and view
+     switcher already say which tab and surface are open. */
   function agentBarName(row) {
     return row.workspace_label || row.name || row.pane_id;
   }
 
+  function paneHasChat(agent) {
+    return !!agent && ["claude", "codex"].includes(agent.agent);
+  }
+
   // Header button showing the current project
   function renderAgentBar() {
+    /* A headless chat has no pane, transcript, Console or Changed Files view;
+       its conversation occupies the app's main content area. */
+    const chat = state.activeChatId
+      && state.chats.find((c) => c.id === state.activeChatId);
+    if (chat) {
+      elAgentSelectName.textContent = chat.title || "New chat";
+      elAgentSelectDot.className = `agent-dot ${chatStatus(chat)}`;
+      elViewSwitcher.classList.add("hidden");
+      elBtnChanges.classList.add("hidden");
+      document.getElementById("chat-btn-delete").classList.remove("hidden");
+      renderChatSurface(encodeURIComponent(chat.id));
+      /* The strip is compared against what it last drew before it is replaced,
+         so hiding it here has to forget that - otherwise coming back to a pane
+         whose tabs have not changed leaves the strip hidden. */
+      elTabStrip.classList.add("hidden");
+      tabStripDrawn = null;
+      if (pickerVisible()) renderAgentList();
+      return;
+    }
+
     const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
-    elAgentSelectName.textContent = agent
-      ? agentBarName(agent)
-      : state.agents.length
-      ? "Select project"
-      : "No agents";
-    elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
-    // Only Claude Code writes the session log the chat view reads.
-    const chattable = !!(agent && agent.agent === "claude");
+    elViewSwitcher.classList.toggle("hidden", !agent);
+    elBtnChanges.classList.remove("hidden");
+    document.getElementById("chat-btn-delete").classList.add("hidden");
+    const chattable = paneHasChat(agent);
+    const chatShowing = chattable && (state.chatVisible || (wide.matches && state.paneView === "chat"));
+    if (!chatShowing) {
+      const working = !!agent && agent.status === "working";
+      elComposerStop.classList.toggle("normal-visible", working);
+      elComposerStop.classList.toggle("hidden", !working);
+    }
+    if (agent) {
+      const name = agentBarName(agent);
+      elAgentSelectName.textContent = chatShowing ? `${name} · ${tabChipLabel(agent)}` : name;
+    } else {
+      elAgentSelectName.textContent = state.agents.length ? "Select project" : "No agents";
+    }
+    elAgentSelectDot.className = `agent-dot ${agent ? displayedStatus(agent) : "unknown"}`;
+    // Pane chat reads both Claude Code and Codex session logs.
     elBtnPaneChat.classList.toggle("hidden", !chattable);
-    if (chattable) elBtnPaneChat.href = "/chat.html#pane:" + agent.pane_id;
-    renderPaneChat(chattable && agent.pane_id);
+    elBtnViewNormal.classList.toggle("hidden", chattable || wide.matches);
+    const consoleShowing = !elConsoleView.classList.contains("hidden");
+    elBtnPaneChat.setAttribute("aria-pressed", String(!consoleShowing && chatShowing));
+    elBtnViewNormal.setAttribute("aria-pressed", String(!consoleShowing && !chatShowing));
+    elBtnConsole.setAttribute("aria-pressed", String(consoleShowing));
+    renderChatSurface(chattable ? "pane:" + agent.pane_id : "");
 
     renderTabStrip();
     if (pickerVisible()) renderAgentList();
@@ -872,8 +632,9 @@
      carries the status, but so does the posture: an agent that is working
      grazes, one that is idle stands with its head up, a blocked one pricks its
      ear at you, and a finished one lies down to sleep. A pane with no agent is
-     an empty pasture - no sheep at all. Drawn inline so the fleece can inherit
-     the row's colour instead of shipping five copies of the file. */
+     a shell, and draws one - a black terminal with a sheep standing on it.
+     Drawn inline so the fleece can inherit the row's colour instead of
+     shipping five copies of the file. */
   const POSE = {
     working: "graze",
     idle: "stand",
@@ -1157,17 +918,41 @@
     return `rgb(${rgb.join(",")})`;
   }
 
-  /* Nobody home: bare ground where the sheep would stand. Quieter than the
-     animals on purpose - it marks the rows with nothing running. */
-  const EMPTY_PASTURE = `
-      <path d="M2 24 C 10 19, 20 19, 26 22 C 32 25, 38 23, 42 20 L42 32 L2 32 Z"
-            fill="currentColor" opacity="0.32"/>
-      <path d="M2 24 C 10 19, 20 19, 26 22 C 32 25, 38 23, 42 20" fill="none"
-            stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
-      <path d="M11 20 q0.6 -3 2.4 -4.4" fill="none" stroke="currentColor"
-            stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
-      <path d="M33 20.6 q-0.8 -2.6 -2.4 -3.8" fill="none" stroke="currentColor"
-            stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>`;
+  /* Nobody home: a black terminal screen with a sheep standing on it. Bare
+     ground was the first answer and it said the wrong thing - an empty field
+     reads as an agent that has run out, which is the one thing the grass is
+     for. A pane with no agent in it has not run out of anything; it is a
+     shell, so it looks like one, and the sheep in it is the only one in the
+     flock with no breed, no colour and nothing to be doing.
+
+     The prompt is what makes the box a terminal rather than a card - drop the
+     `>_` and this is a dark rectangle with an animal in it. The sheep is
+     four overlapping circles rather than a traced outline, because they are
+     one fill and so union without a seam, and because a fleece at this size
+     is a silhouette with bumps on it and nothing else. Its eye is a hole back
+     to the screen colour, so it stays an eye whatever the row behind it is. */
+  const SHELL_WINDOW = `
+      <rect class="shell-screen" x="1.5" y="4" width="41" height="26" rx="5"/>
+      <rect class="shell-frame" x="1.5" y="4" width="41" height="26" rx="5"/>
+      <g class="shell-prompt" transform="translate(4.6 12.6) scale(0.92)">
+        <path d="M0 0 L3.2 2.8 L0 5.6"/>
+        <path d="M4.6 6 H8.2"/>
+      </g>
+      <g class="shell-sheep" transform="translate(15 10.4) scale(0.92)">
+        <g class="shell-sheep-under">
+          <rect x="5.4" y="8.4" width="2.5" height="6.2" rx="1.2"/>
+          <rect x="12.4" y="8.4" width="2.5" height="6.2" rx="1.2"/>
+          <ellipse cx="19.2" cy="6.8" rx="3.9" ry="4.2"/>
+          <ellipse cx="17.2" cy="2.4" rx="2.2" ry="1.4" transform="rotate(-35 17.2 2.4)"/>
+        </g>
+        <g class="shell-sheep-fleece">
+          <circle cx="5.2" cy="6.6" r="4.2"/>
+          <circle cx="9.5" cy="4.4" r="4.7"/>
+          <circle cx="14" cy="6" r="4.3"/>
+          <circle cx="9.9" cy="8.4" r="4.4"/>
+        </g>
+        <circle class="shell-sheep-eye" cx="20" cy="6.2" r="0.95"/>
+      </g>`;
 
   /* ---------------------------------------------------------- The pasture ---
    *
@@ -1274,11 +1059,25 @@
      every redraw, so the counter never has to be tidied up. */
   let sheepSerial = 0;
 
-  function sheepSvg(status, seed, pasture) {
+  /* What tells a chat's sheep from a pane's at a glance. It sits over the
+     rump rather than by the head - the head moves with every pose, and a
+     bubble that jumps around the animal is one you have to find each time -
+     and it is outlined in the card's colour like every other part laid over
+     the fleece. Drawn inside the sheep's own viewBox, past its left edge,
+     which `.sheep { overflow: visible }` already allows for the horns. */
+  const CHAT_BUBBLE = `
+    <g class="sheep-bubble">
+      <path class="bubble-body" d="M-1 1.5 h13 a2.5 2.5 0 0 1 2.5 2.5 v4.5 a2.5 2.5 0 0 1 -2.5 2.5 h-5.5 l-3 3 v-3 h-4.5 a2.5 2.5 0 0 1 -2.5 -2.5 v-4.5 a2.5 2.5 0 0 1 2.5 -2.5 z"/>
+      <circle class="bubble-dot" cx="2.5" cy="6.2" r="1"/>
+      <circle class="bubble-dot" cx="6" cy="6.2" r="1"/>
+      <circle class="bubble-dot" cx="9.5" cy="6.2" r="1"/>
+    </g>`;
+
+  function sheepSvg(status, seed, pasture, chatty) {
     const pose = POSE[knownStatus(status)];
-    // An empty pasture has nobody to tell apart.
+    // A shell has nobody to tell apart, and no window to draw grass for.
     if (pose === "empty") {
-      return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${EMPTY_PASTURE}</svg>`;
+      return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${SHELL_WINDOW}</svg>`;
     }
     const marks = sheepMarks(seed);
     const asleep = pose === "sleep";
@@ -1290,6 +1089,7 @@
       <svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">
         ${sheepBody(asleep ? 5 : 0, !asleep, marks, `fleece-${++sheepSerial}`)}
         <g class="sheep-head">${HEADS[pose](marks)}</g>
+        ${chatty ? CHAT_BUBBLE : ""}
         ${grassSvg(pasture)}
       </svg>`;
   }
@@ -1306,7 +1106,10 @@
         [
           group.key,
           group.name,
-          group.from ? "+" : "",
+          // Whether the heading can offer anything, which is not the same as
+          // whether it can offer a worktree: a project with no checkout open
+          // can still take a tab.
+          (group.from ? "w" : "") + (group.rows.some((pen) => pen.workspace_id) ? "t" : ""),
           ...group.rows.map((pen) =>
             [
               pen.lead.pane_id,
@@ -1319,12 +1122,18 @@
               pen.lead.name,
               tabName(pen.lead),
               pen.lead.title || pen.lead.cwd,
-              agoLabel(pen.lead.pane_id),
+              rowAgo(pen.lead),
               queuedLabel(penQueue(pen, queued)),
               pastureMark(pastureOf(pen.lead.has_agent ? pen.lead.agent : "")),
               // Any of its tabs being the open one lights the row up: the
               // chat you came from is in this pen even when another tab leads.
-              pen.tabs.some((a) => a.pane_id === state.activePaneId) ? "1" : "",
+              // A headless chat lights up the same way, from its own id.
+              pen.chat
+                ? (state.activeChatId === pen.chat.id ? "1" : "")
+                : pen.tabs.some((a) => a.pane_id === state.activePaneId) ? "1" : "",
+              // And every tab of a pen that has them out, since a second tab
+              // going blocked moves nothing about the tab leading the pen.
+              penTabsMark(pen, queued),
             ].join("\u001f")
           ),
         ].join("\u001e")
@@ -1385,23 +1194,165 @@
      stacked behind it that is the more useful word: an agent that finished
      with a prompt still waiting is not "done", it is one prompt from starting
      again. A question on screen outranks even that - nothing is ever delivered
-     into one, and it is the state that must never be buried. */
+     into one, and it is the state that must never be buried.
+
+     A pane with no agent says nothing here: its sheep is already a terminal
+     window, and the word "shell" beside it was the same fact twice. */
   function statusBadge(agent, status, queued) {
-    if (!agent.has_agent) return '<span class="agent-row-ago">shell</span>';
+    if (!agent.has_agent) return "";
     const word = queued ? queuedLabel(queued) : "";
     if (!word || status === "blocked") {
-      return `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`;
+      return `<span class="status-badge status-${status}">${escapeHtml(status)}</span>`;
     }
     return `<span class="status-badge status-${queued.failed ? "failed" : "queued"}">${escapeHtml(word)}</span>`;
   }
 
+  /* When the row last moved. A pane's age is the last change this phone
+     watched happen; a chat keeps its own timestamp, which is better - it
+     survives a reload, where the pane's activity record is only as old as
+     this tab is. */
+  function rowAgo(row) {
+    if (row.chat) return row.updated ? agoText(Date.now() - row.updated * 1000) : "";
+    return agoLabel(row.pane_id);
+  }
+
+  /* ------------------------------------------------------- Icons on a row ---
+   *
+   * A mouse cannot swipe, so the drawer a finger drags a row aside for is a
+   * gesture a desktop does not have. What it had instead was a `…` in the
+   * corner on hover, which said a drawer was there and did nothing itself -
+   * one more thing to learn before anything could be renamed.
+   *
+   * So the row actions are on the row, in the corner that hint used to sit in,
+   * and only while the pointer is on it. The actions depend on the row: a
+   * worktree renames and closes the workspace, a
+   * tab of an opened pen renames and closes the tab, a chat has only Delete.
+   * A linked worktree also offers Remove, which asks before deleting its
+   * checkout. `style.css` hides the icons wherever there is no hover to reveal
+   * them, which is every phone, and hides the drawer wherever there is.
+   * ------------------------------------------------------------------------ */
+
+  /* The action glyphs a row wears on a desktop. Drawn here rather than in
+     `index.html` because the row is built in JS, and cut to the same stroke as
+     the icons in the chrome: 24-wide box, `currentColor`, round caps. */
+  const ICON_PENCIL =
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+     </svg>`;
+
+  const ICON_TRASH =
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <polyline points="3 6 5 6 21 6"></polyline>
+       <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+       <path d="M10 11v6M14 11v6"></path>
+       <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+     </svg>`;
+
+  const ICON_REMOVE =
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <path d="M3 7h18v13H3zM3 7l2-3h14l2 3"></path>
+       <path d="M9 13l6 6M15 13l-6 6"></path>
+     </svg>`;
+
+  /* One cluster of them. `key` is the data attribute the click handler reads
+     the target out of, which is whatever that action acts on - a workspace, a
+     pane, a tab or a chat. */
+  function rowToolsHtml(tools, cls) {
+    const icons = tools.map(
+      (t) => `
+            <span class="row-tool${t.danger ? " danger" : ""}" role="button"
+                  title="${escapeHtml(t.label)}" aria-label="${escapeHtml(t.label)}"
+                  data-action="${t.action}" data-${t.key}="${escapeHtml(t.value)}">${t.icon}</span>`
+    );
+    return `<span class="${cls}">${icons.join("")}</span>`;
+  }
+
+  // The pointer controls offer the same workspace actions as the swipe drawer.
+  // Only a linked worktree can have its checkout removed.
+  function penTools(pen) {
+    const tools = [
+      { action: "rename", key: "workspace-id", value: pen.workspace_id,
+        label: "Rename this worktree", icon: ICON_PENCIL },
+      { action: "close", key: "workspace-id", value: pen.workspace_id,
+        label: "Close this worktree", icon: ICON_TRASH, danger: true },
+    ];
+    if (pen.lead.repo && !pen.lead.main_checkout) {
+      tools.push({ action: "remove", key: "workspace-id", value: pen.workspace_id,
+        label: "Remove this worktree and delete its checkout", icon: ICON_REMOVE, danger: true });
+    }
+    return tools;
+  }
+
+  /* A chat's row. Shorter than a pane's, because most of what a pane's row
+     says is about the worktree it sits in and a chat has none: no tab count,
+     no worktree name, nothing to rename and nothing to close. What is left is
+     what it is about, what it costs and whether it is waiting on you.
+
+     Delete is the only thing in the drawer, and it is the whole reason the
+     list this replaced could be deleted from at all. */
+  function chatRowHtml(pen) {
+    const row = pen.lead;
+    const chat = pen.chat;
+    const status = knownStatus(row.status);
+    const marks = sheepMarks(penSeed(pen));
+    const pasture = pastureOf("claude");
+    const chew = pasture && pasture.chew ? `--chew:${pasture.chew}` : "";
+    const wrapStyle = [`color:${marks.breed.fleece}`, chew].filter(Boolean).join(";");
+    // What it was told to do first, which is what the gateway titles it with.
+    const headline = row.title || "New chat";
+    const sub = [chat.model || "default", chat.mode].filter(Boolean).join(" · ");
+    return `
+      <div class="agent-row-wrap">
+        <div class="agent-row-actions">
+          <button class="agent-row-action remove" data-action="chat-delete" data-chat-id="${escapeHtml(chat.id)}">Delete</button>
+        </div>
+        <button class="agent-row st-${status} chat-row ${state.activeChatId === chat.id ? "active" : ""}" data-chat-id="${escapeHtml(chat.id)}">
+          <span class="sheep-wrap ${status}" style="${wrapStyle}">${sheepSvg(status, penSeed(pen), pasture, true)}</span>
+          <span class="agent-row-text">
+            <span class="agent-row-name">${escapeHtml(headline)}</span>
+            <span class="agent-row-meta">
+              <span class="row-agent">chat</span>
+              ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
+            </span>
+          </span>
+          <span class="agent-row-side">
+            ${statusBadge(row, status, null)}
+            <span class="agent-row-ago">${escapeHtml(rowAgo(row))}</span>
+          </span>
+          ${rowToolsHtml(
+            [{ action: "chat-delete", key: "chat-id", value: chat.id,
+               label: "Delete this chat", icon: ICON_TRASH, danger: true }],
+            "row-tools"
+          )}
+        </button>
+      </div>
+    `;
+  }
+
+  function sheepStatus(agent) {
+    const status = knownStatus(agent.status);
+    // Herdr can identify a Codex pane while its activity status is unknown.
+    // A terminal icon means no agent is present, so draw a standing sheep.
+    return status === "unknown" && agent.has_agent ? "idle" : status;
+  }
+
+  function displayedStatus(agent) {
+    const status = knownStatus(agent.status);
+    return status === "unknown" && agent.has_agent && agent.agent === "codex"
+      ? "idle" : status;
+  }
+
   function agentRowHtml(pen, groupName, queued) {
+    if (pen.chat) return chatRowHtml(pen);
     // The tab that speaks for the pen: whichever of them needs you most.
     const agent = pen.lead;
     // The open chat being anywhere in this pen lights the row up - it is the
     // pen you came from, whichever of its tabs is leading it now.
     const isActive = pen.tabs.some((a) => a.pane_id === state.activePaneId);
-    const status = knownStatus(agent.status);
+    const status = displayedStatus(agent);
     const label = agent.name || agent.pane_id;
     const named = tabName(agent);
     // Herdr's own number for the tab, when it has one: a pane the gateway
@@ -1412,7 +1363,8 @@
        tab. Hashing the workspace keeps one animal per pen however its tabs
        come and go; hashing the leading pane would change the face every time
        another tab started asking something. */
-    const fleece = status === "unknown"
+    const iconStatus = sheepStatus(agent);
+    const fleece = iconStatus === "unknown"
       ? ""
       : `color:${sheepMarks(penSeed(pen)).breed.fleece}`;
     /* What this pane's subscription has left, and how fast it is going: the
@@ -1431,11 +1383,6 @@
        one for a branch that was finished with last week. The project's own
        checkout is not something the phone may delete at all. */
     const removable = agent.repo && !agent.main_checkout;
-    /* How many tabs this row is standing in front of, said only when it is
-       more than the one you would assume. It is the count that makes Close
-       honest: a row saying "3 tabs" is visibly not a single chat, and the
-       strip above the transcript is where one of the three is closed. */
-    const tabs = tabCount(pen);
     return `
       <div class="agent-row-wrap">
         <div class="agent-row-actions">
@@ -1446,29 +1393,184 @@
             : ""}
         </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${status}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(status, penSeed(pen), pasture)}</span>
+          <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, penSeed(pen), pasture)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             <span class="agent-row-meta">
               ${agent.has_agent && agent.agent
                 ? `<span class="row-agent">${escapeHtml(agent.agent)}</span>`
                 : ""}
-              ${tabs > 1 ? `<span class="row-tabs">${tabs} tabs</span>` : ""}
               ${sub ? `<span class="agent-row-title">${escapeHtml(sub)}</span>` : ""}
             </span>
           </span>
           <span class="agent-row-side">
             ${statusBadge(agent, status, queued)}
-            <span class="agent-row-ago">${escapeHtml(agoLabel(agent.pane_id))}</span>
+            <span class="agent-row-ago">${escapeHtml(rowAgo(agent))}</span>
           </span>
+          ${rowToolsHtml(penTools(pen), "row-tools")}
         </button>
       </div>
     `;
   }
 
-  /* The full-screen overview: a heading per project, that project's own sheep
-     under it. The heading counts the ones asking you something, because that
-     is the number the list was opened to find. */
+  /* ------------------------------------------------ A pen with its tabs out
+   *
+   * One row per workspace is honest right up to the moment a workspace has a
+   * second tab in it. Then the row draws whichever tab needs you most and the
+   * other one is a number in the corner - so the tab you were looking for is
+   * the one that lost the tie, and the only way to it is through the strip
+   * above somebody else's transcript.
+   *
+   * So a pen with more than one tab hangs them out: the worktree's title on a
+   * line of its own, and one sheep per tab underneath it, indented and joined
+   * to that title by a bracket down the left. The pen is still one thing -
+   * Rename, Close and Remove still take the whole worktree and still live on
+   * the title, where they read as what they do - and each tab carries the two
+   * a strip offers it, renaming and closing itself and nothing else.
+   * ---------------------------------------------------------------------- */
+
+  // Whether a pen draws its tabs rather than standing in front of them. A
+  // headless chat has no tabs at all, and one tab is already one row.
+  function penShowsTabs(pen) {
+    return !pen.chat && tabCount(pen) > 1;
+  }
+
+  // In the order the strip has them, so the two places that list a workspace's
+  // tabs cannot disagree about which one is first.
+  function penTabs(pen) {
+    return pen.tabs.slice().sort(
+      (a, b) =>
+        (Number(tabNumber(a)) || 0) - (Number(tabNumber(b)) || 0) || bornAt(a) - bornAt(b)
+    );
+  }
+
+  /* The title the tabs hang off. Quieter than a row - everything in this
+     worktree that is doing something is drawn directly underneath it, so all
+     the title has to say is which worktree this is - but the same colour as
+     them, because it is part of the same pen. Tapping it opens the tab that
+     needs you most, which is what the collapsed row did.
+
+     The action icons are for a pointer: a mouse has no swipe, so the drawer
+     behind the row is a gesture it cannot make, and the two things a title is
+     asked for most are on the row itself. `style.css` hides them wherever
+     there is no hover to reveal them, which is every phone. A linked
+     worktree also offers Remove here; removeWorktree asks before deletion. */
+  function penHeadHtml(pen) {
+    const lead = pen.lead;
+    const label = lead.workspace_label || lead.name || pen.workspace_id;
+    const removable = lead.repo && !lead.main_checkout;
+    return `
+      <div class="agent-row-wrap">
+        <div class="agent-row-actions">
+          <button class="agent-row-action rename" data-action="rename" data-workspace-id="${escapeHtml(pen.workspace_id)}">Rename</button>
+          <button class="agent-row-action close" data-action="close" data-workspace-id="${escapeHtml(pen.workspace_id)}">Close</button>
+          ${removable
+            ? `<button class="agent-row-action remove" data-action="remove" data-workspace-id="${escapeHtml(pen.workspace_id)}">Remove</button>`
+            : ""}
+        </div>
+        <button class="agent-row pen-head" data-pane-id="${escapeHtml(lead.pane_id)}">
+          <span class="pen-head-name">${escapeHtml(label)}</span>
+          ${rowToolsHtml(penTools(pen), "pen-head-tools")}
+          <span class="row-tabs">${tabCount(pen)} tabs</span>
+        </button>
+      </div>`;
+  }
+
+  /* One tab of an opened pen, which is a row like any other bar two things.
+     Its sheep is hashed from its own pane rather than from the workspace -
+     the one place `penSeed` is deliberately not used, since two animals side
+     by side under one title must not be the same animal. And its drawer is the
+     tab's own: Rename is `tab.rename`, and Close closes this tab rather than
+     the branch, which is safe here because a pen is only drawn this way while
+     it has a second tab for Herdr to keep the workspace alive by. */
+  function penTabRowHtml(agent, queued) {
+    const status = displayedStatus(agent);
+    // What the strip calls this tab, including which half of a split it is.
+    const chip = tabChipLabel(agent);
+    const headline = agent.title || chip;
+    const iconStatus = sheepStatus(agent);
+    const fleece = iconStatus === "unknown"
+      ? ""
+      : `color:${sheepMarks(agent.pane_id).breed.fleece}`;
+    const pasture = pastureOf(agent.has_agent ? agent.agent : "");
+    const chew = pasture && pasture.chew ? `--chew:${pasture.chew}` : "";
+    const wrapStyle = [fleece, chew].filter(Boolean).join(";");
+    return `
+      <div class="pen-tab">
+        <div class="agent-row-wrap">
+          <div class="agent-row-actions">
+            <button class="agent-row-action rename" data-action="tab-rename" data-pane-id="${escapeHtml(agent.pane_id)}">Rename</button>
+            <button class="agent-row-action close" data-action="tab-close" data-tab-id="${escapeHtml(agent.tab_id)}">Close</button>
+          </div>
+          <button class="agent-row st-${status} ${agent.pane_id === state.activePaneId ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
+            <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, agent.pane_id, pasture)}</span>
+            <span class="agent-row-text">
+              <span class="agent-row-name">${escapeHtml(headline)}</span>
+              <span class="agent-row-meta">
+                ${agent.has_agent && agent.agent
+                  ? `<span class="row-agent">${escapeHtml(agent.agent)}</span>`
+                  : ""}
+                ${agent.title ? `<span class="row-tab">${escapeHtml(chip)}</span>` : ""}
+              </span>
+            </span>
+            <span class="agent-row-side">
+              ${statusBadge(agent, status, queued)}
+              <span class="agent-row-ago">${escapeHtml(rowAgo(agent))}</span>
+            </span>
+            ${rowToolsHtml(
+              [
+                { action: "tab-rename", key: "pane-id", value: agent.pane_id,
+                  label: "Rename this tab", icon: ICON_PENCIL },
+                { action: "tab-close", key: "tab-id", value: agent.tab_id,
+                  label: "Close this tab", icon: ICON_TRASH, danger: true },
+              ],
+              "row-tools"
+            )}
+          </button>
+        </div>
+      </div>`;
+  }
+
+  /* What an opened pen's own rows are worth to the signature. Everything the
+     collapsed row carried, once per tab: the pen's line above them says almost
+     nothing, and all of what changes is down here. */
+  function penTabsMark(pen, queued) {
+    if (!penShowsTabs(pen)) return "";
+    return penTabs(pen)
+      .map((a) =>
+        [
+          a.pane_id,
+          a.status,
+          a.has_agent ? "a" : "",
+          a.title || a.cwd,
+          tabChipLabel(a),
+          rowAgo(a),
+          queuedLabel(queued.get(a.pane_id) || null),
+          pastureMark(pastureOf(a.has_agent ? a.agent : "")),
+          a.pane_id === state.activePaneId ? "1" : "",
+        ].join("\u001c")
+      )
+      .join("\u001b");
+  }
+
+  // Either shape a workspace takes: one row, or a title with its tabs out.
+  function penHtml(pen, groupName, counts) {
+    if (!penShowsTabs(pen)) return agentRowHtml(pen, groupName, penQueue(pen, counts));
+    return `
+      <div class="pen">
+        ${penHeadHtml(pen)}
+        <div class="pen-tabs">
+          ${penTabs(pen)
+              .map((a) => penTabRowHtml(a, counts.get(a.pane_id) || null))
+              .join("")}
+        </div>
+      </div>`;
+  }
+
+  /* The full-screen overview: a heading per project, with that project's own
+     sheep under it. The heading names the project and nothing else: the sheep
+     are right there to be counted, and the ones asking you something are
+     already at the top of the list, in the pose and the colour that says so. */
   function renderAgentList() {
     if (state.groups.length === 0) {
       state.listSignature = null;
@@ -1486,42 +1588,33 @@
     const queued = queuedByPane();
     elAgentList.innerHTML = state.groups
       .map((group) => {
-        const waiting = group.agents.filter(wantsInput).length;
         const owed = group.agents.reduce(
           (sum, a) => sum + ((queued.get(a.pane_id) || {}).waiting || 0), 0
         );
-        /* Waiting counts questions, since each of them is a separate thing
-           you have to go and answer; the plain tally counts rows, because it
-           is how many sheep are underneath the heading. */
-        const tally = waiting
-          ? `<span class="agent-group-waiting">${waiting} waiting</span>`
-          : `<span class="agent-group-count">${group.rows.length}</span>`;
-        /* The heading is sticky, so a project's total stays on screen while
-           you scroll its sheep - which is the number you want when the queue
-           is long enough to scroll. */
+        /* The one number left in a heading: prompts this project has not been
+           given yet. It stays because nothing else on the screen says so - a
+           sheep with a prompt still queued behind it looks idle. */
         const owedChip = owed
           ? `<span class="agent-group-queued">${owed} queued</span>`
           : "";
-        /* Another one of these, please: a worktree cut off this project, the
-           same thing a right-click on a space does on the desktop. It lives in
-           the heading because the project is what it needs to be told, and the
-           heading is the only thing on this screen that names one. */
-        const add = group.from
+        /* Another one of these, please: a worktree cut off this project or a
+           tab beside what is already open - the sheet asks which. It lives in
+           the heading because the project is what both of them need to be
+           told, and the heading is the only thing on this screen that names
+           one. A project with nothing open has neither to offer. */
+        const add = group.from || group.rows.some((pen) => pen.workspace_id)
           ? `<button class="agent-group-add" type="button"
                      data-action="worktree" data-project="${escapeHtml(group.key)}"
-                     aria-label="New worktree in ${escapeHtml(group.name)}">+</button>`
+                     aria-label="New in ${escapeHtml(group.name)}">+</button>`
           : "";
         return `
           <section class="agent-group" data-project="${escapeHtml(group.key)}">
             <h2 class="agent-group-head">
               <span class="agent-group-name">${escapeHtml(group.name)}</span>
               ${owedChip}
-              ${tally}
               ${add}
             </h2>
-            ${group.rows
-                .map((pen) => agentRowHtml(pen, group.name, penQueue(pen, queued)))
-                .join("")}
+            ${group.rows.map((pen) => penHtml(pen, group.name, queued)).join("")}
           </section>`;
       })
       .join("");
@@ -1618,28 +1711,316 @@
       await fetchAgents();
       // Open the one that was not there a moment ago.
       const created = state.agents.find((a) => !before.has(a.workspace_id));
-      if (created) selectAgent(created.pane_id);
+      if (created) {
+        // A workspace made from the flock's + New action is the one kind of
+        // new project that belongs at the top. Other projects discovered by
+        // polling join the end of the saved order.
+        const key = projectKey(created);
+        state.customOrder = [key, ...state.customOrder.filter((item) => item !== key)];
+        saveOrder();
+        orderAgents();
+        renderAgentList();
+        selectAgent(created.pane_id);
+      }
       else closePicker();
     } catch (err) {
       alert("Could not create workspace: " + err.message);
     }
   }
 
+  /* --------------------------------------------------------- What "+" asks
+   *
+   * There were four plusses, and between them they did four unrelated things
+   * nobody could name from the icon: a bare workspace, a worktree, a tab, and
+   * - on a page of its own that nothing pointed at - a chat. Two of those are
+   * the same question with a different answer ("another agent on this project,
+   * in its own checkout or not") and the other two are the other same question
+   * ("something new, with a terminal in front of it or a model").
+   *
+   * So there are two plusses now, and both of them ask. The sheet is one
+   * element: a title, a body drawn from whichever question is being asked, and
+   * a cancel. `newSheet` is what it is asking about - `where` is which plus was
+   * tapped, `step` is how far through the answer we are.
+   * ------------------------------------------------------------------------ */
+
+  let newSheet = null;
+  // The projects and permission modes a chat may be started with. Asked for
+  // once, when a chat is first asked for, rather than on every poll.
+  let chatOptions = null;
+
+  function openNewSheet(where, extra) {
+    newSheet = { where, step: "choose", ...extra };
+    triggerHaptic();
+    resetSwipe();
+    elNewSheet.classList.remove("hidden");
+    elSheetBackdrop.classList.remove("hidden");
+    renderNewSheet();
+  }
+
+  function closeNewSheet() {
+    newSheet = null;
+    elNewSheet.classList.add("hidden");
+    elSheetBackdrop.classList.add("hidden");
+  }
+
+  // The plus at the top of the flock: nothing exists yet, so nothing is known.
+  function openNewAnything() {
+    openNewSheet("flock");
+  }
+
+  /* The plus on a project heading. It knows the project, and which of its
+     workspaces a worktree would be cut from - the project's own checkout,
+     picked in groupByProject - but not which workspace a tab should join, so
+     it aims a tab at that same checkout. */
+  function openNewInProject(key) {
+    const group = state.groups.find((g) => g.key === key) || (() => {
+      const fallback = groupByProject(state.agents).find((g) => g.key === key);
+      return fallback ? { ...fallback, rows: byWorkspace(fallback.agents) } : null;
+    })();
+    if (!group) return;
+    /* The project's own checkout when it is open, and failing that whichever
+       of its worktrees leads the list - a project that is nothing but
+       worktrees can still be given another tab, it just cannot be branched. */
+    const lead = group.rows.find((pen) => pen.workspace_id);
+    openNewSheet("project", {
+      project: group.key,
+      name: group.name,
+      from: group.from,
+      workspaceId: group.from || (lead && lead.workspace_id) || "",
+    });
+  }
+
+  /* The plus in the tab strip. Same sheet, but here the worktree you are
+     looking at is the one a tab joins, which is the whole reason the strip
+     has its own plus rather than sending you back to the heading. */
+  function openNewInWorkspace(workspaceId) {
+    const row = state.agents.find((a) => a.workspace_id === workspaceId);
+    if (!row) return;
+    const group = state.groups.find((g) => g.key === projectKey(row));
+    openNewSheet("project", {
+      project: group ? group.key : projectKey(row),
+      name: (group && group.name) || row.project_name || row.name,
+      from: group ? group.from : "",
+      workspaceId,
+      workspaceName: row.workspace_label || row.name,
+    });
+  }
+
+  const ICON = {
+    chat: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    terminal: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2"/><polyline points="6.5 9 9.5 12 6.5 15"/><line x1="12" y1="15.5" x2="17" y2="15.5"/></svg>',
+    worktree: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 7.5v9M6 12h5a4 4 0 0 0 4-1.2"/></svg>',
+    tab: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19V7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  };
+
+  function choiceHtml(key, name, hint) {
+    return `
+      <button type="button" class="new-choice" data-choose="${key}">
+        <span class="new-choice-icon">${ICON[key]}</span>
+        <span class="new-choice-text">
+          <span class="new-choice-name">${escapeHtml(name)}</span>
+          <span class="new-choice-hint">${escapeHtml(hint)}</span>
+        </span>
+      </button>`;
+  }
+
+  function renderNewSheet() {
+    if (!newSheet) return;
+    const { where, step } = newSheet;
+    if (where === "flock" && step === "choose") {
+      elNewSheetTitle.textContent = "New";
+      elNewSheetBody.innerHTML =
+        choiceHtml("chat", "Chat", "a Claude Code you talk to, with no terminal behind it") +
+        choiceHtml("terminal", "Terminal", "an empty Herdr workspace to start something in");
+      return;
+    }
+    if (where === "flock" && step === "chat") {
+      elNewSheetTitle.textContent = "New chat";
+      elNewSheetBody.innerHTML = chatFormHtml();
+      restoreChatPrefs();
+      return;
+    }
+    if (where === "project" && step === "choose") {
+      elNewSheetTitle.textContent = `New in ${newSheet.name}`;
+      // No checkout of the project is open, so there is no repository to cut a
+      // branch from - Herdr resolves a worktree through a workspace, not a path.
+      const worktree = newSheet.from
+        ? choiceHtml("worktree", "Worktree", "its own branch and its own copy of the tree")
+        : "";
+      const here = newSheet.workspaceName
+        ? `another agent beside the one in ${newSheet.workspaceName}`
+        : "another agent on the branch that is already checked out";
+      const tab = newSheet.workspaceId ? choiceHtml("tab", "Tab", here) : "";
+      elNewSheetBody.innerHTML = (worktree + tab) ||
+        '<p class="new-choice-hint">Nothing of this project is open to add to.</p>';
+      return;
+    }
+    if (where === "project" && step === "worktree") {
+      elNewSheetTitle.textContent = `New worktree in ${newSheet.name}`;
+      elNewSheetBody.innerHTML = `
+        <label class="new-field">Branch
+          <input id="new-branch" type="text" autocapitalize="off" autocorrect="off"
+                 spellcheck="false" placeholder="leave empty and Herdr names it">
+        </label>
+        <button type="button" class="new-go" data-go="worktree">Cut worktree</button>`;
+      const input = document.getElementById("new-branch");
+      if (input) input.focus();
+    }
+  }
+
+  /* The settings a chat is started with, which are the only ones it ever gets:
+     the directory, what it may do without asking, and which model. Remembered
+     between chats, because the answer is nearly always the last answer. */
+  function chatFormHtml() {
+    if (!chatOptions) return '<p class="new-choice-hint">Reading projects…</p>';
+    if (!chatOptions.dirs.length) {
+      return '<p class="new-choice-hint">No projects open. A chat starts in a directory the flock already has a pane in.</p>';
+    }
+    const dirs = chatOptions.dirs
+      .map((d) => `<option value="${escapeHtml(d.cwd)}">${escapeHtml(d.name)}</option>`)
+      .join("");
+    const modes = chatOptions.modes
+      .map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`)
+      .join("");
+    return `
+      <label class="new-field">Project
+        <select id="new-chat-cwd">${dirs}</select>
+      </label>
+      <div class="new-row">
+        <label class="new-field">Permissions
+          <select id="new-chat-mode">${modes}</select>
+        </label>
+        <label class="new-field">Model
+          <select id="new-chat-model">
+            <option value="">default</option>
+            <option value="opus">opus</option>
+            <option value="sonnet">sonnet</option>
+            <option value="haiku">haiku</option>
+          </select>
+        </label>
+      </div>
+      <button type="button" class="new-go" data-go="chat">Start chat</button>`;
+  }
+
+  function restoreChatPrefs() {
+    const cwd = document.getElementById("new-chat-cwd");
+    const mode = document.getElementById("new-chat-mode");
+    const model = document.getElementById("new-chat-model");
+    if (!cwd) return;
+    /* The project a chat is most likely to be about is the one whose row you
+       were just looking at, and failing that the last one you picked. */
+    const here = state.agents.find((a) => a.pane_id === state.activePaneId);
+    const guess = (here && here.project) || readPref("chat.cwd");
+    if (guess && chatOptions.dirs.some((d) => d.cwd === guess)) cwd.value = guess;
+    if (mode) mode.value = readPref("chat.mode") || "auto";
+    if (model) model.value = readPref("chat.model") || "";
+  }
+
+  async function loadChatOptions() {
+    if (chatOptions) return;
+    try {
+      const res = await fetch("/api/chat");
+      const data = await res.json();
+      chatOptions = { dirs: data.dirs || [], modes: data.modes || ["auto"] };
+    } catch (err) {
+      chatOptions = { dirs: [], modes: ["auto"] };
+    }
+    if (newSheet && newSheet.step === "chat") renderNewSheet();
+  }
+
+  async function startChat() {
+    const cwd = document.getElementById("new-chat-cwd");
+    const mode = document.getElementById("new-chat-mode");
+    const model = document.getElementById("new-chat-model");
+    if (!cwd || !cwd.value) return;
+    const body = {
+      cwd: cwd.value,
+      mode: (mode && mode.value) || "auto",
+      model: (model && model.value) || "",
+    };
+    savePref("sheepit.chat.cwd", body.cwd);
+    savePref("sheepit.chat.mode", body.mode);
+    savePref("sheepit.chat.model", body.model);
+    triggerHaptic();
+    try {
+      const res = await fetch("/api/chat/new", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || "refused");
+      closeNewSheet();
+      // Straight into it: a chat with nothing said in it has nothing to show.
+      await fetchAgents();
+      openChat(data.chat.id);
+    } catch (err) {
+      alert("Could not start a chat: " + err.message);
+    }
+  }
+
+  elNewSheet.addEventListener("click", (e) => {
+    const choice = e.target.closest("[data-choose]");
+    if (choice) {
+      const pick = choice.dataset.choose;
+      triggerHaptic();
+      // The two that need nothing more said happen now; the two that do get
+      // the second step of the same sheet rather than a dialog over it.
+      if (pick === "terminal") {
+        closeNewSheet();
+        createWorkspace();
+      } else if (pick === "tab") {
+        const workspaceId = newSheet.workspaceId;
+        closeNewSheet();
+        createTab(workspaceId);
+      } else if (pick === "chat") {
+        newSheet.step = "chat";
+        renderNewSheet();
+        loadChatOptions();
+      } else if (pick === "worktree") {
+        newSheet.step = "worktree";
+        renderNewSheet();
+      }
+      return;
+    }
+    const go = e.target.closest("[data-go]");
+    if (!go) return;
+    if (go.dataset.go === "chat") startChat();
+    else if (go.dataset.go === "worktree") cutWorktreeFromSheet();
+  });
+
+  /* Return in the branch field is the same as the button: a name and a return
+     key is the whole gesture when you already know what the branch is called. */
+  elNewSheet.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.id === "new-branch") {
+      e.preventDefault();
+      cutWorktreeFromSheet();
+    }
+  });
+
+  // Both read the sheet before closing it, since closing forgets the question.
+  function cutWorktreeFromSheet() {
+    if (!newSheet) return;
+    const input = document.getElementById("new-branch");
+    const project = newSheet.project;
+    const branch = input ? input.value.trim() : "";
+    closeNewSheet();
+    createWorktree(project, branch);
+  }
+
   /* Cut a worktree off a project and open it. Herdr does both halves in the
      one call, so all this has to decide is what the branch is called - and a
      blank answer is a real answer, meaning "you name it", which is how this
      stays one tap and a return key when you have not thought that far. */
-  async function createWorktree(projectKey) {
-    const group = state.groups.find((g) => g.key === projectKey);
+  async function createWorktree(key, branch) {
+    const group = state.groups.find((g) => g.key === key);
     if (!group || !group.from) return;
-    const branch = prompt(`New worktree in ${group.name}`, "");
-    if (branch === null) return;
     triggerHaptic();
     try {
       const res = await fetch("/api/worktrees", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_id: group.from, branch: branch.trim() }),
+        body: JSON.stringify({ workspace_id: group.from, branch: (branch || "").trim() }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) {
@@ -1779,6 +2160,52 @@
     return { ...data, refusal: (error && error.message) || error || "refused" };
   }
 
+  /* Safari paints its status strip and its bottom URL bar in theme-color, and
+     anything but the colour actually under them reads as a shade laid over the
+     page - which is what put a band across the Projects header. The flock's
+     edges are the base colour; a chat's are its header and its input dock,
+     both the surface colour. So the meta follows whichever is on screen rather
+     than naming one of the two and being wrong about the other. Past 900px
+     both are up at once and the flock owns the left edge, so it wins. */
+  const elThemeColor = document.querySelector('meta[name="theme-color"]');
+
+  function syncThemeColor() {
+    if (!elThemeColor) return;
+    const onFlock = state.pickerOpen || wide.matches;
+    elThemeColor.setAttribute("content", onFlock ? "#090a0f" : "#12151d");
+  }
+
+  /* The flock is the document, which is what lets Safari fold its URL bar
+     away - and the price of that is that closing the flock takes the only
+     thing in the flow out of it, so the page has nowhere left to be scrolled
+     to and the browser puts it back at zero. Remember where the list was and
+     hand it back, or every chat you come out of drops you at the top of it.
+     Past 900px the flock is a column with its own scrollTop and none of this
+     applies. */
+  let flockScroll = 0;
+
+  function keepFlockScroll() {
+    if (wide.matches) return;
+    flockScroll = window.scrollY;
+  }
+
+  function restoreFlockScroll() {
+    if (wide.matches || !flockScroll) return;
+    // After the layout: the picker is only just back in the flow, so until it
+    // has been laid out the document is still one screen tall and a scroll
+    // would clamp to nothing.
+    requestAnimationFrame(() => window.scrollTo(0, flockScroll));
+  }
+
+  /* A project heading sticks below the picker head, and the head's height is
+     the status bar inset plus whatever the title and the button come to - a
+     number only the browser knows, and one that changes with the notch and
+     with rotation. Measure it into the variable the CSS reads. */
+  function measurePickerHead() {
+    const h = elPickerHead ? elPickerHead.getBoundingClientRect().height : 0;
+    if (h) document.documentElement.style.setProperty("--picker-head-h", `${h}px`);
+  }
+
   /* Home. Not a sheet over a chat any more: this is the screen the app starts
      on and the one a chat is backed out of. */
   function showFlock() {
@@ -1788,6 +2215,8 @@
     renderQuota();
     fetchQuota();
     syncPickerChrome();
+    syncThemeColor();
+    restoreFlockScroll();
   }
 
   function openPicker() {
@@ -1799,14 +2228,13 @@
     // On a Mac the flock is the left column: there is nothing to close, and
     // hiding it would leave the chat alone on a very wide screen.
     if (wide.matches) return;
+    keepFlockScroll();
     state.pickerOpen = false;
     elAgentPicker.classList.add("hidden");
+    syncThemeColor();
   }
 
-  /* The X means "back to what I was reading", so it is only there once there
-     is something to go back to. On a fresh start there is not: a pane is
-     selected behind the flock, but nobody chose it, and an X that opens a chat
-     you never asked for is a door out of the home screen into a stranger. */
+  /* The X returns from the flock to the pane once one has been opened. */
   function canLeaveFlock() {
     return Boolean(state.chatVisited && state.activePaneId) && !wide.matches;
   }
@@ -1815,45 +2243,63 @@
     elBtnClosePicker.classList.toggle("hidden", !canLeaveFlock());
   }
 
-  /* Open a pane's chat. `open` false selects it without leaving the flock -
-     which is how the app starts: a pane is ready to talk to, but the herd is
-     still what you are looking at. */
+  /* Console and changed files belong to the pane that opened them. Switching
+     tabs closes those views so the new pane can show its default surface. */
+
+  function closePaneViews() {
+    if (!elConsoleView.classList.contains("hidden")) closeConsole();
+    if (!elChangesView.classList.contains("hidden")) closeChanges();
+  }
+
+  /* Select a pane and start at its first available view. */
   function selectAgent(paneId, open = true) {
     if (open) state.chatVisited = true; // there is now a chat to go back to
-    if (state.activePaneId === paneId) {
-      if (open) closePicker();
-      return;
-    }
+    // A pane takes the column back off whatever headless chat had it.
+    state.activeChatId = null;
+    const pane = state.agents.find((agent) => agent.pane_id === paneId);
+    const hasChat = paneHasChat(pane);
+    const changed = state.activePaneId !== paneId;
     if (open) closePicker();
-    setCtrlCArmed(false);
-    // What is in the composer was written for the pane being left.
-    rememberDraft(state.activePaneId);
-    touchAgent(paneId);
-    state.activePaneId = paneId;
-    resetRecall();
-    restoreDraft(paneId);
-    renderAttachments();
-    state.historyText = "";
-    // A redraw held for a selection belonged to the pane being left; letting
-    // it out now would paint the old chat into the new one's view.
-    state.heldHistory = null;
-    elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
+    if (changed) {
+      setCtrlCArmed(false);
+      rememberDraft(state.activePaneId);
+      touchAgent(paneId);
+      state.activePaneId = paneId;
+      resetRecall();
+      restoreDraft(paneId);
+      attachStrip.clear();
+      state.historyText = "";
+      state.heldHistory = null;
+      elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
+    }
+    state.paneView = hasChat ? "chat" : "transcript";
+    state.chatVisible = hasChat;
+    savePref("sheepit.view", state.paneView);
     if (open) triggerHaptic();
 
+    closePaneViews();
     renderAgentBar();
     syncPickerChrome();
-    renderActiveAgentMeta();
-    renderChatQueue();
-    fetchHistory(true);
+    if (changed) {
+      renderChatQueue();
+      fetchHistory(true);
+    }
+    if (open) {
+      if (!wide.matches) stopPolling();
+      if (wide.matches && !hasChat) openConsole();
+    }
   }
 
   /* ------------------------------------------------------------ The tabs ---
    *
-   * The overview lists worktrees, one sheep per pen, so this is the only place
-   * the tabs inside one are individually reachable - and the only place a
-   * single tab is closed. That was the whole confusion it is here to end:
-   * every action the overview offered acted on the workspace, so closing what
-   * looked like a tab took the branch and its neighbours with it.
+   * A worktree with a second tab in it hangs both of them out in the overview,
+   * so this is not the only place a tab is reachable any more - but it is the
+   * only place one is *switched to* without leaving the chat you are in, and
+   * the only place another is opened. The two agree deliberately: a tab is
+   * called the same thing in both, and Close means this tab in both, which is
+   * the confusion this whole arrangement exists to end - every action the
+   * overview used to offer acted on the workspace, so closing what looked like
+   * a tab took the branch and its neighbours with it.
    *
    * Tap a chip to switch, hold one to rename it, + for another tab in the same
    * checkout, and the x on the one you are in to close it. The x is absent on
@@ -1890,7 +2336,7 @@
     const closable = new Set(tabs.map((a) => a.tab_id)).size > 1;
     const chips = tabs.map((row) => {
       const on = row.pane_id === state.activePaneId;
-      const status = knownStatus(row.has_agent ? row.status : "unknown");
+      const status = displayedStatus(row);
       return `
         <button type="button" class="tab-chip ${on ? "on" : ""}" data-pane-id="${escapeHtml(row.pane_id)}">
           <span class="agent-dot ${status}"></span>
@@ -1906,7 +2352,7 @@
     return `
       <div class="tab-chips">${chips.join("")}</div>
       <button type="button" class="tab-chip-new" data-tab-new="${escapeHtml(workspaceId)}"
-              aria-label="New tab in this worktree">+</button>`;
+              aria-label="New tab or worktree">+</button>`;
   }
 
   // Redrawn from the poll, so it is compared before it is replaced: a strip
@@ -1962,7 +2408,13 @@
      same checkout, rather than a worktree of its own. It opens where the tab
      it was asked from is sitting. */
   async function createTab(workspaceId) {
-    const row = state.agents.find((a) => a.pane_id === state.activePaneId);
+    /* Where the new tab opens: the directory the pane you asked from is
+       sitting in, or - asked from the project heading, where no pane is
+       necessarily open - whatever that workspace's first pane is using. */
+    const here = state.agents.find((a) => a.pane_id === state.activePaneId);
+    const row = here && here.workspace_id === workspaceId
+      ? here
+      : state.agents.find((a) => a.workspace_id === workspaceId);
     if (!workspaceId || !row) return;
     triggerHaptic();
     try {
@@ -1979,38 +2431,23 @@
     }
   }
 
-  // Render Metadata (lives in the settings sheet)
-  function renderActiveAgentMeta() {
-    const agent = state.agents.find((a) => a.pane_id === state.activePaneId);
-    if (!agent) {
-      elAgentTitle.textContent = "No agent selected";
-      elAgentCwd.textContent = "";
-      elAgentStatus.className = "status-badge status-unknown";
-      elAgentStatus.textContent = "--";
-      return;
-    }
-
-    elAgentTitle.textContent = agent.title || agent.name || agent.pane_id;
-    elAgentCwd.textContent = agent.cwd || "";
-
-    const status = knownStatus(agent.status);
-    elAgentStatus.className = `status-badge status-${status}`;
-    elAgentStatus.textContent = agent.status || "unknown";
-  }
-
-  // Fetch Agent History
-  async function fetchHistory(forceScroll = false) {
+  // Fetch Agent History. A setting change can race an in-flight poll; only
+  // render the newest request so an old line count cannot overwrite it.
+  let historyRequest = 0;
+  async function fetchHistory(forceScroll = false, forceRender = false) {
     if (!state.activePaneId) return;
+    const request = ++historyRequest;
+    const paneId = state.activePaneId;
+    const lines = state.linesCount;
 
     try {
-      const url = `/api/agents/${encodeURIComponent(state.activePaneId)}/history?lines=${state.linesCount}&source=recent_unwrapped&format=ansi`;
+      const url = `/api/agents/${encodeURIComponent(paneId)}/history?lines=${lines}&source=recent_unwrapped&format=ansi`;
       const res = await fetch(url);
       if (!res.ok) throw new Error("Failed to fetch history");
       const data = await res.json();
-      setConnected(true);
-
+      if (request !== historyRequest || paneId !== state.activePaneId || lines !== state.linesCount) return;
       const newText = data.text || "";
-      if (newText !== state.historyText) {
+      if (forceRender || newText !== state.historyText) {
         // Something in it is selected: hold the redraw. See releaseHeld.
         if (transcriptHeld()) {
           state.heldHistory = newText;
@@ -2019,38 +2456,50 @@
         state.historyText = newText;
         renderTranscript(newText);
 
-        // Auto-scroll to bottom if user hasn't scrolled up, or if forced
-        if (!state.isUserScrolledUp || forceScroll) {
+        // Auto-scroll to bottom if user hasn't scrolled up, or if forced.
+        // The transcript keeps polling behind a chat that covers it (see
+        // renderChatSurface), and on a phone it shares the document scroller
+        // with that chat now - scrolling a hidden transcript would drag the
+        // chat the user is actually reading down with it.
+        if ((!state.isUserScrolledUp || forceScroll) && !elHistoryContainer.classList.contains("hidden")) {
           scrollToBottom();
         }
       }
     } catch (err) {
       console.warn("fetchHistory error:", err);
-      setConnected(false);
     }
   }
 
   // Scroll to Bottom
+  function historyScroller() {
+    return wide.matches ? elHistoryContainer : document.scrollingElement;
+  }
+
   function scrollToBottom(smooth = false) {
+    const scroller = historyScroller();
     if (smooth) {
-      elHistoryContainer.scrollTo({
-        top: elHistoryContainer.scrollHeight,
+      scroller.scrollTo({
+        top: scroller.scrollHeight,
         behavior: "smooth",
       });
     } else {
-      elHistoryContainer.scrollTop = elHistoryContainer.scrollHeight;
+      scrollContainerToBottom(scroller);
     }
     state.isUserScrolledUp = false;
     updateScrollButton();
   }
 
+  function scrollContainerToBottom(container) {
+    container.scrollTop = container.scrollHeight;
+  }
+  window.SheepItScrollToBottom = scrollContainerToBottom;
+
   // Check scroll position
   function onHistoryScroll() {
     const threshold = 80;
+    const scroller = historyScroller();
     const distanceToBottom =
-      elHistoryContainer.scrollHeight -
-      elHistoryContainer.scrollTop -
-      elHistoryContainer.clientHeight;
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
 
     state.isUserScrolledUp = distanceToBottom > threshold;
     updateScrollButton();
@@ -2107,27 +2556,13 @@
       const term = consoleState.term;
       if (!term) return;
       for (const bytes of frames) term.write(bytes);
-      if (keyboardOpen()) pinConsoleBottom();
     }
   }
 
   document.addEventListener("selectionchange", releaseHeld);
 
-  // Settings sheet
-  function openSheet() {
-    triggerHaptic();
-    elSheet.classList.remove("hidden");
-    elSheetBackdrop.classList.remove("hidden");
-  }
-
-  function closeSheet() {
-    elSheet.classList.add("hidden");
-    elSheetBackdrop.classList.add("hidden");
-  }
-
   function openGlobalSettings() {
     triggerHaptic();
-    closeSheet();
     if (elGlobalSettingsView) {
       elGlobalSettingsView.classList.remove("hidden");
       refreshGlobalSettings();
@@ -2140,13 +2575,15 @@
     }
   }
 
-  /* Send a prompt - which means queue it. There is deliberately only one path:
-     into a free chat with usage left this lands within the second, and into a
-     busy one or an empty window it waits, without you having to know which of
-     those you were in when you typed it. */
+  /* Send through the gateway's single prompt path. It queues regular prompts
+     until the pane and usage window are ready, but delivers /clear immediately. */
   async function submitPrompt(e) {
     if (e) e.preventDefault();
-    const text = elPromptInput.value.trim();
+    if (state.chatVisible || state.activeChatId || !elChatView.classList.contains("hidden")) return;
+    const images = attachStrip.list;
+    if (images.some((image) => !image.name)) return; // still uploading
+    const attachmentText = images.map((image) => `@${image.name}`).join(" ");
+    const text = [elPromptInput.value.trim(), attachmentText].filter(Boolean).join(" ");
     if (!text || !state.activePaneId || state.isSending) return;
 
     state.isSending = true;
@@ -2173,7 +2610,7 @@
       clearDraft(state.activePaneId);
       elPromptInput.value = "";
       hideCompletions();
-      renderAttachments();
+      attachStrip.clear();
       autoResizeTextarea();
       elBtnSend.disabled = true;
 
@@ -2252,68 +2689,68 @@
   let completeAbort = null;
 
   /// The @token immediately before the caret, or null.
-  function activeToken() {
-    const pos = elPromptInput.selectionStart ?? elPromptInput.value.length;
-    const upto = elPromptInput.value.slice(0, pos);
+  function activeToken(input = elPromptInput) {
+    const pos = input.selectionStart ?? input.value.length;
+    const upto = input.value.slice(0, pos);
     const match = /(^|\s)@(\S*)$/.exec(upto);
     if (!match) return null;
     return { query: match[2], start: pos - match[2].length };
   }
 
-  function hideCompletions() {
-    elCompleteBar.classList.add("hidden");
-    elCompleteBar.innerHTML = "";
+  function hideCompletions(bar = elCompleteBar) {
+    bar.classList.add("hidden");
+    bar.innerHTML = "";
   }
 
-  function scheduleCompletion() {
+  function scheduleCompletion(input = elPromptInput, bar = elCompleteBar) {
     clearTimeout(completeTimer);
-    const token = activeToken();
+    const token = activeToken(input);
     if (!token || !state.activePaneId) {
-      hideCompletions();
+      hideCompletions(bar);
       return;
     }
-    completeTimer = setTimeout(() => fetchCompletions(token.query), 130);
+    completeTimer = setTimeout(() => fetchCompletions(token.query, bar), 130);
   }
 
-  async function fetchCompletions(query) {
+  async function fetchCompletions(query, bar = elCompleteBar) {
     if (completeAbort) completeAbort.abort();
     completeAbort = new AbortController();
     try {
       const url = `/api/agents/${encodeURIComponent(state.activePaneId)}/files?q=${encodeURIComponent(query)}`;
       const res = await fetch(url, { signal: completeAbort.signal });
-      if (!res.ok) return hideCompletions();
+      if (!res.ok) return hideCompletions(bar);
       const data = await res.json();
-      renderCompletions(data.entries || []);
+      renderCompletions(data.entries || [], bar);
     } catch (err) {
-      if (err.name !== "AbortError") hideCompletions();
+      if (err.name !== "AbortError") hideCompletions(bar);
     }
   }
 
-  function renderCompletions(entries) {
-    if (!entries.length) return hideCompletions();
-    elCompleteBar.innerHTML = entries
+  function renderCompletions(entries, bar = elCompleteBar) {
+    if (!entries.length) return hideCompletions(bar);
+    bar.innerHTML = entries
       .map(
         (e) =>
           `<button type="button" class="complete-chip${e.is_dir ? " is-dir" : ""}" data-path="${escapeHtml(e.path)}" data-dir="${e.is_dir ? 1 : 0}">${escapeHtml(e.name)}${e.is_dir ? "/" : ""}</button>`
       )
       .join("");
-    elCompleteBar.classList.remove("hidden");
+    bar.classList.remove("hidden");
   }
 
   /// Replace the token under the caret; a directory stays open for the next segment.
-  function applyCompletion(path, isDir) {
-    const token = activeToken();
+  function applyCompletion(path, isDir, input = elPromptInput, bar = elCompleteBar) {
+    const token = activeToken(input);
     if (!token) return;
-    const value = elPromptInput.value;
+    const value = input.value;
     const insert = path + (isDir ? "/" : " ");
-    elPromptInput.value = value.slice(0, token.start) + insert + value.slice(token.start + token.query.length);
+    input.value = value.slice(0, token.start) + insert + value.slice(token.start + token.query.length);
     const caret = token.start + insert.length;
-    elPromptInput.setSelectionRange(caret, caret);
-    elPromptInput.focus();
-    autoResizeTextarea();
+    input.setSelectionRange(caret, caret);
+    input.focus();
+    if (input === elPromptInput) autoResizeTextarea();
     triggerHaptic();
-    if (isDir) scheduleCompletion();
-    else hideCompletions();
+    if (isDir) scheduleCompletion(input, bar);
+    else hideCompletions(bar);
   }
 
   // Keep focus in the composer when a chip is pressed.
@@ -2323,19 +2760,16 @@
     const chip = e.target.closest(".complete-chip");
     if (chip) applyCompletion(chip.dataset.path, chip.dataset.dir === "1");
   });
-
   // Auto-resize textarea
   // A single line of the composer: padding, border and one `line-height`.
   const ONE_LINE = 40;
 
   function autoResizeTextarea() {
     const focused = elPromptInput.classList.contains("expanded");
-    const cap = focused
+    const cap = state.chatVisible
       ? Math.max(140, Math.round(window.innerHeight * 0.4))
-      : 120;
-    elPromptInput.style.height = "auto";
-    const height = Math.min(elPromptInput.scrollHeight, cap);
-    elPromptInput.style.height = `${height}px`;
+      : focused ? Math.max(140, Math.round(window.innerHeight * 0.4)) : 120;
+    const height = SheepItComposer.resizeTextarea(elPromptInput, cap);
     // Past one line there is room beside the box for a column of buttons.
     elPromptForm.classList.toggle("stacked", height > ONE_LINE);
     elBtnSend.disabled = elPromptInput.value.trim().length === 0;
@@ -2357,81 +2791,58 @@
   const MAX_HISTORY = 20;
   const MAX_HISTORY_CHATS = 40;
 
+  const recallHistory = SheepItComposer.createRecallHistory({
+    getHistory: () => state.history,
+    setHistory: (history) => { state.history = history; },
+    read: () => readPref("history"),
+    write: (value) => savePref(HISTORY_KEY, value),
+    input: elPromptInput,
+    getScope: () => state.activePaneId,
+    getRecall: () => state.recall,
+    setRecall: (recall) => { state.recall = recall; },
+    maxEntries: MAX_HISTORY,
+    maxScopes: MAX_HISTORY_CHATS,
+    resize: autoResizeTextarea,
+    rememberDraft,
+    haptic: () => triggerHaptic(),
+    showButton: (show) => elBtnRecall.classList.toggle("hidden", !show),
+  });
+
   function loadHistory() {
-    try {
-      const raw = JSON.parse(readPref("history") || "{}");
-      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-    } catch (err) {
-      return {};
-    }
+    return recallHistory.load();
   }
 
   function saveHistory() {
-    const entries = Object.entries(state.history);
-    if (entries.length > MAX_HISTORY_CHATS) {
-      // Oldest first: the map is written in touch order, like the drafts.
-      state.history = Object.fromEntries(entries.slice(-MAX_HISTORY_CHATS));
-    }
-    try {
-      savePref(HISTORY_KEY, JSON.stringify(state.history));
-    } catch (err) {
-      // A full or disabled localStorage must not stop anybody sending.
-    }
+    recallHistory.save();
   }
 
   function historyFor(paneId) {
-    return (paneId && state.history[paneId]) || [];
+    return recallHistory.forScope(paneId);
   }
 
   /* Newest last, the way a shell keeps it. The same prompt sent twice running
      is one entry: the walk back is for finding something, and a run of
      identical lines is the one thing it never helps you find. */
   function rememberSent(paneId, text) {
-    if (!paneId || !text.trim()) return;
-    const list = historyFor(paneId).slice();
-    if (list[list.length - 1] !== text) list.push(text);
-    delete state.history[paneId];
-    state.history[paneId] = list.slice(-MAX_HISTORY);
-    saveHistory();
+    recallHistory.rememberSent(paneId, text);
   }
 
   /* One step further back, stopping at the oldest rather than wrapping round:
      a list that wraps hands you the newest prompt again just as you were
      getting somewhere, with nothing on screen to say it has turned around. */
   function recallPrev() {
-    const list = historyFor(state.activePaneId);
-    const next = state.recall.at < 0 ? list.length - 1 : state.recall.at - 1;
-    if (next < 0) return;
-    triggerHaptic();
-    const text = list[next];
-    state.recall = { at: next, text };
-    elPromptInput.value = text;
-    try {
-      elPromptInput.setSelectionRange(text.length, text.length);
-    } catch (err) {
-      // Not focused, or a browser that refuses: the text is what matters.
-    }
-    autoResizeTextarea();
-    rememberDraft();
-    renderAttachments();
+    recallHistory.previous();
   }
 
   /* The arrow is offered where it means something and nowhere else: an empty
      box with something behind it, or a box still holding exactly what the
      last tap put there. */
   function syncRecall() {
-    if (state.recall.text !== null && elPromptInput.value !== state.recall.text) {
-      state.recall = { at: -1, text: null };
-    }
-    const walking = state.recall.text !== null;
-    const show =
-      historyFor(state.activePaneId).length > 0 &&
-      (walking || !elPromptInput.value.trim());
-    elBtnRecall.classList.toggle("hidden", !show);
+    recallHistory.sync();
   }
 
   function resetRecall() {
-    state.recall = { at: -1, text: null };
+    recallHistory.reset();
   }
 
   /* -------------------------------------------------------- Attachments ---
@@ -2443,106 +2854,41 @@
    * beside the work, and the prompt carries its path - a thing both agents
    * already understand.
    *
-   * The composer's text is the attachment. Thumbnails are drawn from whatever
-   * paths are still in it, so deleting the path takes the picture with it and
-   * the two can never disagree about what is being sent.
+   * The strip and its hidden [{name, url}] array are composer.js, shared with
+   * chat - "name" here is the path an upload lands at. Nothing is spliced into
+   * the visible text; submitPrompt folds the strip's paths into `@path` tokens
+   * only at send time, the way gateway/panechat.py already does for a pane
+   * chat's own images.
    * ---------------------------------------------------------------------- */
 
-  // Long edge of what gets uploaded. A phone photo is four thousand pixels
-  // wide, an agent reads it at a fraction of that, and the difference is
-  // several seconds of someone's cellular connection.
-  const MAX_EDGE = 1600;
-  // Below this a screenshot goes up untouched: re-encoding costs the crispness
-  // that makes the text in it readable, which is usually the point of sending
-  // one.
-  const KEEP_AS_IS = 1.2 * 1024 * 1024;
+  const { imagesIn } = SheepItComposer;
 
-  // path -> object URL of the image that was uploaded to it.
-  const attachUrls = new Map();
+  const attachStrip = SheepItComposer.createAttachStrip(
+    elAttachStrip,
+    async (blob, paneId) => {
+      const res = await fetch(`/api/agents/${encodeURIComponent(paneId)}/attach`, {
+        method: "POST",
+        headers: { "Content-Type": blob.type || "image/png" },
+        body: blob,
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "the gateway would not take it");
+      return data.path;
+    },
+    (message) => showAttachError(message),
+    (images) => { elBtnSend.disabled = !elPromptInput.value.trim() && !images.length; }
+  );
 
-  /* Scale an image down before it goes anywhere. Everything here is allowed to
-     fail: if the browser will not decode it, the original bytes are still a
-     perfectly good upload. */
-  async function shrinkImage(file) {
-    const isPng = file.type === "image/png";
-    try {
-      const bitmap = await createImageBitmap(file);
-      const longest = Math.max(bitmap.width, bitmap.height);
-      const scale = Math.min(1, MAX_EDGE / longest);
-      if (scale === 1 && file.size <= KEEP_AS_IS) {
-        bitmap.close();
-        return file;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(bitmap.width * scale);
-      canvas.height = Math.round(bitmap.height * scale);
-      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      bitmap.close();
-      const type = isPng ? "image/png" : "image/jpeg";
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, 0.86));
-      return blob || file;
-    } catch (err) {
-      return file; // HEIC on a browser that will not decode it, say
-    }
-  }
-
-  async function uploadAttachment(file) {
-    if (!state.activePaneId) return null;
-    const blob = await shrinkImage(file);
-    const res = await fetch(`/api/agents/${encodeURIComponent(state.activePaneId)}/attach`, {
-      method: "POST",
-      headers: { "Content-Type": blob.type || file.type || "image/png" },
-      body: blob,
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "the gateway would not take it");
-    attachUrls.set(data.path, URL.createObjectURL(blob));
-    return data.path;
-  }
-
-  /* Put the path where the caret is, as an @mention: that is how you point an
-     agent at a file by hand, and it is what the completion bar already writes. */
-  function insertAttachment(path) {
-    const value = elPromptInput.value;
-    const at = elPromptInput.selectionStart ?? value.length;
-    const before = value.slice(0, at);
-    const after = value.slice(at);
-    /* A path must not fuse with the word in front of it, and must not push a
-       second space in front of the one behind it - pasting into the middle of
-       a sentence is rarer than pasting at the end, but it should not leave a
-       gap you have to go back and close. */
-    const lead = before && !/\s$/.test(before) ? " " : "";
-    const trail = /^\s/.test(after) ? "" : " ";
-    const text = `${lead}@${path}${trail}`;
-    elPromptInput.value = before + text + after;
-    const caret = at + text.length;
-    try {
-      elPromptInput.setSelectionRange(caret, caret);
-    } catch (err) {
-      /* not focused; the text is what matters */
-    }
-    autoResizeTextarea();
-    rememberDraft();
-  }
-
-  async function attachFiles(files) {
+  async function attachFiles(files, paneId = state.activePaneId) {
     if (!files || !files.length) return;
-    if (!state.activePaneId) return;
+    if (!paneId || state.activePaneId !== paneId) return;
     triggerHaptic();
     setAttachBusy(true);
-    for (const file of files) {
-      try {
-        const path = await uploadAttachment(file);
-        if (path) insertAttachment(path);
-      } catch (err) {
-        /* Not an alert(): iOS stops showing those in an installed web app
-           once a few have been dismissed, and a silently dropped screenshot
-           looks exactly like one that went. */
-        showAttachError(err.message);
-      }
+    try {
+      await attachStrip.add(files, paneId);
+    } finally {
+      setAttachBusy(false);
     }
-    setAttachBusy(false);
-    renderAttachments();
   }
 
   function setAttachBusy(busy) {
@@ -2551,80 +2897,34 @@
   }
 
   function showAttachError(message) {
+    /* Not an alert(): iOS stops showing those in an installed web app once a
+       few have been dismissed, and a silently dropped screenshot looks
+       exactly like one that went. */
     elAttachStrip.classList.remove("hidden");
-    elAttachStrip.innerHTML =
-      `<div class="attach-error">Could not attach it — ${escapeHtml(message)}</div>`;
-  }
-
-  // Every attachment path currently sitting in the composer, in order.
-  const RE_ATTACHED = /@(\.sheepit\/[A-Za-z0-9._-]+)/g;
-
-  function attachedPaths() {
-    return [...elPromptInput.value.matchAll(RE_ATTACHED)].map((m) => m[1]);
-  }
-
-  function renderAttachments() {
-    const paths = attachedPaths();
-    if (!paths.length) {
-      elAttachStrip.classList.add("hidden");
-      elAttachStrip.innerHTML = "";
-      return;
-    }
-    elAttachStrip.classList.remove("hidden");
-    elAttachStrip.innerHTML = paths
-      .map((path) => {
-        const url = attachUrls.get(path);
-        const name = path.split("/").pop();
-        return `
-          <span class="attach-chip" title="${escapeHtml(path)}">
-            ${url ? `<img src="${url}" alt="">` : ""}
-            <span class="attach-name">${escapeHtml(name)}</span>
-            <button type="button" class="attach-drop" data-path="${escapeHtml(path)}" aria-label="Remove">×</button>
-          </span>`;
-      })
-      .join("");
-  }
-
-  /* Dropping a thumbnail takes the path out of the composer, which is the only
-     thing that was ever going to be sent. The file stays on the machine; the
-     inbox clears itself out after a week. */
-  function dropAttachment(path) {
-    elPromptInput.value = elPromptInput.value
-      .replace(`@${path}`, "")
-      .replace(/[ \t]{2,}/g, " ")
-      .trimStart();
-    const url = attachUrls.get(path);
-    if (url) URL.revokeObjectURL(url);
-    attachUrls.delete(path);
-    autoResizeTextarea();
-    rememberDraft();
-    renderAttachments();
-    triggerHaptic();
-  }
-
-  /* Images out of a clipboard or a drag, which arrive in the same shape from
-     both: a list of items that may be files, and a list of files that may be
-     images. Safari fills one, some browsers fill the other, and a screenshot
-     copied on a phone can arrive as either - so read both and take whatever is
-     actually a picture. */
-  function imagesIn(transfer) {
-    if (!transfer) return [];
-    const found = [];
-    for (const item of transfer.items || []) {
-      if (item.kind !== "file" || !(item.type || "").startsWith("image/")) continue;
-      const file = item.getAsFile();
-      if (file) found.push(file);
-    }
-    if (found.length) return found;
-    for (const file of transfer.files || []) {
-      if ((file.type || "").startsWith("image/")) found.push(file);
-    }
-    return found;
+    elAttachStrip.innerHTML += `<div class="attach-error">Could not attach it — ${escapeHtml(message)}</div>`;
   }
 
   elBtnAttach.addEventListener("click", () => {
+    if (state.chatVisible || state.activeChatId) {
+      document.getElementById("chat-attach-input").click();
+      return;
+    }
     if (!state.activePaneId) return;
     elAttachInput.click();
+  });
+
+  elBtnPasteImage.addEventListener("click", async () => {
+    const paneId = state.activePaneId;
+    if (!paneId) return;
+    try {
+      const images = await SheepItComposer.clipboardImages();
+      if (state.activePaneId !== paneId) return;
+      if (images.length) attachFiles(images, paneId);
+      else showAttachError("No photo is available in the clipboard. Try the image button.");
+    } catch (err) {
+      if (state.activePaneId === paneId)
+        showAttachError("Could not read the clipboard photo. Try the image button.");
+    }
   });
 
   /* Paste a screenshot straight in. iOS copies one to the clipboard the moment
@@ -2636,15 +2936,52 @@
      whatever has focus, and on a phone that is as often the page as the
      textarea. Text pastes are left entirely alone. */
   document.addEventListener("paste", (e) => {
-    // The console has its own terminal to paste into, and it wants the text.
-    if (!elConsoleView.classList.contains("hidden")) return;
+    // Text belongs to xterm when the console is open; photos are uploaded to
+    // the pane and inserted as @path tokens for the terminal prompt.
+    if (!elConsoleView.classList.contains("hidden")) {
+      const images = imagesIn(e.clipboardData);
+      if (!images.length) return;
+      e.preventDefault();
+      // xterm stops paste events at its hidden textarea, so handle images in
+      // capture phase and keep its text-paste handler from seeing the image.
+      e.stopPropagation();
+      attachConsoleFiles(images);
+      return;
+    }
+    if (state.chatVisible || state.activeChatId) return;
     if (!state.activePaneId) return;
     const images = imagesIn(e.clipboardData);
-    if (!images.length) return;
-    e.preventDefault();
-    if (document.activeElement !== elPromptInput) elPromptInput.focus();
-    attachFiles(images);
-  });
+    if (images.length && images.every((image) => image.type.startsWith("image/"))) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (document.activeElement !== elPromptInput) elPromptInput.focus();
+      attachFiles(images);
+      return;
+    }
+    // Safari can advertise a screenshot on the pasteboard without exposing a
+    // File in this event. Read it directly while the paste gesture is active.
+    const types = [...(e.clipboardData?.types || [])];
+    const imageHint = types.some((type) => type === "Files" || type.startsWith("image/"));
+    const text = e.clipboardData?.getData("text/plain") || "";
+    if (text && !imageHint && !images.length) return;
+    const suspectedPhoto = images.length > 0 || imageHint || !types.length;
+    if (suspectedPhoto) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const paneId = state.activePaneId;
+    SheepItComposer.clipboardImages().then((fromClipboard) => {
+      if (state.activePaneId !== paneId || state.chatVisible || state.activeChatId) return;
+      const usable = fromClipboard.length ? fromClipboard : images;
+      if (usable.length) attachFiles(usable, paneId);
+      else if (suspectedPhoto) showAttachError("Safari did not provide the pasted photo. Try the image button.");
+    }).catch(() => {
+      if (state.activePaneId !== paneId) return;
+      if (images.length) attachFiles(images, paneId);
+      else if (suspectedPhoto)
+        showAttachError("Could not read the pasted photo. Try the image button.");
+    });
+  }, true);
 
   /* Dragging a file onto the composer, which is how the same thing happens on
      a laptop. `dragover` has to be refused for a drop to be offered at all -
@@ -2656,6 +2993,7 @@
   });
 
   elPromptInput.addEventListener("drop", (e) => {
+    if (state.chatVisible || state.activeChatId) return;
     const images = imagesIn(e.dataTransfer);
     if (!images.length || !state.activePaneId) return;
     e.preventDefault();
@@ -2669,11 +3007,6 @@
     await attachFiles(files);
   });
 
-  elAttachStrip.addEventListener("click", (e) => {
-    const drop = e.target.closest(".attach-drop");
-    if (drop) dropAttachment(drop.dataset.path);
-  });
-
   /* ------------------------------------------------------------- Queue --- */
 
   /* A queued prompt is either still ours or it never made it. Delivered ones
@@ -2683,18 +3016,16 @@
     failed: "failed",
   };
 
-  /* A prompt that is about to go out immediately should never be drawn as one
-     that is waiting. The ordinary queue is one prompt long: you type it into a
-     free chat with usage left and it leaves within the second, so drawing it
-     the moment the gateway accepts it put a "queued" chip above the composer
-     for a single poll and then took it away again - a flicker that reads as
-     something having gone wrong with the thing you just sent.
+  /* A prompt that is about to go out should never be drawn as one that is
+     waiting. Dispatch can take a few seconds even in a free chat, so drawing
+     it as soon as the gateway accepts it flashes a queue card above the
+     composer and moves the input down before the prompt is delivered.
 
      So a freshly accepted prompt is held back for as long as delivery takes.
      Nothing is hidden beyond that: one that is still waiting when the grace is
      up appears then, and one that failed appears at once, because a failure is
      the case worth interrupting for. */
-  const QUEUE_SETTLE_MS = 1500;
+  const QUEUE_SETTLE_MS = 5000;
 
   function isSettling(prompt, now) {
     const until = state.settling.get(prompt.id);
@@ -2731,10 +3062,11 @@
   }
 
   async function fetchQueue() {
+    const request = ++state.queueRequest;
     try {
       const res = await fetch("/api/queue");
       const data = await res.json();
-      if (!data.ok) return;
+      if (!data.ok || request !== state.queueRequest) return;
       state.queue = stillOwed(data.prompts || []);
       renderChatQueue();
       // The herd is polled before the queue, so the counts on the rows arrive
@@ -2750,7 +3082,8 @@
   async function fetchQuota() {
     if (!quotaIsStale()) return;
     try {
-      const res = await fetch("/api/queue/quota");
+      const res = await fetch(
+        `/api/queue/quota${state.machineStrip ? "" : "?machine=0"}`);
       state.quota = await res.json();
       state.quotaAt = Date.now();
       if (state.pickerOpen) {
@@ -2811,6 +3144,7 @@
      every bar sits under the one above it - a wrapped flex item would land
      half a column to the left of the readings it belongs with. */
   function machineHtml(m) {
+    if (!state.machineStrip) return "";
     if (!m || m.ok === false) return "";
     const mem = m.memory || {};
     const cells = [
@@ -3130,8 +3464,7 @@
   function renderChatQueue() {
     const queued = queuedFor(state.activePaneId);
     if (!queued.length) {
-      elChatQueue.classList.add("hidden");
-      elChatQueue.innerHTML = "";
+      chatQueueStrip.render([]);
       state.queueSignature = null;
       return;
     }
@@ -3140,9 +3473,10 @@
     if (signature === state.queueSignature && !elChatQueue.classList.contains("hidden")) return;
     state.queueSignature = signature;
 
-    elChatQueue.classList.remove("hidden");
-    elChatQueue.innerHTML = note + queued
-      .map((p) => {
+    chatQueueStrip.render(queued, note);
+  }
+
+  function chatQueueRow(p) {
         const failed = p.state === "failed";
         const word = QUEUE_WORD[p.state] || p.state;
         return `
@@ -3153,13 +3487,11 @@
                 ? `<span class="chat-queued-why">${escapeHtml(p.last_error)}</span>`
                 : ""}
             <span class="chat-queued-acts">
-              <button type="button" class="chat-queued-act" data-queue-edit="${p.id}">Edit</button>
-              <button type="button" class="chat-queued-act accent" data-queue-send="${p.id}">Send now</button>
-              <button type="button" class="chat-queued-act danger" data-queue-delete="${p.id}">Delete</button>
+              <button type="button" class="chat-queued-act" data-composer-action="edit" data-composer-id="${p.id}">Edit</button>
+              <button type="button" class="chat-queued-act accent" data-composer-action="send" data-composer-id="${p.id}">Send now</button>
+              <button type="button" class="chat-queued-act danger" data-composer-action="delete" data-composer-id="${p.id}">Delete</button>
             </span>
           </div>`;
-      })
-      .join("");
   }
 
   async function queueAction(id, action) {
@@ -3192,19 +3524,20 @@
     await queueAction(id, "delete");
   }
 
-  elChatQueue.addEventListener("click", (e) => {
-    const edit = e.target.closest("[data-queue-edit]");
-    if (edit) return editQueued(edit.dataset.queueEdit);
-    const send = e.target.closest("[data-queue-send]");
-    if (send) return queueAction(send.dataset.queueSend, "send");
-    const del = e.target.closest("[data-queue-delete]");
-    if (del) return queueAction(del.dataset.queueDelete, "delete");
-  });
+  function onChatQueueAction(action, id) {
+    if (action === "edit") return editQueued(id);
+    return queueAction(id, action);
+  }
+  const chatQueueStrip = SheepItComposer.createQueueStrip(elChatQueue, chatQueueRow, onChatQueueAction);
 
   // Poll loop
   async function loop() {
     await fetchAgents();
-    await fetchHistory();
+    /* The console is the pane itself, drawn over the transcript: reading the
+       same pane a second time is a request for a screen nobody can see. It is
+       skipped rather than the whole loop being stopped, because past 900px the
+       flock is still a column beside the console and has to stay alive. */
+    if (elConsoleView.classList.contains("hidden")) await fetchHistory();
     // Cheap: a local SQLite read. Keeps the header badge honest even when the
     // queue is closed.
     await fetchQueue();
@@ -3232,6 +3565,7 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
+  window.SheepItEscapeHtml = escapeHtml;
 
   /* Preferences that should survive a reload. The keys were "herdr.*" before
      the app was called Sheep It, and an install that has been on a home screen
@@ -3244,18 +3578,13 @@
 
   function loadPrefs() {
     try {
-      const lines = parseInt(readPref("lines"), 10);
-      if (lines) {
-        state.linesCount = lines;
-        elLinesSelect.value = String(lines);
+      state.paneView = readPref("view") || (wide.matches ? "chat" : "transcript");
+      // Normal is a phone-only view. Older builds may have saved either its
+      // current or former name; migrate both values before the first render.
+      if (wide.matches && ["normal", "transcript"].includes(state.paneView)) {
+        state.paneView = "chat";
       }
-      state.showStatusBar = readPref("statusbar") === "1";
-      elToggleStatusBar.checked = state.showStatusBar;
-      state.plainView = readPref("plain") === "1";
-      state.paneView = readPref("view") || "chat";
-      elTogglePlain.checked = state.plainView;
       setDiffLayout(readPref("diffsplit") === "1");
-      syncStatusBarRow();
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
       state.customOrder = loadOrder();
@@ -3263,6 +3592,8 @@
       state.history = loadHistory();
       state.bleat = readPref("bleat") !== "0";
       elToggleBleat.checked = state.bleat;
+      state.machineStrip = readPref("machine") === "1";
+      elToggleMachine.checked = state.machineStrip;
     } catch (err) {
       /* localStorage unavailable in private mode; defaults are fine */
     }
@@ -3294,66 +3625,37 @@
   const DRAFTS_KEY = "sheepit.drafts";
   const MAX_DRAFTS = 40;
 
+  const draftStore = SheepItComposer.createDraftStore({
+    getDrafts: () => state.drafts,
+    setDrafts: (drafts) => { state.drafts = drafts; },
+    read: () => readPref("drafts"),
+    write: (value) => savePref(DRAFTS_KEY, value),
+    input: elPromptInput,
+    resize: autoResizeTextarea,
+    limit: MAX_DRAFTS,
+  });
+
   function loadDrafts() {
-    try {
-      const raw = JSON.parse(readPref("drafts") || "{}");
-      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-    } catch (err) {
-      return {};
-    }
+    return draftStore.load();
   }
 
   function saveDrafts() {
-    const entries = Object.entries(state.drafts);
-    if (entries.length > MAX_DRAFTS) {
-      // Oldest first: the map is written in touch order, so the tail is the
-      // recently used end.
-      state.drafts = Object.fromEntries(entries.slice(-MAX_DRAFTS));
-    }
-    try {
-      savePref(DRAFTS_KEY, JSON.stringify(state.drafts));
-    } catch (err) {
-      // A full or disabled localStorage must not stop anybody typing.
-    }
+    draftStore.save();
   }
 
   /* Remember what is in the composer now, against the pane it belongs to.
      Called as you type, and again before the pane changes under it. */
   function rememberDraft(paneId) {
     const id = paneId || state.activePaneId;
-    if (!id) return;
-    const text = elPromptInput.value;
-    if (text.trim()) {
-      // Re-inserting keeps the key at the recent end of the map.
-      delete state.drafts[id];
-      state.drafts[id] = { text, caret: elPromptInput.selectionStart ?? text.length };
-    } else if (state.drafts[id]) {
-      delete state.drafts[id];
-    } else {
-      return;
-    }
-    saveDrafts();
+    draftStore.remember(id);
   }
 
   function restoreDraft(paneId) {
-    const draft = state.drafts[paneId];
-    elPromptInput.value = draft ? draft.text : "";
-    autoResizeTextarea();
-    if (!draft) return;
-    // Put the caret back where it was, so a half-typed word can be finished
-    // rather than found.
-    const caret = Math.min(draft.caret ?? draft.text.length, draft.text.length);
-    try {
-      elPromptInput.setSelectionRange(caret, caret);
-    } catch (err) {
-      // Not focused, or a browser that refuses: the text is what matters.
-    }
+    draftStore.restore(paneId);
   }
 
   function clearDraft(paneId) {
-    if (!paneId || !state.drafts[paneId]) return;
-    delete state.drafts[paneId];
-    saveDrafts();
+    draftStore.clear(paneId);
   }
 
   function loadActivity() {
@@ -3466,11 +3768,6 @@
     return (agent.has_agent && ATTENTION[agent.status]) || 0;
   }
 
-  // Nothing here moves on without you.
-  function wantsInput(agent) {
-    return attentionOf(agent) > 0;
-  }
-
   /* Which project a row belongs under. The gateway reads it off Herdr's
      worktree record - so the scheduler's `sheep/` branches land under the
      repository they were cut from - and falls back to the directory. */
@@ -3510,11 +3807,11 @@
    * tabs on one branch meant two rows, and closing either of them took the
    * branch and the other tab with it.
    *
-   * So the overview lists the pen rather than the animals in it: one row per
-   * workspace, which for everything the scheduler cuts is one row per
-   * worktree. The tabs inside are reached where they can be told apart - the
-   * strip above the transcript, which is also the only place a single tab can
-   * be closed. All the row says about them is how many there are.
+   * So the overview groups by the pen rather than by the animals in it: one
+   * entry per workspace, which for everything the scheduler cuts is one per
+   * worktree - and what a pen with a second tab in it draws is a title with
+   * both of them hung underneath (`penHtml` further up), so the actions on the
+   * title act on the worktree while each sheep is still its own tab.
    * ---------------------------------------------------------------------- */
 
   /* Which of a workspace's tabs speaks for it. The point of the row is what it
@@ -3561,8 +3858,100 @@
     return pen.workspace_id || pen.lead.pane_id;
   }
 
+  /* ------------------------------------------------------- The chats as rows
+   *
+   * A headless chat is the same Claude Code spending the same subscription in
+   * the same checkout as the panes around it, and it used to live on a page of
+   * its own that nothing pointed at - so a chat left asking a question was a
+   * question nobody saw. It is a row here instead.
+   *
+   * What it is not is a pane. It has no workspace, no tab strip, no
+   * transcript and no pane id Herdr would recognise, so it never enters
+   * `state.agents`: it is hung on its project here and given a pen of its own
+   * at the end of that project's rows. The pane id it carries is a label for
+   * the DOM and the sheep hash, and deliberately unresolvable - `chat:` is not
+   * a workspace prefix Herdr issues.
+   * ------------------------------------------------------------------------ */
+
+  /* What the sheep is doing. A question waiting on you is the one state that
+     must never be missed, and a turn in flight is worth showing, but there is
+     deliberately no `done` here: nothing marks a chat as read, so a chat that
+     answered last Tuesday would sit at the top of its project asleep forever.
+     A chat between turns is idle, and the push is what tells you it finished. */
+  function chatStatus(chat) {
+    if (chat.pending && chat.pending.length) return "blocked";
+    if (chat.running) return "working";
+    return "idle";
+  }
+
+  /* A chat wearing enough of a row's clothes that the list can draw it: the
+     same status vocabulary, the same project key, the same agent kind - it is
+     a Claude Code, so it grazes the same field as the panes do. */
+  function chatRowOf(chat) {
+    return {
+      chat,
+      pane_id: "chat:" + chat.id,
+      name: chat.title || "New chat",
+      project: chat.project || chat.cwd || "",
+      project_name: chat.project_name || "",
+      cwd: chat.cwd || "",
+      agent: "claude",
+      has_agent: true,
+      status: chatStatus(chat),
+      title: chat.title || "",
+      updated: chat.updated || chat.created || 0,
+      workspace_id: "",
+      tab_id: "",
+      tab_label: "",
+      repo: false,
+      main_checkout: false,
+      split: false,
+    };
+  }
+
+  /* Hang each chat on the project its cwd names. A project whose panes are all
+     closed still gets a heading, because the chat in it is still running and a
+     chat you cannot see is a chat you cannot stop - such a group gets no `+`
+     for a worktree, since there is no open checkout to cut one from. */
+  function attachChats(groups) {
+    if (!state.chats || !state.chats.length) return groups;
+    const byKey = new Map(groups.map((g) => [g.key, g]));
+    for (const chat of state.chats) {
+      const row = chatRowOf(chat);
+      let group = byKey.get(row.project);
+      if (!group) {
+        group = {
+          key: row.project,
+          name: row.project_name || row.project,
+          agents: [],
+          from: "",
+          chats: [],
+        };
+        byKey.set(group.key, group);
+        groups.push(group);
+      }
+      (group.chats || (group.chats = [])).push(row);
+    }
+    return groups;
+  }
+
+  /* Which chats a project shows, loudest first. Same pair the panes sort by,
+     so a chat holding a permission prompt sits above one merely thinking. */
+  function orderChats(group) {
+    (group.chats || []).sort(
+      (a, b) => attentionOf(b) - attentionOf(a) || (b.updated || 0) - (a.updated || 0)
+    );
+  }
+
   function collapseTabs(groups) {
-    for (const group of groups) group.rows = byWorkspace(group.agents);
+    for (const group of groups) {
+      group.rows = byWorkspace(group.agents);
+      // Under the pens: a chat has no worktree to stand in, and putting it
+      // among them would make the list look like it had one.
+      for (const row of group.chats || []) {
+        group.rows.push({ key: row.pane_id, chat: row.chat, lead: row, tabs: [row] });
+      }
+    }
     return groups;
   }
 
@@ -3608,7 +3997,27 @@
   }
 
   function saveOrder() {
-    savePref(ORDER_KEY, JSON.stringify(state.customOrder));
+    const serialized = JSON.stringify(state.customOrder);
+    savePref(ORDER_KEY, serialized);
+    fetch("/api/project-order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order: state.customOrder }),
+    }).catch(() => {});
+  }
+
+  async function loadServerOrder() {
+    try {
+      const res = await fetch("/api/project-order");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.saved) state.customOrder = data.order || [];
+      else if (state.customOrder.length) saveOrder(); // one-time migration from this device
+      orderAgents();
+      renderAgentList();
+    } catch (err) {
+      // Keep the cached order when the gateway cannot be reached.
+    }
   }
 
   // A project carried from one slot to another, as a list of keys.
@@ -3627,10 +4036,8 @@
     return to > from ? to + 1 : to;
   }
 
-  /* A hand-made order wins over both rules above it: a project put third stays
-     third even when one of its agents starts asking something. Inside a
-     project the waiting sheep still rise - that costs nothing, since a project
-     stays where the finger left it either way. */
+  /* A hand-made order wins over creation order. Agent activity only sorts rows
+     inside a project; it must never move the project heading itself. */
   function sortGroups(groups) {
     const rank = new Map(state.customOrder.map((key, i) => [key, i]));
     if (rank.size) {
@@ -3638,7 +4045,7 @@
       groups.sort((a, b) => at(a.key) - at(b.key) || a.born - b.born);
       return;
     }
-    groups.sort((a, b) => b.wants - a.wants || a.born - b.born);
+    groups.sort((a, b) => a.born - b.born);
   }
 
   /* Never reshuffle a list under a hand: an agent changing state would slide a
@@ -3666,19 +4073,32 @@
       state.agents.sort((a, b) => at(a.pane_id) - at(b.pane_id));
       // A pane that appeared while you were reading joins its own project at
       // the end, rather than being stranded below every group.
-      state.groups = collapseTabs(groupByProject(state.agents));
+      state.groups = collapseTabs(attachChats(groupByProject(state.agents)));
       return;
     }
 
-    const groups = groupByProject(state.agents);
+    const groups = attachChats(groupByProject(state.agents));
     for (const group of groups) {
       group.agents.sort(
         (a, b) => attentionOf(b) - attentionOf(a) || bornAt(a) - bornAt(b)
       );
+      orderChats(group);
       // A project is as loud as its loudest sheep: a question ahead of a
-      // finished turn, both ahead of a project that wants nothing.
-      group.wants = Math.max(0, ...group.agents.map(attentionOf));
-      group.born = Math.min(...group.agents.map(bornAt));
+      // finished turn, both ahead of a project that wants nothing. A chat
+      // holding a permission prompt is as loud as a pane holding one.
+      group.wants = Math.max(
+        0,
+        ...group.agents.map(attentionOf),
+        ...(group.chats || []).map(attentionOf)
+      );
+      /* Creation order, which only the panes have: Herdr numbers a workspace
+         and a chat has no number to be given. A project that is nothing but
+         chats therefore sorts to the end, which is where the newest thing
+         belongs anyway - and the moment a pane opens in it, it takes its real
+         place in the strip. */
+      group.born = group.agents.length
+        ? Math.min(...group.agents.map(bornAt))
+        : Number.MAX_SAFE_INTEGER;
     }
     sortGroups(groups);
     collapseTabs(groups);
@@ -3723,7 +4143,18 @@
   }
 
   // Event Listeners
-  elAgentSelect.addEventListener("click", openPicker);
+  elAgentSelect.addEventListener("click", () => {
+    if (!wide.matches && state.chatVisible) {
+      document.dispatchEvent(new CustomEvent("sheepit:chat-dismiss"));
+      return;
+    }
+    // The console is the one full-view that leaves this header showing, since
+    // it sits below --app-header-height rather than covering it - so this is
+    // its only way back, and skipping the close left it fixed on top of the
+    // flock this button just opened underneath it.
+    if (!wide.matches && !elConsoleView.classList.contains("hidden")) closeConsole();
+    openPicker();
+  });
   elBtnClosePicker.addEventListener("click", closePicker);
 
   /* The strip: a tap switches tabs, and the two things a chip can do to itself
@@ -3747,7 +4178,7 @@
     }
     const add = e.target.closest("[data-tab-new]");
     if (add) {
-      createTab(add.dataset.tabNew);
+      openNewInWorkspace(add.dataset.tabNew);
       return;
     }
     const chip = e.target.closest(".tab-chip");
@@ -3785,12 +4216,31 @@
   });
 
   elAgentList.addEventListener("click", (e) => {
+    const projectAdd = e.target.closest(".agent-group-add");
+    if (projectAdd) {
+      e.preventDefault();
+      e.stopPropagation();
+      const project = projectAdd.closest(".agent-group")?.dataset.project ||
+        projectAdd.dataset.project;
+      openNewInProject(project);
+      return;
+    }
     const action = e.target.closest("[data-action]");
     if (action) {
       if (action.dataset.action === "close") closeWorkspace(action.dataset.workspaceId);
       else if (action.dataset.action === "rename") renameRow(action.dataset.workspaceId);
       else if (action.dataset.action === "remove") removeWorktree(action.dataset.workspaceId);
-      else if (action.dataset.action === "worktree") createWorktree(action.dataset.project);
+      else if (action.dataset.action === "worktree") openNewInProject(action.dataset.project);
+      else if (action.dataset.action === "chat-delete") deleteChat(action.dataset.chatId);
+      /* A tab of an opened pen, which is the only row whose drawer acts on
+         something smaller than the worktree. Closing is the same one the
+         strip's x calls, so it asks the same question before it stops an
+         agent mid-turn. */
+      else if (action.dataset.action === "tab-rename") renameTabByPane(action.dataset.paneId);
+      else if (action.dataset.action === "tab-close") {
+        resetSwipe();
+        closeTab(action.dataset.tabId);
+      }
       return;
     }
     const row = e.target.closest(".agent-row");
@@ -3808,45 +4258,155 @@
       suppressClick = false;
       return;
     }
-    if (row.dataset.paneId && !openAsChat(row.dataset.paneId)) selectAgent(row.dataset.paneId);
+    if (row.dataset.chatId) openChat(row.dataset.chatId);
+    else if (row.dataset.paneId && !openAsChat(row.dataset.paneId)) selectAgent(row.dataset.paneId);
   });
 
-  /* A Claude Code pane is shown as its chat, and the transcript is the button
-     in the chat's header. On a phone that is chat.html; past 900px, where the
-     flock is a column beside it, it is the same page in a frame over the
-     transcript, and which of the two the right column shows is remembered. */
+  /* A headless chat has no pane behind it, so there is nothing to select and
+     nothing to show a transcript of: on a phone it is the chat page, and past
+     900px it is the same page in the frame that a pane's chat uses, with the
+     tab strip gone because there are no tabs to switch between. */
+  function openChat(chatId) {
+    if (!chatId) return;
+    triggerHaptic();
+    rememberDraft(state.activePaneId);
+    state.activeChatId = chatId;
+    state.chatVisible = true;
+    // Neither the console nor the diff has a pane to read here.
+    closePaneViews();
+    renderAgentBar();
+    if (!wide.matches) closePicker();
+  }
+
+  /* The only thing the drawer on a chat row offers. It used to be two taps on
+     a list that no longer exists, and it is still the only way a chat goes
+     away, so it asks once - a chat is a session log, and nothing brings one
+     back. */
+  async function deleteChat(chatId) {
+    const chat = state.chats.find((c) => c.id === chatId);
+    const name = (chat && chat.title) || "this chat";
+    if (!confirm(`Delete ${name}? The conversation is gone for good.`)) {
+      resetSwipe();
+      return;
+    }
+    triggerHaptic("warning");
+    try {
+      const res = await fetch("/api/chat/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: chatId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || "refused");
+      if (state.activeChatId === chatId) state.activeChatId = null;
+      resetSwipe();
+      await fetchAgents();
+      renderAgentList();
+    } catch (err) {
+      alert("Could not delete chat: " + err.message);
+    }
+  }
+
+  /* A pane's chat and transcript share this page and its header. On a phone
+     chat covers the transcript; on a wide screen the pane view is remembered
+     alongside the flock. */
   function setPaneView(view) {
+    // Desktop has no Normal pane view. Keep stale callers and old controls
+    // from ever restoring the transcript there.
+    if (wide.matches && view === "transcript") view = "chat";
     state.paneView = view;
+    state.chatVisible = view === "chat";
     savePref("sheepit.view", view);
     renderAgentBar();
   }
 
-  function renderPaneChat(paneId) {
-    const show = wide.matches && state.paneView === "chat" && !!paneId;
-    const src = show ? "/chat.html#pane:" + paneId : "";
-    if (elPaneChatFrame.dataset.src !== src) {
-      elPaneChatFrame.dataset.src = src;
-      // about:blank rather than no src: a hidden chat must stop its poll.
-      elPaneChatFrame.src = src || "about:blank";
+  /* The pane chat lives in this document. The same event stream drives the
+     wide right column and the phone's full screen. */
+  function renderChatSurface(target) {
+    const show = !!target && (state.activeChatId
+      || (wide.matches ? state.paneView === "chat" : state.chatVisible));
+    const targetId = show ? (state.activeChatId || target) : "";
+    elChatView.classList.toggle("hidden", !show);
+    // The transcript used to sit behind a chat that was `position: fixed`
+    // over the whole screen, so leaving it in the document did nothing. Now
+    // both are flex items in the same flow, and an unhidden transcript is a
+    // sibling above the chat - one long scroll up from the top of a chat and
+    // you are reading the pane's raw output instead.
+    elHistoryContainer.classList.toggle("hidden", show);
+    elPromptForm.classList.toggle("chat-mode", show);
+    elPromptInput.placeholder = show ? "Message agent…" : "Prompt or tap mic…";
+    // The composer is initially measured while its app pane may still be
+    // display:none behind the flock. Measure again after the mobile view has
+    // been laid out so its first appearance has the right height.
+    requestAnimationFrame(autoResizeTextarea);
+    if (targetId !== chatTarget) {
+      chatTarget = targetId;
+      document.dispatchEvent(new CustomEvent("sheepit:chat-target", { detail: targetId }));
     }
-    elPaneChatFrame.classList.toggle("hidden", !show);
   }
 
-  elBtnPaneChat.addEventListener("click", (e) => {
-    if (!wide.matches) return; // a phone follows the link
-    e.preventDefault();
-    setPaneView("chat");
+  elViewSwitcher.addEventListener("click", (event) => {
+    const view = event.target.closest("[data-view]")?.dataset.view;
+    if (!view) return;
+    // Guard this at the action boundary as well as hiding the desktop control.
+    if (wide.matches && view === "normal") {
+      setPaneView("chat");
+      return;
+    }
+    if (view === "console") {
+      if (!elConsoleView.classList.contains("hidden")) return;
+      // On a phone the console has the whole screen; on desktop the flock
+      // remains active alongside it.
+      if (!wide.matches) stopPolling();
+      openConsole();
+      return;
+    }
+    if (!elConsoleView.classList.contains("hidden")) closeConsole();
+    setPaneView(view === "chat" ? "chat" : "transcript");
   });
-  window.addEventListener("message", (e) => {
-    if (e.origin === location.origin && e.data && e.data.sheepit === "transcript") setPaneView("transcript");
+  document.addEventListener("sheepit:chat-open", (event) => {
+    const chat = event.detail;
+    if (chat && chat.kind === "pane") {
+      state.activeChatId = null;
+      state.activePaneId = chat.pane_id || state.activePaneId;
+      closePicker();
+      setPaneView("chat");
+    } else if (chat) {
+      state.activeChatId = chat.id;
+      state.chatVisible = true;
+      closePicker();
+      renderAgentBar();
+    }
   });
-  wide.addEventListener("change", () => renderAgentBar());
+  document.addEventListener("sheepit:chat-close", () => {
+    const headless = !!state.activeChatId;
+    state.activeChatId = null;
+    state.chatVisible = false;
+    if (!headless) state.paneView = wide.matches ? "chat" : "transcript";
+    elChatView.classList.add("hidden");
+    elPromptForm.classList.remove("chat-mode");
+    chatTarget = "";
+    renderAgentBar();
+    if (!headless && wide.matches && state.activePaneId) openConsole();
+    if (headless) fetchAgents();
+    // This event always means "back to the flock" - a pane's chat included,
+    // or the Claude Code transcript it falls back to (a view its own button
+    // is hidden for) shows behind it instead of the project list.
+    if (!wide.matches) openPicker();
+  });
+  wide.addEventListener("change", () => {
+    renderAgentBar();
+    if (wide.matches && state.activePaneId && state.paneView !== "chat"
+        && elConsoleView.classList.contains("hidden")) openConsole();
+  });
 
   function openAsChat(paneId) {
     const agent = state.agents.find((a) => a.pane_id === paneId);
-    if (wide.matches || !agent || agent.agent !== "claude") return false;
+    if (!paneHasChat(agent)) return false;
     rememberDraft(state.activePaneId);
-    location.href = "/chat.html#pane:" + paneId;
+    selectAgent(paneId, false);
+    if (!wide.matches) closePicker();
+    setPaneView("chat");
     return true;
   }
 
@@ -3884,9 +4444,8 @@
     });
   }
 
-  /* Hold a row aside so its actions show. The swipe ends here, and so does the
-     right-click below - what a finger reaches by dragging is the same drawer,
-     not a second menu that could disagree with it. */
+  // Hold a row aside so its actions show, which is where the swipe ends.
+
   function openRowActions(row) {
     const actions = row.parentElement.querySelector(".agent-row-actions");
     const width = (actions && actions.offsetWidth) || SWIPE_WIDTH;
@@ -3895,20 +4454,11 @@
     row.style.transform = `translateX(${-width}px)`;
   }
 
-  /* A mouse has no swipe. Every one of these rows had its Rename and Close
-     reachable only by dragging it aside, which on a desktop browser meant not
-     reachable at all - so the gesture a mouse does have opens the same drawer.
-     The browser's own menu is not useful over a row and would cover it. */
-  elAgentList.addEventListener("contextmenu", (e) => {
-    const row = e.target.closest(".agent-row");
-    if (!row) return;
-    e.preventDefault();
-    resetSwipe();
-    openRowActions(row);
-  });
-
-  // Anywhere else puts it away, including the heading and the list's own gaps,
-  // so a drawer opened by a right-click is never left standing open.
+  /* Anywhere else puts it away, including the heading and the list's own gaps.
+     A right-click does not open one any more: the drawer was lent to a mouse
+     back when Rename and Close were only reachable by dragging a row aside,
+     and the icons in the corner are that, without taking the browser's own
+     menu away from the row. */
   document.addEventListener("pointerdown", (e) => {
     if (!elAgentList.querySelector(".agent-row.swiped")) return;
     if (e.target.closest(".agent-row-wrap")) return;
@@ -3938,14 +4488,47 @@
       state.pickerOpen = !elAgentPicker.classList.contains("hidden");
     }
     syncPickerChrome();
+    syncThemeColor();
   });
 
   // A hand on the list, by any of the ways it can be on one: while it is, the
   // order is held exactly where it was last drawn.
   elAgentList.addEventListener("scroll", touchList, { passive: true });
+  // The list only has a scroll event of its own while it is a column. On a
+  // phone the document is what moved, so that is where the hand is heard.
+  window.addEventListener("scroll", touchList, { passive: true });
   elAgentList.addEventListener("pointerdown", touchList, { passive: true });
   elAgentList.addEventListener("pointermove", touchList, { passive: true });
   elAgentList.addEventListener("wheel", touchList, { passive: true });
+
+  // Touch dragging uses the long press below. A mouse has no long press, so
+  // start carrying a project once its heading or row moves a few pixels.
+  let pointerDrag = null;
+  elAgentList.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0 || state.groups.length < 2) return;
+    const group = e.target.closest(".agent-group");
+    const row = group && group.querySelector(".agent-row");
+    if (row) pointerDrag = { row, x: e.clientX, y: e.clientY };
+  });
+  window.addEventListener("pointermove", (e) => {
+    if (!pointerDrag) return;
+    if (!drag && Math.hypot(e.clientX - pointerDrag.x, e.clientY - pointerDrag.y) < 5) return;
+    if (!drag) {
+      startDrag(pointerDrag.row, pointerDrag.y);
+      state.swiping = true;
+    }
+    e.preventDefault();
+    dragTo(e.clientY);
+  }, { passive: false });
+  window.addEventListener("pointerup", () => {
+    if (!pointerDrag) return;
+    pointerDrag = null;
+    if (drag) endDrag();
+  });
+  window.addEventListener("pointercancel", () => {
+    pointerDrag = null;
+    if (drag) endDrag();
+  });
 
   elAgentList.addEventListener("touchstart", (e) => {
     touchList();
@@ -3992,6 +4575,10 @@
       swipe.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
     if (swipe.axis !== "x") return; // let the list scroll
+    /* Nothing behind the row to reveal on a machine with a pointer: the drawer
+       is off there (`style.css`), and a hybrid laptop is a finger on a row that
+       has the icons. */
+    if (mouse.matches) return;
     const base = swipe.row.classList.contains("swiped") ? -swipe.width : 0;
     swipe.dx = Math.max(-swipe.width, Math.min(0, base + dx));
     swipe.row.style.transition = "none";
@@ -4031,6 +4618,23 @@
     swipe = null;
   }, { passive: true });
 
+  /* Whichever of the two is actually scrolling: on a phone the flock is the
+     document, past 900px it is a column with its own overflow. */
+  function listScroller() {
+    return wide.matches ? elAgentList : document.scrollingElement;
+  }
+
+  /* A finger's height in the list's own coordinates, which is what every
+     position below is measured in. The list's box has to be read now rather
+     than remembered: when the document is the scroller the list itself slides
+     up under the finger, and a top captured when the drag began is wrong by
+     however far the page has gone since. In the other case the box stands
+     still and scrollTop moves instead - reading both covers the two, since
+     whichever is not scrolling contributes nothing. */
+  function pointInList(y) {
+    return y - elAgentList.getBoundingClientRect().top + elAgentList.scrollTop;
+  }
+
   /* Carrying a project.
 
      Every position is measured once, when the project comes up, and in the
@@ -4061,11 +4665,10 @@
       heights,
       from,
       to: from,
-      listTop,
       // The gap the CSS leaves between projects, read off the layout rather
       // than written down twice.
       gap: groups.length > 1 ? tops[1] - (tops[0] + heights[0]) : 0,
-      grab: y - listTop + scroll - tops[from],
+      grab: pointInList(y) - tops[from],
       y,
     };
     group.classList.add("dragging");
@@ -4077,7 +4680,7 @@
 
   function dragTo(y) {
     drag.y = y;
-    const top = y - drag.listTop + elAgentList.scrollTop - drag.grab;
+    const top = pointInList(y) - drag.grab;
     drag.group.style.transform = `translateY(${top - drag.tops[drag.from]}px)`;
 
     // Where it would land: the first slot whose middle the carried project has
@@ -4109,14 +4712,21 @@
 
   function edgeScroll() {
     if (!drag) return;
-    const box = elAgentList.getBoundingClientRect();
+    /* The edges to carry a project past are the ones you can see. Past 900px
+       that is the column's own box; on a phone the list runs off both ends of
+       the screen, so the screen is what its edges are. */
+    const vv = window.visualViewport;
+    const box = wide.matches
+      ? elAgentList.getBoundingClientRect()
+      : { top: 0, bottom: vv ? vv.height : window.innerHeight };
     let by = 0;
     if (drag.y < box.top + DRAG_EDGE) by = -DRAG_SPEED;
     else if (drag.y > box.bottom - DRAG_EDGE) by = DRAG_SPEED;
     if (by) {
-      const before = elAgentList.scrollTop;
-      elAgentList.scrollTop += by;
-      if (elAgentList.scrollTop !== before) dragTo(drag.y);
+      const scroller = listScroller();
+      const before = scroller.scrollTop;
+      scroller.scrollTop += by;
+      if (scroller.scrollTop !== before) dragTo(drag.y);
     }
     requestAnimationFrame(edgeScroll);
   }
@@ -4191,30 +4801,45 @@
     }
   }
 
-  elBtnNewWorkspace.addEventListener("click", createWorkspace);
+  elBtnNewWorkspace.addEventListener("click", openNewAnything);
+  elBtnCloseNewSheet.addEventListener("click", closeNewSheet);
 
-  elBtnRefresh.addEventListener("click", () => {
-    triggerHaptic();
-    loop();
+
+  function closeComposerMenu() {
+    elComposerMenuPanel.classList.add("hidden");
+    elBtnMore.setAttribute("aria-expanded", "false");
+  }
+  elBtnMore.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = elComposerMenuPanel.classList.contains("hidden");
+    elComposerMenuPanel.classList.toggle("hidden", !open);
+    elBtnMore.setAttribute("aria-expanded", String(open));
+  });
+  elComposerMenuPanel.addEventListener("click", (e) => {
+    if (e.target.closest("button")) closeComposerMenu();
+  });
+  document.addEventListener("click", (e) => {
+    if (!elComposerMenu.contains(e.target)) closeComposerMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeComposerMenu();
   });
 
-  elBtnSettings.addEventListener("click", openSheet);
-  elBtnCloseSheet.addEventListener("click", closeSheet);
-  /* One backdrop dismisses any open sheet. */
+  /* The backdrop dismisses the new-item sheet. */
   elSheetBackdrop.addEventListener("click", () => {
-    closeSheet();
+    closeNewSheet();
   });
 
   elHistoryContainer.addEventListener("scroll", onHistoryScroll, { passive: true });
+  window.addEventListener("scroll", onHistoryScroll, { passive: true });
   elBtnScrollBottom.addEventListener("click", () => scrollToBottom(true));
 
   elPromptInput.addEventListener("input", () => {
     autoResizeTextarea();
+    if (state.chatVisible || state.activeChatId) return;
     scheduleCompletion();
     rememberDraft();
-    // Deleting a path is how you un-attach an image, so the strip follows the
-    // text rather than keeping its own list to fall out of step with.
-    renderAttachments();
+    elBtnSend.disabled = !elPromptInput.value.trim() && !attachStrip.list.length;
   });
   // Tapping a chip blurs the textarea, so the bar must outlive the blur long
   // enough for the click to land on it.
@@ -4232,7 +4857,9 @@
   // Give the composer room while it has focus.
   elPromptInput.addEventListener("focus", () => {
     elPromptInput.classList.add("expanded");
+    if (!wide.matches) document.documentElement.classList.add("keyboard-open");
     autoResizeTextarea();
+    if (state.chatVisible || state.activeChatId) return;
     setTimeout(() => {
       syncViewportHeight();
       scrollToBottom();
@@ -4241,11 +4868,12 @@
 
   elPromptInput.addEventListener("blur", () => {
     elPromptInput.classList.remove("expanded");
+    document.documentElement.classList.remove("keyboard-open");
     autoResizeTextarea();
   });
 
   elBtnRecall.addEventListener("click", recallPrev);
-  elPromptForm.addEventListener("submit", submitPrompt);
+  SheepItComposer.bindSubmit(elPromptForm, submitPrompt);
 
   /* ^C arms itself before it fires, rather than asking through confirm():
      iOS stops showing confirm() in a home screen web app after the user has
@@ -4276,6 +4904,11 @@
     setCtrlCArmed(true); // a second tap exits the agent the first one stopped
   });
 
+  elComposerStop.addEventListener("click", () => {
+    if (elPromptForm.classList.contains("chat-mode")) return;
+    sendKey("ctrl+c", elComposerStop);
+  });
+
   elBtnEsc.addEventListener("click", () => sendKey("esc", elBtnEsc));
 
   // Pull the desktop's draft into the composer to carry on editing it here.
@@ -4290,17 +4923,29 @@
   });
   elBtnCopy.addEventListener("click", copyHistory);
 
-  elLinesSelect.addEventListener("change", (e) => {
-    state.linesCount = parseInt(e.target.value, 10) || 100;
-    savePref("sheepit.lines", String(state.linesCount));
-    fetchHistory(true);
-  });
+  /* One vocabulary for both key rows. #keys-bar sends a name to Herdr over
+     agent.send_keys (sendKey, below) and asks nothing more of this table; the
+     console has no RPC, only a pty, so #console-keys looks up the bytes a
+     real terminal would send for the same name (sendConsoleKey, near
+     sendConsole). Keeping both readings of "esc" or "ctrl+c" in one place
+     means the name never means two different things in two places. */
+  const KEY_VOCAB = {
+    esc: { bytes: "" },
+    tab: { bytes: "\t" },
+    "ctrl+c": { bytes: "" },
+    enter: { bytes: "\r" },
+    up: { bytes: "[A" },
+    down: { bytes: "[B" },
+    left: { bytes: "[D" },
+    right: { bytes: "[C" },
+  };
 
   // Key palette: the single keypresses agents ask for at confirmation prompts.
   function setKeysBar(show) {
     state.showKeys = show;
     elKeysBar.classList.toggle("hidden", !show);
     elBtnKeys.classList.toggle("active", show);
+    elBtnKeys.setAttribute("aria-pressed", String(show));
     savePref("sheepit.keys", show ? "1" : "0");
   }
 
@@ -4326,28 +4971,16 @@
     if (state.bleat) unlockAudio().then(playBleat); // so you hear what you enabled
   });
 
-  elToggleStatusBar.addEventListener("change", (e) => {
-    state.showStatusBar = e.target.checked;
-    savePref("sheepit.statusbar", state.showStatusBar ? "1" : "0");
-    renderTranscript(state.historyText);
-    scrollToBottom();
-  });
-
-  /* The plain view already draws the status bar, so the toggle for it has
-     nothing left to say - grey it out rather than leave a switch that does
-     nothing when flicked. */
-  function syncStatusBarRow() {
-    elToggleStatusBar.disabled = state.plainView;
-    const row = elToggleStatusBar.closest(".sheet-row");
-    if (row) row.classList.toggle("row-muted", state.plainView);
-  }
-
-  elTogglePlain.addEventListener("change", (e) => {
-    state.plainView = e.target.checked;
-    savePref("sheepit.plain", state.plainView ? "1" : "0");
-    syncStatusBarRow();
-    renderTranscript(state.historyText);
-    scrollToBottom();
+  /* The strip appears with the next poll rather than this tap: what it draws
+     are rates, and a first reading has no previous pass to measure against, so
+     the reading asked for here is the one the poll after it can put numbers
+     on. Turning it off blanks it at once. */
+  elToggleMachine.addEventListener("change", (e) => {
+    state.machineStrip = e.target.checked;
+    savePref("sheepit.machine", state.machineStrip ? "1" : "0");
+    if (state.machineStrip) state.quotaAt = 0; // ask again, with the machine in it
+    else renderQuota();
+    fetchQuota();
   });
 
   /* iOS does not reliably reflow a fixed, dvh-sized layout when the keyboard
@@ -4366,6 +4999,15 @@
     window.visualViewport.addEventListener("scroll", syncViewportHeight);
     syncViewportHeight();
   }
+
+  /* The picker head's height, which the project headings stick below. It is
+     re-read rather than worked out because it is the status bar inset plus a
+     button, and both of those change with the device and with rotation. */
+  if (elPickerHead && window.ResizeObserver) {
+    new ResizeObserver(measurePickerHead).observe(elPickerHead);
+  }
+  window.addEventListener("orientationchange", measurePickerHead);
+  measurePickerHead();
 
   /* Web Push. iOS only allows this for a PWA opened from the home screen,
      and only when permission is requested inside a user gesture - hence the
@@ -4406,8 +5048,10 @@
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       elTogglePush.checked = Boolean(sub);
+      elBtnTestPush.disabled = !sub;
       setPushHint(sub ? "on for this device" : "");
     } catch (err) {
+      elBtnTestPush.disabled = true;
       setPushHint("unavailable");
     }
   }
@@ -4430,6 +5074,7 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ subscription: sub.toJSON() }),
     });
+    elBtnTestPush.disabled = false;
     setPushHint("on for this device");
     triggerHaptic();
   }
@@ -4445,8 +5090,24 @@
       });
       await sub.unsubscribe();
     }
+    elBtnTestPush.disabled = true;
     setPushHint("");
   }
+
+  elBtnTestPush.addEventListener("click", async () => {
+    elBtnTestPush.disabled = true;
+    setPushHint("sending test…");
+    try {
+      const response = await fetch("/api/push/test", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "request failed");
+      setPushHint(result.sent ? "test sent" : "no active subscription found");
+    } catch (err) {
+      setPushHint("test failed: " + err.message);
+    } finally {
+      elBtnTestPush.disabled = !(elTogglePush.checked && Notification.permission === "granted");
+    }
+  });
 
   elTogglePush.addEventListener("change", async (e) => {
     try {
@@ -4814,7 +5475,6 @@
   }
 
   if (elBtnFlockSettings) elBtnFlockSettings.addEventListener("click", openGlobalSettings);
-  if (elBtnOpenGlobalSettings) elBtnOpenGlobalSettings.addEventListener("click", openGlobalSettings);
   if (elBtnCloseGlobalSettings) elBtnCloseGlobalSettings.addEventListener("click", closeGlobalSettings);
   if (elBtnAddHeartbeat) elBtnAddHeartbeat.addEventListener("click", addHeartbeat);
 
@@ -4852,8 +5512,8 @@
   /* ----------------------------------------------------------------------
      The console
 
-     The transcript above is a reading of a pane: parsed into turns, with the
-     furniture taken off. Sometimes you want the pane itself - a full-screen
+     The transcript above is a verbatim reading of a pane. Sometimes you want
+     the pane itself - a full-screen
      editor an agent opened, a curses installer, a prompt the parser has no
      shape for. So: xterm.js here, Herdr's own client socket at the far end of
      a WebSocket, and the pane's bytes flowing both ways with nothing in
@@ -4887,6 +5547,7 @@
   const consoleState = {
     term: null, ws: null, paneId: null, scrollAcc: 0, cols: 80, rows: 24,
     loading: null, cellHeight: CELL_HEIGHT, held: [], heldBytes: 0,
+    fitPending: false, fitTarget: null, fitRetryCount: 0,
   };
   const encoder = new TextEncoder();
 
@@ -4954,7 +5615,98 @@
 
   function sendConsole(bytes) {
     const ws = consoleState.ws;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(bytes);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(bytes);
+    return true;
+  }
+
+  async function sendConsoleWhenConnected(paneId, bytes) {
+    const deadline = Date.now() + 8000;
+    while (!elConsoleView.classList.contains("hidden")
+        && state.activePaneId === paneId
+        && (consoleState.paneId !== paneId || !consoleState.ws)
+        && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const ws = consoleState.ws;
+    if (!ws || consoleState.paneId !== paneId) return false;
+    if (ws.readyState === WebSocket.CONNECTING) {
+      const opened = await new Promise((resolve) => {
+        let timer;
+        const done = (ok) => {
+          clearTimeout(timer);
+          ws.removeEventListener("open", onOpen);
+          ws.removeEventListener("close", onClose);
+          resolve(ok);
+        };
+        const onOpen = () => done(true);
+        const onClose = () => done(false);
+        ws.addEventListener("open", onOpen, { once: true });
+        ws.addEventListener("close", onClose, { once: true });
+        timer = setTimeout(() => done(false), 8000);
+        if (ws.readyState === WebSocket.OPEN) done(true);
+        else if (ws.readyState !== WebSocket.CONNECTING) done(false);
+      });
+      if (!opened) return false;
+    }
+    if (elConsoleView.classList.contains("hidden")
+        || consoleState.paneId !== paneId
+        || consoleState.ws !== ws
+        || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(bytes);
+    return true;
+  }
+
+  async function attachConsoleFiles(files) {
+    const paneId = state.activePaneId;
+    if (!files?.length || !paneId) return;
+    setConsoleSub("uploading photo…");
+    try {
+      const paths = await Promise.all([...files].map(async (file) => {
+        const blob = await SheepItComposer.shrinkImage(file);
+        if (!blob.type.startsWith("image/")) throw new Error("the clipboard did not contain a readable photo");
+        const res = await fetch(`/api/agents/${encodeURIComponent(paneId)}/attach`, {
+          method: "POST",
+          headers: { "Content-Type": blob.type },
+          body: blob,
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "the gateway would not take it");
+        return data.path;
+      }));
+      if (!await sendConsoleWhenConnected(
+        paneId,
+        encoder.encode(paths.map((path) => `@${path}`).join(" ") + " "),
+      )) {
+        if (elConsoleView.classList.contains("hidden") || consoleState.paneId !== paneId) return;
+        setConsoleSub(`photo saved as @${paths.join(" @")}; terminal disconnected`);
+        return;
+      }
+      setConsoleSub(`ready: ${paths.map((path) => `@${path}`).join(" ")}`);
+    } catch (err) {
+      setConsoleSub(`could not attach photo: ${err.message}`);
+    }
+  }
+
+  async function pasteConsolePhotoFromClipboard() {
+    try {
+      // This is called directly from a tap so iOS can grant clipboard access.
+      const images = await SheepItComposer.clipboardImages();
+      if (!images.length) {
+        setConsoleSub("no photo in clipboard; use the attachment button to choose one");
+        return;
+      }
+      await attachConsoleFiles(images);
+    } catch (err) {
+      setConsoleSub(`could not read clipboard: ${err.message || "permission denied"}`);
+    }
+  }
+
+  // #console-keys: the fixed row's buttons, looked up in KEY_VOCAB rather
+  // than carrying an escape sequence of their own in the markup.
+  function sendConsoleKey(name) {
+    const entry = KEY_VOCAB[name];
+    if (entry) sendConsole(encoder.encode(entry.bytes));
   }
 
   function sendConsoleControl(message) {
@@ -4964,23 +5716,52 @@
 
   /* Herdr owns the scrollback, so a gesture here is a request, not a local
      move: wheel notches and finger drags both become lines for it to scroll. */
+  function consoleCellAt(clientX, clientY) {
+    const term = consoleState.term;
+    const screen = elConsoleTerm.querySelector(".xterm-screen");
+    if (!term || !screen || !term.cols || !term.rows) return {};
+    const rect = screen.getBoundingClientRect();
+    if (!rect.width || !rect.height) return {};
+    return {
+      column: Math.max(0, Math.min(term.cols - 1,
+        Math.floor((clientX - rect.left) / (rect.width / term.cols)))),
+      row: Math.max(0, Math.min(term.rows - 1,
+        Math.floor((clientY - rect.top) / (rect.height / term.rows)))),
+    };
+  }
+
   function attachConsoleScroll() {
     elConsoleTerm.addEventListener(
       "wheel",
       (e) => {
         if (!consoleState.ws) return;
         e.preventDefault();
-        consoleState.scrollAcc += e.deltaY;
+        // Herdr uses the cell beneath the wheel to route mouse-aware apps.
+        // Capture before xterm so one wheel movement is sent only once.
+        e.stopImmediatePropagation();
+        // Wheel deltas can be pixels (trackpads), lines (many mice and
+        // Firefox), or pages. Convert to pixels before accumulating so a
+        // line-mode wheel notch does not take many turns to move one line.
+        const delta = e.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? e.deltaY * 40
+          : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? e.deltaY * consoleState.rows * 40
+            : e.deltaY;
+        if (consoleState.scrollAcc && Math.sign(delta) !== Math.sign(consoleState.scrollAcc)) {
+          consoleState.scrollAcc = 0;
+        }
+        consoleState.scrollAcc += delta;
         const lines = Math.trunc(consoleState.scrollAcc / 40);
         if (!lines) return;
         consoleState.scrollAcc -= lines * 40;
         sendConsoleControl({
           type: "scroll",
           direction: lines < 0 ? "up" : "down",
-          lines: Math.min(20, Math.abs(lines)),
+          lines: Math.min(100, Math.abs(lines)),
+          ...consoleCellAt(e.clientX, e.clientY),
         });
       },
-      { passive: false }
+      { passive: false, capture: true }
     );
 
     /* A drag on the screen scrolls Herdr's scrollback - except while there is
@@ -4996,13 +5777,17 @@
       const moved = touchY - y;
       // A tap that drifts is still a tap; only a real drag scrolls.
       if (Math.abs(moved) < 24) return;
+      // This is remote terminal scrollback, not a local page scroll. Stop
+      // Safari and xterm competing to interpret the same finger movement.
+      e.preventDefault();
       touchY = y;
       sendConsoleControl({
         type: "scroll",
         direction: moved < 0 ? "up" : "down",
         lines: Math.min(10, Math.max(1, Math.round(Math.abs(moved) / 24))),
+        ...consoleCellAt(e.touches[0].clientX, y),
       });
-    }, { passive: true });
+    }, { passive: false });
     elConsoleTerm.addEventListener("touchend", () => { touchY = null; }, { passive: true });
   }
 
@@ -5018,7 +5803,6 @@
     consoleState.rows = rows;
     if (keyboardOpen()) {
       if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
-      pinConsoleBottom();
       return;
     }
     const box = consoleBox();
@@ -5028,7 +5812,6 @@
     const size = Math.max(MIN_FONT, Math.min(MAX_FONT, Math.min(byWidth, byHeight)));
     term.options.fontSize = Math.round(size * 10) / 10;
     if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
-    setConsoleSub(`${cols}×${rows} · ${term.options.fontSize}px`);
     /* The numbers above are an estimate of a cell from the font size, and an
        estimate is not what the terminal then draws: xterm rounds every row's
        height up, so a tall pane overflows by those roundings added together -
@@ -5054,7 +5837,6 @@
     const rounded = Math.floor(size * 10) / 10;
     if (rounded >= term.options.fontSize) return;
     term.options.fontSize = rounded;
-    setConsoleSub(`${cols}×${rows} · ${rounded}px`);
     requestAnimationFrame(() => correctConsoleOverflow(cols, rows, pass + 1));
   }
 
@@ -5077,9 +5859,49 @@
   }
 
   // After a rotation, or once the keyboard has given the screen back.
+  let consoleFitTimer = null;
+  let consoleFitRetryTimer = null;
+  function clearConsoleFitRetry() {
+    if (consoleFitRetryTimer) clearTimeout(consoleFitRetryTimer);
+    consoleFitRetryTimer = null;
+  }
+
+  function retryConsoleFit() {
+    clearConsoleFitRetry();
+    consoleFitRetryTimer = setTimeout(() => {
+      consoleFitRetryTimer = null;
+      const target = consoleState.fitTarget;
+      if (!target || elConsoleView.classList.contains("hidden") || keyboardOpen()) return;
+      if (consoleState.cols === target.cols && consoleState.rows === target.rows) {
+        consoleState.fitTarget = null;
+        return;
+      }
+      if (!consoleState.ws || consoleState.ws.readyState !== WebSocket.OPEN) return;
+      if (consoleState.fitRetryCount >= 3) {
+        consoleState.fitTarget = null;
+        return;
+      }
+      consoleState.fitRetryCount++;
+      sendConsoleControl({ type: "resize", ...target });
+      retryConsoleFit();
+    }, 350);
+  }
+
   function requestFit() {
+    if (elConsoleView.classList.contains("hidden") || keyboardOpen()) return false;
     const size = phoneSize();
-    if (size) sendConsoleControl({ type: "resize", ...size });
+    const ws = consoleState.ws;
+    if (!size || !ws || ws.readyState !== WebSocket.OPEN) return false;
+    clearConsoleFitRetry();
+    if (consoleState.cols === size.cols && consoleState.rows === size.rows) {
+      consoleState.fitTarget = null;
+      return true;
+    }
+    consoleState.fitTarget = size;
+    consoleState.fitRetryCount = 0;
+    sendConsoleControl({ type: "resize", ...size });
+    retryConsoleFit();
+    return true;
   }
 
   /* The keyboard takes half the screen, and re-fitting a 43-row pane into what
@@ -5091,34 +5913,50 @@
     return Boolean(vv && vv.height < window.innerHeight * 0.75);
   }
 
-  function pinConsoleBottom() {
-    elConsoleTerm.scrollTop = elConsoleTerm.scrollHeight;
-  }
-
   function fitConsole() {
     if (elConsoleView.classList.contains("hidden")) return;
     if (keyboardOpen()) {
-      pinConsoleBottom();
+      if (consoleFitTimer) clearTimeout(consoleFitTimer);
+      consoleFitTimer = null;
       return;
     }
-    showPaneSize(consoleState.cols, consoleState.rows);
+    if (consoleFitTimer) clearTimeout(consoleFitTimer);
+    consoleFitTimer = setTimeout(() => {
+      consoleFitTimer = null;
+      if (requestFit()) consoleState.fitPending = false;
+    }, 180);
+  }
+  /* xterm keeps its desktop-sized grid while the phone keyboard is open. The
+     console viewport gets shorter, so keep its bottom (where the active prompt
+     and xterm's mobile input target sit) in view as visualViewport animates. */
+  function keepConsoleInputVisible() {
+    if (elConsoleView.classList.contains("hidden") || !keyboardOpen()) return;
+    requestAnimationFrame(() => {
+      if (elConsoleView.classList.contains("hidden") || !keyboardOpen()) return;
+      elConsoleTerm.scrollTop = elConsoleTerm.scrollHeight;
+    });
   }
 
   function setConsoleSub(text) {
     elConsoleSub.textContent = text;
+    elConsoleSub.classList.remove("hidden");
   }
 
   async function openConsole() {
     if (!state.activePaneId) return;
+    const paneId = state.activePaneId;
     triggerHaptic();
     elConsoleView.classList.remove("hidden");
+    elAppHeader.classList.add("console-open");
+    elConsoleSub.classList.remove("hidden");
+    renderAgentBar();
     setConsoleSub("loading…");
     if (!(await loadTerminalLibrary())) {
       setConsoleSub("could not load the terminal");
       return;
     }
     // Closed again while it was loading: do not attach behind their back.
-    if (elConsoleView.classList.contains("hidden")) return;
+    if (elConsoleView.classList.contains("hidden") || state.activePaneId !== paneId) return;
     const term = ensureTerminal();
     if (!term) {
       setConsoleSub("terminal unavailable");
@@ -5126,15 +5964,17 @@
     }
     // A different pane is a different terminal: drop what is on screen rather
     // than drawing the new pane's frames over the old pane's.
-    if (consoleState.paneId !== state.activePaneId) {
+    if (consoleState.paneId !== paneId) {
       term.reset();
       // Including anything held for a selection: it is the old pane's screen.
       consoleState.held = [];
       consoleState.heldBytes = 0;
-      consoleState.paneId = state.activePaneId;
+      consoleState.paneId = paneId;
     }
-    fitConsole();
-    term.focus();
+    // Focusing xterm opens the software keyboard on iOS. Keep the terminal
+    // ready for typing on desktop, but let mobile users choose when to bring
+    // up the keyboard by tapping the terminal themselves.
+    if (wide.matches) term.focus();
     connectConsole();
   }
 
@@ -5147,6 +5987,7 @@
     const size = phoneSize() || { cols: term.cols, rows: term.rows };
     const url = `${scheme}://${location.host}/ws/terminal/${encodeURIComponent(paneId)}` +
       `?cols=${size.cols}&rows=${size.rows}`;
+    consoleState.fitPending = true;
     setConsoleSub("connecting…");
     let ws;
     try {
@@ -5157,14 +5998,29 @@
     }
     ws.binaryType = "arraybuffer";
     consoleState.ws = ws;
-    ws.onopen = () => setConsoleSub("attached");
+    ws.onopen = () => {
+      elConsoleSub.classList.add("hidden");
+      if (consoleFitTimer) clearTimeout(consoleFitTimer);
+      consoleFitTimer = null;
+    };
     ws.onmessage = (event) => {
       if (typeof event.data === "string") {
         // The only text the gateway sends is a failure it could not report as
         // a status code, the socket having already been upgraded.
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === "size") showPaneSize(msg.cols, msg.rows);
+          if (msg.type === "size") {
+            showPaneSize(msg.cols, msg.rows);
+            if (consoleState.fitTarget
+              && msg.cols === consoleState.fitTarget.cols
+              && msg.rows === consoleState.fitTarget.rows) {
+              consoleState.fitTarget = null;
+              clearConsoleFitRetry();
+            }
+            // The first size report confirms the pane has started drawing;
+            // the socket's open event alone is too early to resize it.
+            if (consoleState.fitPending && requestFit()) consoleState.fitPending = false;
+          }
           else if (msg.type === "error") setConsoleSub(msg.message || "error");
         } catch (err) {
           /* not ours */
@@ -5185,7 +6041,6 @@
       }
       consoleState.heldBytes = 0;
       term.write(bytes);
-      if (keyboardOpen()) pinConsoleBottom();
     };
     ws.onclose = () => {
       if (consoleState.ws === ws) consoleState.ws = null;
@@ -5202,25 +6057,58 @@
 
   function closeConsole() {
     elConsoleView.classList.add("hidden");
+    elAppHeader.classList.remove("console-open");
+    elConsoleSub.classList.add("hidden");
+    consoleState.fitPending = false;
+    consoleState.fitTarget = null;
+    clearConsoleFitRetry();
+    if (consoleFitTimer) clearTimeout(consoleFitTimer);
+    consoleFitTimer = null;
     closeConsoleSocket();
-    // Polling stopped while the console had the screen; it is the transcript's
-    // turn again.
+    renderAgentBar();
+    // The transcript was left out of the loop while the console was up, and on
+    // a phone the loop was stopped outright; it is its turn again either way.
     startPolling();
     loop();
   }
 
-  elBtnConsole.addEventListener("click", () => {
-    stopPolling();
-    openConsole();
+  // Shortcut taps should not move focus off xterm's hidden textarea. On
+  // mobile that blur dismisses the system keyboard before the key is sent.
+  elConsoleKeys.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".key-btn")) e.preventDefault();
   });
-  elBtnCloseConsole.addEventListener("click", closeConsole);
-  elBtnConsoleKeyboard.addEventListener("click", () => {
-    if (consoleState.term) consoleState.term.focus();
+  elConsoleKeys.addEventListener("click", (e) => {
+    const btn = e.target.closest(".key-btn");
+    if (btn && btn.dataset.key) sendConsoleKey(btn.dataset.key);
   });
-  elBtnConsoleFit.addEventListener("click", requestFit);
+  const elConsoleAttach = document.getElementById("console-attach");
+  const elConsoleAttachInput = document.getElementById("console-attach-input");
+  const elConsolePastePhoto = document.getElementById("console-paste-photo");
+  elConsoleAttach.addEventListener("click", () => elConsoleAttachInput.click());
+  elConsolePastePhoto.addEventListener("click", pasteConsolePhotoFromClipboard);
+  elConsoleAttachInput.addEventListener("change", () => {
+    const files = [...(elConsoleAttachInput.files || [])];
+    elConsoleAttachInput.value = "";
+    attachConsoleFiles(files);
+  });
+  elConsoleTerm.addEventListener("dragover", (e) => {
+    if ([...(e.dataTransfer?.types || [])].includes("Files")) e.preventDefault();
+  });
+  elConsoleTerm.addEventListener("drop", (e) => {
+    const files = imagesIn(e.dataTransfer);
+    if (!files.length) return;
+    e.preventDefault();
+    attachConsoleFiles(files);
+  });
   window.addEventListener("resize", fitConsole);
+  window.addEventListener("resize", keepConsoleInputVisible);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", fitConsole);
+    window.visualViewport.addEventListener("resize", keepConsoleInputVisible);
+    window.visualViewport.addEventListener("scroll", keepConsoleInputVisible);
+  }
+  if (window.ResizeObserver) {
+    new ResizeObserver(fitConsole).observe(elConsoleTerm);
   }
 
   /* ----------------------------------------------------------------------
@@ -5257,6 +6145,7 @@
 
   async function openChanges() {
     if (!state.activePaneId) return;
+    if (state.chatVisible && !state.activeChatId) setPaneView("transcript");
     triggerHaptic();
     elChangesView.classList.remove("hidden");
     elChangesList.innerHTML = '<div class="history-empty">Reading the working tree…</div>';
@@ -5575,10 +6464,12 @@
     });
   }
 
-  elBtnChanges.addEventListener("click", openChanges);
-  elBtnCloseChanges.addEventListener("click", () => {
+  function closeChanges() {
     elChangesView.classList.add("hidden");
-  });
+  }
+
+  elBtnChanges.addEventListener("click", openChanges);
+  elBtnCloseChanges.addEventListener("click", closeChanges);
   elBtnDiffLayout.addEventListener("click", () => setDiffLayout(!state.diffSplit));
   elChangesList.addEventListener("click", (e) => {
     const row = e.target.closest(".change-row");
@@ -6072,12 +6963,740 @@
 
   // Init
   loadPrefs();
-  // The flock, not a chat: what the app opens on is the whole herd.
+  // Show the flock while the agent list loads, then open the first pane.
   showFlock();
   // The first touch anywhere is what buys the page the right to make noise.
   document.addEventListener("pointerdown", unlockAudio, { once: true });
   document.addEventListener("touchstart", unlockAudio, { once: true });
   autoResizeTextarea();
-  loop();
-  startPolling();
+  loadServerOrder().finally(() => {
+    loop();
+    startPolling();
+  });
+})();
+
+
+/* Structured pane and headless chat renderer, hosted in the main app document. */
+/* Chat: talk to Claude Code as messages rather than as a terminal.
+ *
+ * The gateway (gateway/chat.py) keeps one headless `claude` per chat and hands
+ * back its stream as a list of events; this page long-polls that list by index
+ * and folds it into a conversation. The fold is redone from the top on every
+ * batch - chats are short - but only the messages whose markup changed are
+ * put back into the page, so a streaming answer does not redraw the image
+ * above it or fold up a tool card somebody opened.
+ */
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById("chat-" + id);
+  const elChat = $("chat-view");
+  const elMessages = $("messages"), elInput = document.getElementById("prompt-input");
+  const elSend = document.getElementById("btn-send"), elStop = $("btn-stop");
+  const elStrip = $("attach-strip"), elAttachInput = $("attach-input");
+  const elBtnScrollBottom = $("btn-scroll-bottom");
+
+  let current = null;          // the open chat's summary
+  let targetRequest = 0;       // ignore a chat fetch after another view wins
+  let events = [];
+  let epoch = "";
+  let poll = null;             // AbortController of the running long poll
+  let drawn = [];              // the markup of each message now on the page
+  const openTools = new Set(); // tool cards somebody unfolded
+  const picks = new Map();     // request_id -> {question: Set(labels)}
+  let commands = null;         // [{name, description, hint}] for the open chat's project
+  let queued = [];             // what the queue is still holding for this pane
+  let queueTimer = null;
+  let queueRequest = 0;
+  const settling = new Map();  // queue id -> when it stops being "just sent"
+
+  async function api(path, body) {
+    const res = await fetch(path, body === undefined ? { cache: "no-store" } : {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+    return data;
+  }
+
+  const esc = window.SheepItEscapeHtml;
+  const shortDir = (p) => (p || "").split("/").slice(-2).join("/");
+  const imageUrl = (name) => `/api/chat/image?id=${encodeURIComponent(current.id)}&name=${encodeURIComponent(name)}`;
+
+  /* ---- A little markdown: fences, headings, bullets, tables, `code`, **bold**, links. */
+  // Code spans and links are set aside as \u0000n\u0000 while the rest is
+  // rewritten, so a URL inside a sentence in backticks stays text and one
+  // inside a link is not linked twice. Only http(s): the href comes from the agent.
+  const link = (href, text) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  function inline(s) {
+    const held = [];
+    const hold = (html) => "\u0000" + (held.push(html) - 1) + "\u0000";
+    return esc(s)
+      // ...unless the code is nothing but a URL, which is there to be opened.
+      .replace(/`([^`\n]+)`/g, (_, c) => hold(/^https?:\/\/[\w-]+(\.[\w-]+)+(:\d+)?(\/[^\s…]*)?$/.test(c) ? link(c, "<code>" + c + "</code>") : "<code>" + c + "</code>"))
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(u, t)))
+      .replace(/https?:\/\/[^\s<]+/g, (u) => {
+        const tail = u.match(/[.,;:!?)\]]*$/)[0];
+        u = u.slice(0, u.length - tail.length);
+        return hold(link(u, u)) + tail;
+      })
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\u0000(\d+)\u0000/g, (_, i) => held[i]);
+  }
+  function markdown(text) {
+    const out = [];
+    const parts = String(text).split(/^```[^\n]*\n?/m);
+    parts.forEach((part, i) => {
+      if (i % 2) { out.push("<pre><code>" + esc(part.replace(/\n$/, "")) + "</code></pre>"); return; }
+      let para = [], list = [], rows = [];
+      const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const flush = () => {
+        if (para.length) out.push("<p>" + para.map(inline).join("<br>") + "</p>");
+        if (list.length) out.push("<ul>" + list.map((l) => "<li>" + inline(l) + "</li>").join("") + "</ul>");
+        if (rows.length) {
+          // The |---| line under the head says which row the head is.
+          const body = rows.filter((r) => !/^\s*\|?[\s:|-]+\|?\s*$/.test(r));
+          const head = rows.length > 1 && /^\s*\|?[\s:|-]+\|?\s*$/.test(rows[1]) ? body.shift() : null;
+          out.push(`<div class="table"><table>` +
+            (head ? "<thead><tr>" + cells(head).map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead>" : "") +
+            "<tbody>" + body.map((r) => "<tr>" + cells(r).map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("") +
+            "</tbody></table></div>");
+        }
+        para = []; list = []; rows = [];
+      };
+      for (const line of part.split("\n")) {
+        const h = line.match(/^(#{1,3})\s+(.*)/);
+        const li = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)/);
+        if (/^\s*\|.*\|\s*$/.test(line)) { if (para.length || list.length) flush(); rows.push(line); continue; }
+        if (rows.length) flush();
+        if (!line.trim()) flush();
+        else if (h) { flush(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); }
+        else if (li) { if (para.length) flush(); list.push(li[1]); }
+        else { if (list.length) flush(); para.push(line); }
+      }
+      flush();
+    });
+    return out.join("");
+  }
+
+  /* ---- Tools: one line saying what, unfolding to the input and the result. */
+  function toolArg(name, input) {
+    input = input || {};
+    const pick = input.command || input.file_path || input.pattern || input.url ||
+      input.description || input.query || input.path;
+    if (pick) return String(pick);
+    const first = Object.values(input).find((v) => typeof v === "string");
+    return first || "";
+  }
+  function resultText(content) {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) return content.map((b) => b.text || (b.type ? `[${b.type}]` : "")).join("\n");
+    return content == null ? "" : JSON.stringify(content, null, 2);
+  }
+
+  /* ---- The conversation, folded out of the event list. */
+  function build(evts, chat) {
+    const running = !!(chat && chat.running);
+    const pending = new Set((chat && chat.pending) || []);
+    const items = [];
+    const tools = {};
+    const asks = {};
+    let live = "";
+    for (const ev of evts) {
+      switch (ev.type) {
+        case "prompt": items.push({ kind: "user", text: ev.text, images: ev.images || [] }); break;
+        case "delta": live += ev.text; break;
+        case "assistant":
+          for (const b of ev.content || []) {
+            if (b.type === "text") { items.push({ kind: "assistant", text: b.text }); live = ""; }
+            // A question is drawn as the ask below, not as a tool call.
+            else if (b.type === "tool_use" && b.name !== "AskUserQuestion") {
+              const t = { kind: "tool", id: b.id, name: b.name, input: b.input };
+              tools[b.id] = t; items.push(t);
+            }
+          }
+          break;
+        case "tool_results":
+          for (const r of ev.content || []) {
+            const t = tools[r.tool_use_id];
+            if (t) { t.result = resultText(r.content); t.error = r.is_error; }
+          }
+          break;
+        case "ask": {
+          const a = { kind: "ask", id: ev.request_id, tool: ev.tool, input: ev.input || {},
+            description: ev.description, always: (ev.suggestions || []).length > 0,
+            open: pending.has(ev.request_id) };
+          asks[ev.request_id] = a; items.push(a);
+          break;
+        }
+        case "answered": {
+          const a = asks[ev.request_id];
+          if (a) { a.answered = ev.behavior; a.answers = ev.answers; }
+          break;
+        }
+        case "result": {
+          if (ev.is_error && ev.text) items.push({ kind: "error", text: ev.text });
+          const bits = [];
+          if (ev.duration_ms) bits.push((ev.duration_ms / 1000).toFixed(1) + "s");
+          if (ev.cost) bits.push("$" + ev.cost.toFixed(3));
+          if (bits.length) items.push({ kind: "meta", text: bits.join(" · ") });
+          live = "";
+          break;
+        }
+        case "interrupted": items.push({ kind: "meta", text: "interrupted" }); live = ""; break;
+        case "exit": items.push({ kind: ev.code ? "error" : "meta", text: ev.text }); live = ""; break;
+        case "error": items.push({ kind: "error", text: ev.text }); break;
+      }
+    }
+    // A pane stopped on something the log does not show: a trust prompt, a menu.
+    if (chat && chat.kind === "pane" && chat.status === "blocked" && !pending.size) {
+      items.push({ kind: "meta", text: "waiting on something in the terminal" });
+    }
+    if (live) items.push({ kind: "assistant", text: live, live: true });
+    else if (running && !pending.size && items.length && items[items.length - 1].kind !== "tool") items.push({ kind: "typing" });
+    for (const t of Object.values(tools)) t.state = t.result === undefined ? (running ? "" : "stale") : (t.error ? "err" : "ok");
+    return items;
+  }
+
+  /* A message that starts with a command reads as one: the command is a chip. */
+  function userText(text) {
+    const m = text.match(/^\/([\w:.-]+)(\s[\s\S]*)?$/);
+    return m ? `<span class="cmd">/${esc(m[1])}</span>${esc(m[2] || "")}` : esc(text);
+  }
+
+  function askHtml(it) {
+    if (it.tool === "AskUserQuestion") {
+      const chosen = picks.get(it.id) || {};
+      const qs = it.input.questions || [];
+      const body = qs.map((q, qi) => {
+        const answer = it.answers && it.answers[q.question];
+        const opts = (q.options || []).map((o) => {
+          const on = answer ? answer.split(", ").includes(o.label) : (chosen[q.question] || new Set()).has(o.label);
+          return `<button type="button" class="opt${on ? " on" : ""}" data-ask="${esc(it.id)}" data-q="${qi}" data-label="${esc(o.label)}"${it.open ? "" : " disabled"}>` +
+            `<b>${esc(o.label)}</b>${o.description ? `<span>${esc(o.description)}</span>` : ""}</button>`;
+        }).join("");
+        return `<div class="q"><div class="q-text">${esc(q.question)}${q.multiSelect ? " <em>(pick any)</em>" : ""}</div>${opts}</div>`;
+      }).join("");
+      // One single-choice question answers itself on tap; anything more needs a send.
+      const needsSend = qs.length > 1 || qs.some((q) => q.multiSelect);
+      const foot = it.open
+        ? (needsSend ? `<div class="ask-actions"><button type="button" class="btn primary" data-act="answers" data-ask="${esc(it.id)}">Send answers</button>` +
+          `<button type="button" class="btn" data-act="deny" data-ask="${esc(it.id)}">Skip</button></div>` : "")
+        : `<div class="ask-state">${it.answered === "deny" ? "skipped" : it.answered ? "answered" : "no longer open"}</div>`;
+      return `<div class="ask">${body}${foot}</div>`;
+    }
+    const arg = toolArg(it.tool, it.input);
+    const detail = it.tool === "ExitPlanMode" ? markdown(it.input.plan || "") :
+      `<pre>${esc(it.input.command || it.input.content || JSON.stringify(it.input, null, 2))}</pre>`;
+    const foot = it.open
+      ? `<div class="ask-actions"><button type="button" class="btn primary" data-act="allow" data-ask="${esc(it.id)}">Allow</button>` +
+        (it.always ? `<button type="button" class="btn" data-act="always" data-ask="${esc(it.id)}">Always</button>` : "") +
+        `<button type="button" class="btn danger" data-act="deny" data-ask="${esc(it.id)}">Deny</button></div>`
+      : `<div class="ask-state">${{ allow: "allowed", always: "allowed for this session", deny: "denied" }[it.answered] || "no longer open"}</div>`;
+    return `<div class="ask${it.open ? " open" : ""}"><div class="ask-head">${it.tool === "ExitPlanMode" ? "Proceed with this plan?" : `Allow <b>${esc(it.tool)}</b>?`}</div>` +
+      (arg && it.tool !== "ExitPlanMode" ? `<div class="ask-arg">${esc(it.description || arg)}</div>` : "") +
+      `<details><summary>details</summary>${detail}</details>${foot}</div>`;
+  }
+
+  function itemHtml(it) {
+    switch (it.kind) {
+      case "user":
+        return `<div class="msg user">` +
+          (it.images.length ? `<div class="imgs">${it.images.map((n) => `<img src="${esc(imageUrl(n))}" alt="">`).join("")}</div>` : "") +
+          (it.text ? userText(it.text) : "") + `</div>`;
+      case "assistant": return `<div class="msg assistant">${markdown(it.text)}</div>`;
+      case "error": return `<div class="msg error">${esc(it.text)}</div>`;
+      case "meta": return `<div class="msg meta">${esc(it.text)}</div>`;
+      case "typing": return `<div class="msg"><span class="typing"><i></i><i></i><i></i></span></div>`;
+      case "ask": return `<div class="msg">${askHtml(it)}</div>`;
+      case "tool": {
+        const input = JSON.stringify(it.input || {}, null, 2);
+        return `<details class="msg tool ${it.state}" data-id="${esc(it.id)}"${openTools.has(it.id) ? " open" : ""}>` +
+          `<summary><span class="state"></span><span class="name">${esc(it.name)}</span>` +
+          `<span class="arg">${esc(toolArg(it.name, it.input))}</span></summary>` +
+          `<pre>${esc(input)}</pre>` +
+          (it.result !== undefined ? `<pre>${esc(it.result)}</pre>` : "") +
+          `</details>`;
+      }
+    }
+    return "";
+  }
+
+  /* Why a pane's chat is empty. Three different reasons read as one blank
+     screen otherwise, and only the last of them is worth waiting through. */
+  function paneEmpty(chat) {
+    if (!chat.supported) return "There is no supported agent in this pane.";
+    if (!chat.session) return "No session history yet. Send a message to start chatting; it will appear here once the agent has named the session.";
+    return "Nothing in this session yet.";
+  }
+
+  /* ---- Scrolling. Past 900px the flock sits beside the chat and neither the
+     window nor `#chat-chat-view` scrolls (see style.css), so the messages list
+     is its own scroller there; on a phone the document scrolls instead, the
+     same way it does behind the transcript (see fetchHistory's note in the
+     other half of this file) - `elMessages` itself has `overflow-y: visible`
+     on a phone and reports no scroll of its own, so reading its scrollTop
+     there would always say "at the bottom" and drag you back down on every
+     poll no matter where you had scrolled to. */
+  const chatWide = window.matchMedia("(min-width: 900px)");
+  let userScrolledUp = false;
+
+  function chatScroller() {
+    return chatWide.matches ? elMessages : document.scrollingElement;
+  }
+
+  function scrollChatToBottom(smooth = false) {
+    const scroller = chatScroller();
+    if (smooth) scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    else scroller.scrollTop = scroller.scrollHeight;
+    userScrolledUp = false;
+    elBtnScrollBottom.classList.add("hidden");
+  }
+
+  function onChatScroll() {
+    const scroller = chatScroller();
+    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    userScrolledUp = distance > 80;
+    elBtnScrollBottom.classList.toggle("hidden", !userScrolledUp);
+  }
+
+  elMessages.addEventListener("scroll", onChatScroll, { passive: true });
+  window.addEventListener("scroll", onChatScroll, { passive: true });
+  chatWide.addEventListener("change", onChatScroll);
+  elBtnScrollBottom.addEventListener("click", () => scrollChatToBottom(true));
+
+  function render() {
+    const running = !!(current && current.running);
+    const nearBottom = !userScrolledUp;
+    const html = build(events, current).map(itemHtml);
+    if (!html.length) html.push(current && current.kind === "pane"
+      ? `<div class="empty">${paneEmpty(current)}</div>`
+      : `<div class="empty">Ask Claude anything about ${esc(shortDir(current && current.cwd))}.</div>`);
+    // Put back only what changed: the rest keeps its node, its image, its scroll.
+    html.forEach((h, i) => {
+      if (drawn[i] === h) return;
+      const tpl = document.createElement("template");
+      tpl.innerHTML = h;
+      const node = tpl.content.firstElementChild;
+      const old = elMessages.children[i];
+      old ? elMessages.replaceChild(node, old) : elMessages.appendChild(node);
+    });
+    while (elMessages.children.length > html.length) elMessages.lastElementChild.remove();
+    drawn = html;
+    if (nearBottom) scrollChatToBottom();
+    elStop.classList.toggle("hidden", !running);
+  }
+
+  elMessages.addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (d.matches && d.matches("details.tool")) d.open ? openTools.add(d.dataset.id) : openTools.delete(d.dataset.id);
+  }, true);
+
+  /* ---- Answering: permission buttons and AskUserQuestion's options. */
+  function askEvent(id) { return events.find((e) => e.type === "ask" && e.request_id === id); }
+
+  async function answer(id, behavior, answers) {
+    try {
+      const data = await api("/api/chat/answer", { id: current.id, request_id: id, behavior, answers });
+      current = data.chat;
+      render();
+    } catch (err) { alert(err.message); }
+  }
+
+  elMessages.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-ask]");
+    if (!btn || btn.disabled) return;
+    const id = btn.dataset.ask;
+    if (btn.dataset.act === "answers") {
+      const chosen = picks.get(id) || {};
+      const answers = {};
+      for (const [q, set] of Object.entries(chosen)) if (set.size) answers[q] = [...set].join(", ");
+      answer(id, "allow", answers);
+      return;
+    }
+    if (btn.dataset.act) { answer(id, btn.dataset.act); return; }
+    // An option.
+    const ev = askEvent(id);
+    const qs = (ev && ev.input.questions) || [];
+    const q = qs[+btn.dataset.q];
+    if (!q) return;
+    const chosen = picks.get(id) || {};
+    const set = chosen[q.question] || new Set();
+    if (q.multiSelect) set.has(btn.dataset.label) ? set.delete(btn.dataset.label) : set.add(btn.dataset.label);
+    else { set.clear(); set.add(btn.dataset.label); }
+    chosen[q.question] = set;
+    picks.set(id, chosen);
+    if (qs.length === 1 && !q.multiSelect) answer(id, "allow", { [q.question]: btn.dataset.label });
+    else render();
+  });
+
+  /* ---- The long poll: ask for what is past our index, wait if nothing is. */
+  async function follow(chatId) {
+    const ctrl = new AbortController();
+    poll = ctrl;
+    let since = 0;
+    while (!ctrl.signal.aborted) {
+      try {
+        const qs = `id=${encodeURIComponent(chatId)}&since=${since}&epoch=${epoch}&wait=${since ? 1 : 0}`;
+        const res = await fetch("/api/chat/events?" + qs, { cache: "no-store", signal: ctrl.signal });
+        const data = await res.json();
+        if (ctrl.signal.aborted || current?.id !== chatId) return;
+        if (!data.ok) throw new Error(data.error);
+        if (data.from === 0) events = [];
+        events = events.concat(data.events);
+        epoch = data.epoch;
+        since = data.next;
+        current = data.chat;
+        render();
+      } catch (e) {
+        if (ctrl.signal.aborted) return;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+
+  /* Coming back to a page iOS froze: the poll in flight may be long dead. */
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && current) { const c = current; if (poll) poll.abort(); events = []; epoch = ""; follow(c.id); }
+  });
+
+  function openChat(chat) {
+    if (poll) poll.abort();
+    current = chat; events = []; epoch = ""; drawn = []; openTools.clear(); picks.clear();
+    commands = null; hideMenu();
+    queued = []; settling.clear(); drawQueue();
+    loadCommands(chat.id);
+    elMessages.innerHTML = "";
+    userScrolledUp = false;
+    elBtnScrollBottom.classList.add("hidden");
+    attachStrip.clear();
+    const pane = chat.kind === "pane";
+    $("btn-delete").classList.toggle("hidden", pane);
+    elChat.classList.remove("hidden");
+    document.dispatchEvent(new CustomEvent("sheepit:chat-open", { detail: chat }));
+    if (location.hash !== "#" + chat.id) history.replaceState(null, "", "#" + chat.id);
+    render();
+    fetchQueue();
+    follow(chat.id);
+  }
+
+  document.addEventListener("sheepit:chat-target", (event) => {
+    const id = event.detail;
+    if (id) openById(id);
+    else clearChat();
+  });
+
+  function clearChat() {
+    targetRequest++;
+    if (poll) poll.abort();
+    poll = null; current = null;
+    elChat.classList.add("hidden");
+    if (location.hash) history.replaceState(null, "", location.pathname);
+  }
+
+  /* A dismissed chat goes back to the flock. Clearing its target while
+     switching panes only closes the old chat; it does not open the flock. */
+  function backToFlock() {
+    clearChat();
+    document.dispatchEvent(new CustomEvent("sheepit:chat-close"));
+  }
+
+  document.addEventListener("sheepit:chat-dismiss", backToFlock);
+
+  /* A push names the chat in the hash; the page may already be open. */
+  window.addEventListener("hashchange", () => {
+    const id = decodeURIComponent(location.hash.slice(1));
+    if (current && current.id === id) return;
+    if (id) openById(id);
+    else backToFlock();
+  });
+
+  /* Everything this page shows is fetched by id - a headless chat's own, or
+     `pane:<pane id>` for a Herdr pane read as a chat. `chat.get` resolves
+     both, so there is one way in. */
+  async function openById(id) {
+    const request = ++targetRequest;
+    if (poll) poll.abort();
+    poll = null;
+    if (current?.id !== id) {
+      current = null;
+      events = []; epoch = ""; drawn = [];
+      elChat.classList.add("hidden");
+    }
+    try {
+      const data = await api(`/api/chat/events?id=${encodeURIComponent(id)}`);
+      if (request === targetRequest) openChat(data.chat);
+    } catch (e) {
+      if (request !== targetRequest) return;
+      alert(e.message);
+      backToFlock();
+    }
+  }
+
+  /* ---- Images: scaled down on the phone, kept by the gateway, sent inline.
+     The strip and its hidden [{name, url}] array are composer.js, shared with
+     the plain view - only how an upload happens is chat's own. */
+  const attachStrip = SheepItComposer.createAttachStrip(
+    elStrip,
+    async (blob) => {
+      const res = await fetch(`/api/chat/upload?id=${encodeURIComponent(current.id)}`, {
+        method: "POST", headers: { "Content-Type": blob.type || "image/jpeg" }, body: blob,
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error);
+      return data.name;
+    },
+    (message) => alert("Could not attach it — " + message)
+  );
+
+  function attachFiles(files) {
+    if (!current) return;
+    return attachStrip.add(files).then(() => {
+      elSend.disabled = !elInput.value.trim() && !attachStrip.list.length;
+    });
+  }
+
+  elAttachInput.addEventListener("change", () => { attachFiles([...elAttachInput.files]); elAttachInput.value = ""; });
+  elInput.addEventListener("paste", (e) => {
+    const files = [...(e.clipboardData ? e.clipboardData.files : [])].filter((f) => f.type.startsWith("image/"));
+    if (files.length) { e.preventDefault(); attachFiles(files); }
+  });
+
+  /* ---- Skills and slash commands. Claude Code runs them itself when a message
+     starts with one, so all this does is help type the name: `/` opens the
+     list, what follows filters it, a tap puts `/name ` into the composer. */
+  const elMenu = $("slash-menu");
+  let browsing = false; // opened from the button, over text already typed
+
+  async function loadCommands(id) {
+    try {
+      const data = await api(`/api/chat/commands?id=${encodeURIComponent(id)}`);
+      if (current && current.id === id) { commands = data.commands; updateMenu(); }
+    } catch (e) { commands = []; }
+  }
+
+  // The name being typed, or null when the composer is not starting a command.
+  function slashQuery() {
+    if (browsing) return "";
+    const before = elInput.value.slice(0, elInput.selectionEnd == null ? elInput.value.length : elInput.selectionEnd);
+    const m = before.match(/^\/([^\s]*)$/);
+    return m ? m[1].toLowerCase() : null;
+  }
+
+  function matches(q) {
+    const all = commands || [];
+    if (!q) return all;
+    const starts = all.filter((c) => c.name.toLowerCase().startsWith(q));
+    const within = all.filter((c) => !c.name.toLowerCase().startsWith(q) && c.name.toLowerCase().includes(q));
+    return starts.concat(within);
+  }
+
+  function hideMenu() { browsing = false; elMenu.classList.add("hidden"); }
+
+  function updateMenu() {
+    const q = slashQuery();
+    if (q === null) { hideMenu(); return; }
+    const found = commands ? matches(q) : null;
+    elMenu.classList.remove("hidden");
+    if (!found) { elMenu.innerHTML = `<div class="slash-empty">Loading skills…</div>`; return; }
+    if (!found.length) { elMenu.innerHTML = `<div class="slash-empty">No skill or command called /${esc(q)}</div>`; return; }
+    elMenu.innerHTML = found.map((c) => {
+      const src = c.description.match(/\s*\(([^()]+)\)\s*$/);
+      const desc = src ? c.description.slice(0, src.index) : c.description;
+      return `<button type="button" class="slash-item" data-cmd="${esc(c.name)}">` +
+        `<span class="slash-name">/${esc(c.name)}${c.hint ? ` <i>${esc(c.hint)}</i>` : ""}` +
+        (src ? `<em>${esc(src[1])}</em>` : "") + `</span>` +
+        (desc ? `<span class="slash-desc">${esc(desc)}</span>` : "") + `</button>`;
+    }).join("");
+    elMenu.scrollTop = 0;
+  }
+
+  function pickCommand(name) {
+    const value = elInput.value;
+    elInput.value = browsing ? `/${name} ${value}` : `/${name} ` + value.replace(/^\/\S*\s?/, "");
+    hideMenu();
+    elInput.focus();
+    const caret = name.length + 2;
+    try { elInput.setSelectionRange(caret, caret); } catch (_) {}
+    grow();
+  }
+
+  elMenu.addEventListener("mousedown", (e) => e.preventDefault()); // keep the keyboard up
+  elMenu.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-cmd]");
+    if (b) pickCommand(b.dataset.cmd);
+  });
+  $("btn-slash").addEventListener("click", () => {
+    if (!elMenu.classList.contains("hidden")) { hideMenu(); return; }
+    if (!elInput.value.trim()) { elInput.value = "/"; elInput.focus(); updateMenu(); return; }
+    browsing = true;
+    updateMenu();
+  });
+  elInput.addEventListener("input", () => { browsing = false; updateMenu(); });
+  elInput.addEventListener("click", () => { if (!browsing) updateMenu(); });
+
+  /* ---- The queue. A pane's prompt does not go to the pane: it goes to
+     /api/queue, and the dispatcher delivers it once the pane is free and the
+     subscription has room. That is the whole reason this strip exists - what
+     was sent into a spent window used to vanish between the composer and the
+     log, because nothing on this page was holding it. */
+  const elQueue = $("queue-strip");
+  const QUEUE_EVERY = 5000;
+  // Give ordinary dispatch a few seconds before moving the composer to show
+  // a waiting prompt. The desktop composer uses the same settling interval.
+  const SETTLE_MS = 5000;
+
+  function owed(prompts) {
+    const now = Date.now();
+    return prompts.filter((p) => {
+      if (p.state === "sent") return false;
+      const until = settling.get(p.id);
+      if (until && now >= until) settling.delete(p.id);
+      return !(settling.has(p.id) && p.state === "waiting");
+    });
+  }
+
+  async function fetchQueue() {
+    if (!current || current.kind !== "pane") { queued = []; drawQueue(); return; }
+    const request = ++queueRequest;
+    const pane = current.pane_id;
+    try {
+      const data = await api("/api/queue");
+      if (!current || current.pane_id !== pane || request !== queueRequest) return;
+      queued = owed((data.prompts || []).filter((p) => p.pane_id === pane));
+    } catch (e) {
+      return; // the poll's own error line already says the gateway is away
+    }
+    drawQueue();
+  }
+
+  /* Only while there is something to watch: an empty queue costs no requests. */
+  function keepWatching() {
+    if (queueTimer) clearInterval(queueTimer);
+    queueTimer = null;
+    if (!queued.length || !current || current.kind !== "pane") return;
+    queueTimer = setInterval(fetchQueue, QUEUE_EVERY);
+  }
+
+  function drawQueue() {
+    queueStrip.render(queued);
+    keepWatching();
+  }
+
+  function queueRow(p) {
+      const failed = p.state === "failed";
+      return `<div class="queued${failed ? " failed" : ""}">
+        <span class="queued-state">${esc(failed ? "failed" : "queued")}</span>
+        <span class="queued-text">${esc(p.prompt || "")}</span>
+        ${failed && p.last_error ? `<span class="queued-why">${esc(p.last_error)}</span>` : ""}
+        <span class="queued-acts">
+          <button type="button" class="queued-act" data-composer-action="edit" data-composer-id="${p.id}">Edit</button>
+          <button type="button" class="queued-act accent" data-composer-action="send" data-composer-id="${p.id}">Send now</button>
+          <button type="button" class="queued-act danger" data-composer-action="delete" data-composer-id="${p.id}">Delete</button>
+        </span>
+      </div>`;
+  }
+
+  async function queueAct(id, action) {
+    try {
+      await api(`/api/queue/${id}/${action}`, {});
+    } catch (e) {
+      alert(`Could not ${action} the prompt — ${e.message}`);
+    }
+    await fetchQueue();
+  }
+
+  function onQueueAction(action, id) {
+    if (action === "send") { queueAct(id, "send"); return; }
+    if (action === "delete") { queueAct(id, "delete"); return; }
+    // Editing takes it back: the text lands in the box it was typed in, where
+    // the keyboard is already open, and sending it queues it again.
+    const row = queued.find((p) => String(p.id) === String(id));
+    if (!row) return;
+    elInput.value = row.prompt || "";
+    grow();
+    elInput.focus();
+    queueAct(id, "delete");
+  }
+  const queueStrip = SheepItComposer.createQueueStrip(elQueue, queueRow, onQueueAction);
+
+  /* ---- Composer. A pane's message waits for the window in the queue; a
+     headless chat's goes to its own process, where one sent mid-answer waits
+     its turn inside Claude Code the way typing ahead in the terminal does. */
+  function grow() {
+    SheepItComposer.resizeTextarea(elInput, Math.max(140, Math.round(window.innerHeight * 0.4)));
+    elSend.disabled = !elInput.value.trim() && !attachStrip.list.length;
+  }
+  elInput.addEventListener("input", grow);
+  elInput.addEventListener("keydown", (e) => {
+    if (!elMenu.classList.contains("hidden")) {
+      const first = elMenu.querySelector("button[data-cmd]");
+      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && first) {
+        e.preventDefault();
+        pickCommand(first.dataset.cmd);
+        return;
+      }
+      if (e.key === "Escape") { hideMenu(); return; }
+    }
+    // Enter sends on a keyboard with a shift key; the phone's return is a newline.
+    if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) {
+      e.preventDefault();
+      document.getElementById("prompt-form").requestSubmit();
+    }
+  });
+  let sendingMessage = false;
+  async function submitMessage() {
+    if (elChat.classList.contains("hidden")) return;
+    if (sendingMessage) return;
+    const text = elInput.value;
+    if (attachStrip.list.some((a) => !a.name)) return; // still uploading
+    const images = attachStrip.list.map((a) => a.name);
+    if ((!text.trim() && !images.length) || !current) return;
+    sendingMessage = true;
+    elSend.disabled = true;
+    try {
+      const data = await api("/api/chat/send", { id: current.id, text, images });
+      current = data.chat;
+      elInput.value = ""; grow();
+      hideMenu();
+      attachStrip.clear();
+      if (current.kind === "pane" && current.agent === "codex" && text.trim() === "/clear") {
+        if (poll) poll.abort();
+        events = []; epoch = ""; drawn = [];
+        openTools.clear(); picks.clear();
+        elMessages.innerHTML = "";
+        follow(current.id);
+      }
+      scrollChatToBottom();
+      render();
+      // A pane's prompt is a queue row now. Held back for as long as delivery
+      // takes, then shown: one that is still waiting when the grace is up is
+      // waiting on something, and that is worth a line on the screen.
+      if (data.queued) {
+        settling.set(data.queued, Date.now() + SETTLE_MS);
+        setTimeout(fetchQueue, SETTLE_MS + 50);
+      }
+      fetchQueue();
+    } catch (err) { alert(err.message); }
+    finally {
+      sendingMessage = false;
+      elSend.disabled = false;
+    }
+  }
+  SheepItComposer.bindSubmit(document.getElementById("prompt-form"), submitMessage);
+  elStop.addEventListener("click", () => {
+    if (!elChat.classList.contains("hidden") && current) {
+      api("/api/chat/stop", { id: current.id }).catch(() => {});
+    }
+  });
+  $("btn-delete").addEventListener("click", async () => {
+    if (!current || !confirm("Delete this chat? The Claude Code session itself stays.")) return;
+    await api("/api/chat/delete", { id: current.id }).catch(() => {});
+    backToFlock();
+  });
+
+  /* Opened with no chat named - a stale bookmark of the list that used to be
+     here, or a hash that pointed at something since deleted. */
+  const opening = decodeURIComponent(location.hash.slice(1));
+  if (opening) openById(opening);
 })();

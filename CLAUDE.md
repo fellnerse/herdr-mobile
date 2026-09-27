@@ -10,7 +10,9 @@ Herdr's UNIX sockets and serves a home-screen web app to an iPhone over
 Tailscale. `README.md` describes the features from the user's side; `docs/`
 carries the detail (`gateway.md` — running and routes, `push.md` — iOS
 notifications, `design.md` — the sheep, the parsing, the console,
-`scheduler.md` — the prompt queue and the usage windows it waits for).
+`scheduler.md` — the prompt queue and the usage windows it waits for,
+`views.md` — the console, the transcript and the chat, and the plan folding
+them into one).
 
 ## Hard constraints
 
@@ -110,21 +112,45 @@ from it (`showFlock` / `selectAgent(paneId, open)` in `app.js`). Past 900px the
 same two screens sit side by side: `style.css` turns the flock into a fixed
 left column and `closePicker` becomes a no-op, so nothing there can leave the
 list off screen. A pane is still selected behind the flock — with `open` false,
-so the transcript is warm without the screen jumping into it.
+so the transcript is warm without the screen jumping into it. **Nothing else
+covers that column either**: past 900px every `.full-view` — the console, the
+changed files, the tokens page and the settings — is offset by `--flock-width`
+and fills the right-hand column, the same half a chat opens in. The two that
+read one pane follow the selection (`retargetPaneViews`, and `closePaneViews`
+for a headless chat, which has no pane for either of them to read); the tokens
+page and the settings belong to no pane and are left alone. The console no
+longer stops the poll, only takes the transcript out of `loop` — a frozen flock
+beside a live console is the bug that trade made visible.
 
-**The overview collapses those rows to one per workspace** (`byWorkspace` in
-`app.js`): a row is a pen, so it can offer Close and Remove honestly — every
-action in the swipe drawer acts on the workspace, and when a row was a tab,
-closing one stopped the whole branch and took its neighbours with it. The row
-says `3 tabs` and is led by the tab that needs you most (`urgency`: blocked,
-done, working, idle, shell), which is also the pane it opens. Its sheep is
-hashed from the workspace (`penSeed`) rather than the leading pane, or the
-animal would change face whenever another tab started asking something. The
-tabs themselves are reached in the strip above the transcript
-(`tabStripHtml`), the only place one tab is switched, renamed (`tab.rename`) or
-closed (`tab.close`) — and the only place another is opened (`tab.create`).
+**The overview groups those rows by workspace** (`byWorkspace` in `app.js`): a
+pen, so Close and Remove can be offered honestly — every action in that swipe
+drawer acts on the workspace, and when a row was a tab, closing one stopped the
+whole branch and took its neighbours with it. A pen with one tab is one row, led
+by that tab, its sheep hashed from the workspace (`penSeed`) rather than the
+pane. **A pen with more than one hangs them out** (`penHtml`): the worktree's
+title on a line of its own, carrying the same Rename/Close/Remove, and a sheep
+per tab indented under it on a bracket — each hashed from its own pane, the one
+place `penSeed` is deliberately not used, since two animals under one title must
+not read as one agent. A tab's own drawer is what the strip offers it, Rename
+(`tab.rename`) and Close (`tab.close`), which is safe there because a pen only
+draws this way while it has a second tab to keep the workspace alive.
+**Every row carries its drawer's first two as hover icons** on a pointer — a
+pencil and a bin in the corner the `…` hint used to occupy (`rowToolsHtml`,
+`.row-tools`, and the title's `.pen-head-tools`, all of it hidden wherever there
+is no hover) — since a mouse cannot swipe. They sit above the status badge and
+hide nothing: hovering a row must not take anything off it. A chat's is the bin
+alone. The drawer itself is the swipe's and is hidden wherever there is a
+pointer, so Remove — which deletes a checkout and stays out of the icons on
+purpose — is a touch-only action, and a right-click over a row is the browser's
+own menu again. The title still opens the tab that needs you most
+(`urgency`: blocked, done, working, idle, shell), and still says `3 tabs`, which
+is what makes Close read as stopping more than one thing. Every tab an opened
+pen draws is in the list signature (`penTabsMark`), or a second tab finishing
+would redraw nothing. The
+strip above the transcript (`tabStripHtml`) is still where a tab is switched
+without leaving the chat, and the only place another is opened (`tab.create`).
 No `×` on the last tab: Herdr closes the workspace along with it, which is the
-row's own Close.
+pen's own Close.
 
 **The phone groups those rows by project, not by workspace** (`groupByProject`
 in `app.js`): the key is `worktree.repo_root` as read by `project_of`, so the
@@ -133,13 +159,12 @@ list is only redrawn when its signature changes — a blind redraw restarts ever
 sheep animation, drops a row held open by a swipe, and pulls the floor out from
 under a project being dragged.
 
-**Order is creation order, then whoever is waiting, then a finger.** Rows sort
-by `bornAt` (workspace `number` × 1000 + pane index — Herdr exposes no creation
-date anywhere, and never renumbers); an agent waiting on you rises to the top
-of its project and takes the project with it, ranked by `ATTENTION` in
-`app.js` — `blocked` above `done`, which is as close to "unread" as Herdr's
-status vocabulary gets and the same pair the badge and the pushes use; a drag
-overrides both and is saved to `localStorage` (`sortGroups`). The drag also calls `workspace.move`,
+**Order is creation order, then a finger.** Rows sort by `bornAt` (workspace
+`number` × 1000 + pane index — Herdr exposes no creation date anywhere, and
+never renumbers); agent attention sorts rows inside each project but never
+moves a project heading. A drag overrides creation order and is saved by the
+gateway so desktop and mobile share it. Only a workspace made through global `+ New`
+is explicitly placed at the top; other new projects join at the end. The drag also calls `workspace.move`,
 but only when the project is a single workspace — a project is a repository and
 Herdr reorders workspaces. `workspace.move` counts the workspace being moved
 when it resolves `insert_index`, which is why `insertIndexFor` exists and is
@@ -154,7 +179,11 @@ its `label`, not its `number` — see `tabNumber`.
 **The queue waits for the window.** Prompts from the phone go to `/api/queue`
 rather than straight to an agent: `gateway/scheduler/` holds them in SQLite and
 `dispatch.py` sends them as soon as the pane can take one (or immediately, via
-`/api/queue/{id}/send`). **Only a window that is actually out holds a prompt** —
+`/api/queue/{id}/send`). **One function queues them all** — `queue_prompt` in
+`server.py`, which the route and `panechat.send` both call, the latter through
+the hook `panechat.init` is handed at startup. A second call to `agent.prompt`
+with somebody's prompt in it is a hole in the hold the size of whatever view
+made it, which is exactly what the chat view was until `docs/views.md` phase 1. **Only a window that is actually out holds a prompt** —
 100% or a lock that was earned, never `threshold` and never an unreadable
 reading; a hold is forever, since nothing retries what the sweep declined to
 send. `quota.py` reads usage per agent, since Claude and Codex
@@ -193,7 +222,11 @@ hours and days, draws the empty ones, and colours by model in name order rather
 than by size -- rank changes with the range, and a legend that repaints when you
 tap "24h" is one nobody can learn. `docs/design.md` is the detail.
 
-**The machine is the other wall.** Under the usage windows the strip draws the
+**The machine is the other wall, and it is off by default.** *Show machine load*
+in the settings view turns it on (`sheepit.machine` in `localStorage`,
+`state.machineStrip`); while it is off the phone asks `/api/queue/quota` with
+`machine=0` and `quota_payload` reads no counters, so hiding the strip and not
+paying for it are one switch. Under the usage windows the strip draws the
 host — cpu, ram, swap, disk, network and load average, two to a line, read by
 `gateway/machine.py` (`/proc` on Linux, `sysctl`/`vm_stat`/`netstat` on macOS,
 standard library like everything else) and carried on the same
@@ -208,19 +241,34 @@ views are not counted on top of the drive they are part of, overlays like
 nothing (`0`) is not a counter nobody keeps (`—`). `docs/design.md` is the
 detail.
 
-**A pane can be read as a chat too.** `chat.html` draws events, and two
-things produce them: a headless `claude -p` per chat (`gateway/chat.py`), and
-a Claude Code already running in a Herdr pane (`gateway/panechat.py`, id
-`pane:<pane_id>`), whose session log -- the one `agent_session` names -- has the
-same messages in it. `chat.get` resolves both, so the `/api/chat/*` routes do
-not know which they are talking to. A pane's permission prompt is not in its
-log: a tool call with no result while Herdr says `blocked` stands in for it,
-and is answered with the keys the TUI numbers its options with (`1` yes, `2`
-always, Esc no). On a phone a Claude Code row opens as this chat
-(`openAsChat` in `app.js`), with the transcript a button in its header; past
-900px the same page sits in a frame over the transcript (`renderPaneChat`),
-which is why the CSP allows `frame-ancestors 'self'`, and which of the two the
-right column shows is remembered (`state.paneView`).
+**A pane can be read as a chat too.** The main app draws one chat surface, and
+two things produce its events: a headless `claude -p` per chat
+(`gateway/chat.py`), and a Claude Code already running in a Herdr pane
+(`gateway/panechat.py`, id `pane:<pane_id>`), whose session log -- the one
+`agent_session` names -- has the same messages in it. `chat.get` resolves both,
+so the `/api/chat/*` routes do not know which they are talking to. A pane's
+permission prompt is not in its log: a tool call with no result while Herdr
+says `blocked` stands in for it, and is answered with the keys the TUI numbers
+its options with (`1` yes, `2` always, Esc no). Pane chats and headless chats
+use the same in-page renderer in `app.js`; the shared app header stays in place
+while the pane chooses chat or verbatim transcript (`state.paneView`).
+
+**The headless chats are rows in the flock, not a list of their own.** They
+ride along on `/api/agents` (`flock_chats` in `server.py`, which only has to
+add which project each belongs under) and are folded in at `attachChats` in
+`app.js`, *after* the grouping and never into `state.agents` -- a chat has no
+workspace, no tab strip and no pane id Herdr would answer for, and the badge,
+the bleat and the selection all walk that list assuming one. A chat's status is
+the same vocabulary with no `done` in it, since nothing marks one as read; its
+sheep wears a speech bubble; its drawer offers Delete and none of the three
+things that belong to a worktree. `docs/design.md` is the detail.
+
+**Two plusses, and both of them ask.** `+ New` at the top of the flock asks
+chat or terminal; `+` on a project heading and `+` in the tab strip are the
+same sheet asking worktree or tab, differing only in which workspace each
+knows a tab would join. One element draws all of it (`renderNewSheet`), and
+the answers that need nothing more said happen on the tap. Do not add a third:
+the four this replaced were four unrelated things behind one glyph.
 
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's
@@ -251,7 +299,8 @@ refuses paths that escape the pane's directory.
   times: `/* ---- The flock ---` → `// Opening a project is activity too`
   (the order, and the collapse to one row per workspace),
   `function agentListSignature() {` → `async function createWorkspace() {`
-  (a row's markup), `// In the order the laptop's tab bar has them` →
+  (a row's markup, which borrows `tabChipLabel` from the strip slice below it),
+  `// In the order the laptop's tab bar has them` →
   `// Render Metadata (lives in the settings sheet)` (the tab strip), and
   `const POSE = {` → `/* Everything a row draws.` (the sheep and their
   markings).
@@ -266,6 +315,27 @@ refuses paths that escape the pane's directory.
 - **iOS keyboard and layout**: height is driven from `visualViewport` rather
   than `dvh`, with `interactive-widget=resizes-content`. Don't "simplify" it
   back to CSS viewport units.
+- **The flock is the document; everything else is fixed over it.** Safari only
+  folds its URL bar away when the *document* scrolled, so on a phone
+  `.agent-picker` is the one thing in the flow (`.picker-head` sticky, carrying
+  the safe-area inset) and `.app-container` and every `.full-view` are
+  `position: fixed` out of it — otherwise the page is two screens tall and the
+  end of the list runs into the chat. Past 900px it inverts: `body` is
+  `overflow: hidden` and each column scrolls itself, because a window has no
+  URL bar to fold and a document that scrolled would carry the flock off the
+  top of it. Three things follow, and each is a bug if forgotten: a screen laid
+  over the flock locks `body` (`:has(.full-view:not(.hidden))`) or you come
+  back to the list somewhere you never left it; closing the flock empties the
+  flow, so the scroll position is kept by hand (`keepFlockScroll`); the chat
+  waiting behind the flock is `visibility: hidden` while it is open, since the
+  rubber-band at the end of the list slides the flock up and leaves whatever is
+  pinned behind it showing; and the
+  drag-to-reorder arithmetic reads the list's box live rather than caching it
+  (`pointInList`), since the list now slides under the finger.
+- **`theme-color` is the colour at the screen's edges, not a brand colour.**
+  Safari paints its status strip and its URL bar with it, so anything but what
+  is actually under them reads as a shade laid over the page — which is what
+  `syncThemeColor` moves between the flock's base colour and a chat's surface.
 - **Naming.** Everything belonging to this repo is SheepIt — `SHEEPIT_*`,
   `~/.config/sheepit/`, `com.sheepit.*`. *Herdr* and *Tailscale* are named only
   where they are literally meant (Herdr's sockets and RPC, Tailscale's commands).
