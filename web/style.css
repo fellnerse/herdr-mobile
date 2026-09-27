@@ -474,10 +474,8 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .agent-row-action:active { filter: brightness(0.88); }
 
 /* A mouse cannot swipe, so the drawer behind a row is a gesture it does not
-   have. Where the row used to grow a "…" that said only that the drawer was
-   there, it now grows the two things in it worth a single tap: rename, and the
-   close that asks first. Remove is not one of them - it deletes a checkout, so
-   it stays in the drawer, and the drawer stays the finger's.
+   have. The row shows its actions directly on hover: rename, close, and
+   remove for a linked worktree. Removing asks before deleting the checkout.
 
    Hidden outright where there is no hover to reveal them: a phone has the
    gesture already, and two more tap targets on a row are two things to hit by
@@ -542,8 +540,8 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   }
 
   /* And the drawer these replace is gone from here: it is a swipe, a machine
-     with a pointer has no swipe, and the two Rename buttons of a thing that
-     cannot be reached are two more ways to be wrong about what the row offers.
+     with a pointer has no swipe, and duplicate actions behind the row would
+     give it two sets of controls.
      `app.js` gives the right-click back to the browser for the same reason. */
   .agent-row-actions {
     display: none;
@@ -3282,27 +3280,28 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 #chat-chat-view .slash {
   font: 600 20px/1 var(--font-mono);
 }
-#chat-chat-view .slash-menu {
-  max-height: 42%; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  background: var(--bg-surface); border-top: 1px solid var(--border);
+.input-dock .slash-menu {
+  max-height: min(40dvh, 320px); overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
   display: flex; flex-direction: column; padding: 4px 0;
 }
-#chat-chat-view .slash-item {
-  font: inherit; text-align: left; color: var(--text); background: transparent; border: 0;
+.input-dock .slash-menu.hidden { display: none; }
+.input-dock .slash-item {
+  font: inherit; text-align: left; color: var(--text-primary); background: transparent; border: 0;
   padding: 8px 14px; display: flex; flex-direction: column; gap: 2px;
 }
-#chat-chat-view .slash-item:active { background: var(--bg-card); }
-#chat-chat-view .slash-name { font-family: var(--font-mono); font-size: 14px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
-#chat-chat-view .slash-name i { font-style: normal; font-weight: 400; color: var(--text-3); }
-#chat-chat-view .slash-name em { margin-left: auto; font-style: normal; font-family: var(--font-sans); font-size: 11px; font-weight: 400; color: var(--text-3); }
-#chat-chat-view .slash-desc { font-size: 12px; color: var(--text-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-#chat-chat-view .slash-empty { color: var(--text-3); font-size: 13px; padding: 10px 14px; }
+.input-dock .slash-item:active { background: var(--bg-card); }
+.input-dock .slash-name { font-family: var(--font-mono); font-size: 14px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+.input-dock .slash-name i { font-style: normal; font-weight: 400; color: var(--text-muted); }
+.input-dock .slash-name em { margin-left: auto; font-style: normal; font-family: var(--font-sans); font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.input-dock .slash-desc { font-size: 12px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.input-dock .slash-empty { color: var(--text-muted); font-size: 13px; padding: 10px 14px; }
 #chat-chat-view .cmd {
   font-family: var(--font-mono); font-size: 14px; font-weight: 600;
   background: rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 1px 6px;
 }
-#chat-chat-view .slash-name { white-space: nowrap; min-width: 0; }
-#chat-chat-view .slash-name i { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.input-dock .slash-name { white-space: nowrap; min-width: 0; }
+.input-dock .slash-name i { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 #chat-chat-view .msg .table { overflow-x: auto; margin: 0 0 8px; }
 #chat-chat-view .msg table { border-collapse: collapse; font-size: 13px; }
 #chat-chat-view .msg th, #chat-chat-view .msg td { border: 1px solid var(--border-strong); padding: 4px 8px; text-align: left; vertical-align: top; }

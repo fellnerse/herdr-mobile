@@ -1223,18 +1223,16 @@
    * corner on hover, which said a drawer was there and did nothing itself -
    * one more thing to learn before anything could be renamed.
    *
-   * So the two things a row is asked for most are on the row, in the corner
-   * that hint used to sit in, and only while the pointer is on it. Which two
-   * depends on what the row is: a worktree renames and closes the workspace, a
+   * So the row actions are on the row, in the corner that hint used to sit in,
+   * and only while the pointer is on it. The actions depend on the row: a
+   * worktree renames and closes the workspace, a
    * tab of an opened pen renames and closes the tab, a chat has only Delete.
-   * Remove is deliberately not among them anywhere - it deletes a checkout,
-   * and it stays in the drawer, which is the swipe's: a machine with a pointer
-   * has no drawer at all now, and closing a worktree there leaves the checkout
-   * on disk. `style.css` hides the icons wherever there is no hover to reveal
+   * A linked worktree also offers Remove, which asks before deleting its
+   * checkout. `style.css` hides the icons wherever there is no hover to reveal
    * them, which is every phone, and hides the drawer wherever there is.
    * ------------------------------------------------------------------------ */
 
-  /* The two glyphs a row wears on a desktop. Drawn here rather than in
+  /* The action glyphs a row wears on a desktop. Drawn here rather than in
      `index.html` because the row is built in JS, and cut to the same stroke as
      the icons in the chrome: 24-wide box, `currentColor`, round caps. */
   const ICON_PENCIL =
@@ -1252,6 +1250,13 @@
        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
      </svg>`;
 
+  const ICON_REMOVE =
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <path d="M3 7h18v13H3zM3 7l2-3h14l2 3"></path>
+       <path d="M9 13l6 6M15 13l-6 6"></path>
+     </svg>`;
+
   /* One cluster of them. `key` is the data attribute the click handler reads
      the target out of, which is whatever that action acts on - a workspace, a
      pane, a tab or a chat. */
@@ -1265,15 +1270,20 @@
     return `<span class="${cls}">${icons.join("")}</span>`;
   }
 
-  // What a worktree's row and its title both offer: Rename and Close, the same
-  // two the drawer leads with, acting on the workspace.
+  // The pointer controls offer the same workspace actions as the swipe drawer.
+  // Only a linked worktree can have its checkout removed.
   function penTools(pen) {
-    return [
+    const tools = [
       { action: "rename", key: "workspace-id", value: pen.workspace_id,
         label: "Rename this worktree", icon: ICON_PENCIL },
       { action: "close", key: "workspace-id", value: pen.workspace_id,
         label: "Close this worktree", icon: ICON_TRASH, danger: true },
     ];
+    if (pen.lead.repo && !pen.lead.main_checkout) {
+      tools.push({ action: "remove", key: "workspace-id", value: pen.workspace_id,
+        label: "Remove this worktree and delete its checkout", icon: ICON_REMOVE, danger: true });
+    }
+    return tools;
   }
 
   /* A chat's row. Shorter than a pane's, because most of what a pane's row
@@ -1434,12 +1444,11 @@
      them, because it is part of the same pen. Tapping it opens the tab that
      needs you most, which is what the collapsed row did.
 
-     The two icons are for a pointer: a mouse has no swipe, so the drawer
+     The action icons are for a pointer: a mouse has no swipe, so the drawer
      behind the row is a gesture it cannot make, and the two things a title is
      asked for most are on the row itself. `style.css` hides them wherever
-     there is no hover to reveal them, which is every phone. Remove is not
-     among them on purpose - it deletes a checkout, and it stays in the drawer
-     the swipe opens, where it has to be aimed at. */
+     there is no hover to reveal them, which is every phone. A linked
+     worktree also offers Remove here; removeWorktree asks before deletion. */
   function penHeadHtml(pen) {
     const lead = pen.lead;
     const label = lead.workspace_label || lead.name || pen.workspace_id;
