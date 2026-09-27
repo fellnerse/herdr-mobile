@@ -2241,6 +2241,18 @@ try:
         codex_queue.send = original_codex_send
     check("unknown Codex text never becomes terminal input",
           (unknown_messages, qp_sent), ([("wA:p3", "test message")], []))
+    check("unknown Codex accepts a slash command",
+          server.queue_prompt("wA:p3", "/status"),
+          ({"ok": True, "delivered": "agent"}, 200))
+    check("unknown Codex submits the slash picker",
+          qp_sent, [("pane.send_text", {"pane_id": "wA:p3", "text": "/status"}),
+                    ("agent.send_keys", {"target": "wA:p3", "keys": ["ctrl+m"]}),
+                    ("agent.send_keys", {"target": "wA:p3", "keys": ["ctrl+m"]})])
+    qp_sent.clear()
+    check("unknown Codex accepts /clear",
+          server.queue_prompt("wA:p3", "/clear"),
+          ({"ok": True, "delivered": "agent"}, 200))
+    check("unknown Codex /clear invalidates its chat cache", qp_clears[-1][0], "wA:p3")
 finally:
     server.call_herdr_rpc, server.sched_db.add = _qp_rpc, _qp_add
     server.panechat.cleared = _qp_cleared

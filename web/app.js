@@ -614,7 +614,7 @@
     } else {
       elAgentSelectName.textContent = state.agents.length ? "Select project" : "No agents";
     }
-    elAgentSelectDot.className = `agent-dot ${knownStatus(agent && agent.status)}`;
+    elAgentSelectDot.className = `agent-dot ${agent ? displayedStatus(agent) : "unknown"}`;
     // Pane chat reads both Claude Code and Codex session logs.
     elBtnPaneChat.classList.toggle("hidden", !chattable);
     elBtnViewNormal.classList.toggle("hidden", chattable || wide.matches);
@@ -1202,7 +1202,7 @@
     if (!agent.has_agent) return "";
     const word = queued ? queuedLabel(queued) : "";
     if (!word || status === "blocked") {
-      return `<span class="status-badge status-${status}">${escapeHtml(agent.status || "unknown")}</span>`;
+      return `<span class="status-badge status-${status}">${escapeHtml(status)}</span>`;
     }
     return `<span class="status-badge status-${queued.failed ? "failed" : "queued"}">${escapeHtml(word)}</span>`;
   }
@@ -1339,6 +1339,12 @@
     return status === "unknown" && agent.has_agent ? "idle" : status;
   }
 
+  function displayedStatus(agent) {
+    const status = knownStatus(agent.status);
+    return status === "unknown" && agent.has_agent && agent.agent === "codex"
+      ? "idle" : status;
+  }
+
   function agentRowHtml(pen, groupName, queued) {
     if (pen.chat) return chatRowHtml(pen);
     // The tab that speaks for the pen: whichever of them needs you most.
@@ -1346,7 +1352,7 @@
     // The open chat being anywhere in this pen lights the row up - it is the
     // pen you came from, whichever of its tabs is leading it now.
     const isActive = pen.tabs.some((a) => a.pane_id === state.activePaneId);
-    const status = knownStatus(agent.status);
+    const status = displayedStatus(agent);
     const label = agent.name || agent.pane_id;
     const named = tabName(agent);
     // Herdr's own number for the tab, when it has one: a pane the gateway
@@ -1478,7 +1484,7 @@
      the branch, which is safe here because a pen is only drawn this way while
      it has a second tab for Herdr to keep the workspace alive by. */
   function penTabRowHtml(agent, queued) {
-    const status = knownStatus(agent.status);
+    const status = displayedStatus(agent);
     // What the strip calls this tab, including which half of a split it is.
     const chip = tabChipLabel(agent);
     const headline = agent.title || chip;
@@ -2330,7 +2336,7 @@
     const closable = new Set(tabs.map((a) => a.tab_id)).size > 1;
     const chips = tabs.map((row) => {
       const on = row.pane_id === state.activePaneId;
-      const status = knownStatus(row.has_agent ? row.status : "unknown");
+      const status = displayedStatus(row);
       return `
         <button type="button" class="tab-chip ${on ? "on" : ""}" data-pane-id="${escapeHtml(row.pane_id)}">
           <span class="agent-dot ${status}"></span>

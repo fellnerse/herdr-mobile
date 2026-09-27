@@ -73,11 +73,16 @@ function loadStrip() {
   const to = src.indexOf("  // Redrawn from the poll, so it is compared before it is replaced", from);
   if (from < 0 || to < 0) throw new Error(`strip anchors moved in ${SRC}`);
   const { tabName, tabNumber, bornAt } = loadFlock();
+  const statusHelper = src.slice(
+    src.indexOf("  function displayedStatus(agent) {"),
+    src.indexOf("  function agentRowHtml(")
+  );
   const PRELUDE = `
     const state = { agents: [], activePaneId: null };
     const elTabStrip = { innerHTML: "", classList: { toggle() {} } };
     const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const knownStatus = (s) => s || "unknown";
+    ${statusHelper}
   `;
   return new Function(
     "tabName",
@@ -670,8 +675,8 @@ function order(agents, busy = false, held = [], custom = []) {
     status: "unknown", title: "Codex conversation" })), "api");
   check("a Codex pane with unknown activity draws a standing sheep",
         /sheep-wrap idle/.test(unknownCodex), true);
-  check("its unknown activity remains visible as a status",
-        /status-badge status-unknown/.test(unknownCodex), true);
+  check("its status badge uses the same idle fallback",
+        /status-badge status-idle">idle</.test(unknownCodex), true);
 
   const named = agentRowHtml(pen(tab({ tab_label: "dev server", tab_number: 2 })), "api");
   check("a tab somebody named is called that", text(named, "agent-row-name"), "dev server");
@@ -818,6 +823,8 @@ function order(agents, busy = false, held = [], custom = []) {
   const unknownTab = draw(tab("wA:p2", { status: "unknown", agent: "codex" }), tab("wA:p1"));
   check("an opened Codex tab with unknown activity also draws a sheep",
         /sheep-wrap idle/.test(unknownTab), true);
+  check("an opened Codex tab uses the idle fallback for its row",
+        /agent-row st-idle/.test(unknownTab), true);
   check("a worktree with two tabs draws a title", /class="agent-row pen-head/.test(two), true);
   check("and a sheep per tab, in the order the strip has them",
         rowsOf(two), ["wA:p1", "wA:p2"]);

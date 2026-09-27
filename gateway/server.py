@@ -524,11 +524,17 @@ def queue_prompt(pane_id: str, prompt: str) -> tuple:
     if status == "unknown":
         if pane.get("agent") == "codex":
             if prompt.startswith("/"):
-                return {"ok": False, "error": "Codex is not ready for commands in this tab"}, 409
-            try:
-                codex_queue.send(pane_id, prompt)
-            except codex_queue.CodexQueueError as error:
-                return {"ok": False, "error": str(error)}, 409
+                sent_at = time.time()
+                res = send_codex_prompt(pane_id, prompt)
+                if "error" in res:
+                    return res, 400
+                if prompt == "/clear":
+                    panechat.cleared(pane_id, pane, sent_at)
+            else:
+                try:
+                    codex_queue.send(pane_id, prompt)
+                except codex_queue.CodexQueueError as error:
+                    return {"ok": False, "error": str(error)}, 409
         else:
             res = call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
             if "error" in res:
