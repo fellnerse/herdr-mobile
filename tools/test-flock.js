@@ -663,6 +663,15 @@ function order(agents, busy = false, held = [], custom = []) {
   check("and says nothing about a status it does not have",
         /shell<\/span>/.test(shell), false);
   check("with no status badge on it", /status-badge/.test(shell), false);
+  check("a pane without an agent keeps its terminal icon",
+        /sheep-wrap unknown/.test(shell), true);
+
+  const unknownCodex = agentRowHtml(pen(tab({ has_agent: true, agent: "codex",
+    status: "unknown", title: "Codex conversation" })), "api");
+  check("a Codex pane with unknown activity draws a standing sheep",
+        /sheep-wrap idle/.test(unknownCodex), true);
+  check("its unknown activity remains visible as a status",
+        /status-badge status-unknown/.test(unknownCodex), true);
 
   const named = agentRowHtml(pen(tab({ tab_label: "dev server", tab_number: 2 })), "api");
   check("a tab somebody named is called that", text(named, "agent-row-name"), "dev server");
@@ -806,6 +815,9 @@ function order(agents, busy = false, held = [], custom = []) {
 
   const two = draw(tab("wA:p2", { status: "blocked", title: "Which of these?" }),
                    tab("wA:p1"));
+  const unknownTab = draw(tab("wA:p2", { status: "unknown", agent: "codex" }), tab("wA:p1"));
+  check("an opened Codex tab with unknown activity also draws a sheep",
+        /sheep-wrap idle/.test(unknownTab), true);
   check("a worktree with two tabs draws a title", /class="agent-row pen-head/.test(two), true);
   check("and a sheep per tab, in the order the strip has them",
         rowsOf(two), ["wA:p1", "wA:p2"]);

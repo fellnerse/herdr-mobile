@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 
 import push
+import codex_queue
 from herdr_rpc import Events, Herdr, HerdrError
 
 from . import STATE_DIR, db, quota
@@ -294,9 +295,19 @@ class Dispatcher:
         try:
             if typed:
                 self.herdr.send_line(prompt.pane_id, prompt.prompt)
+            elif self.herdr.agent_kind(prompt.pane_id) == "codex":
+                if prompt.prompt.startswith("/"):
+                    # Slash commands are handled by Codex's terminal picker.
+                    self.herdr.pane_send_text(prompt.pane_id, prompt.prompt)
+                    time.sleep(0.15)
+                    self.herdr.agent_send_keys(prompt.pane_id, ["ctrl+m"])
+                    time.sleep(0.15)
+                    self.herdr.agent_send_keys(prompt.pane_id, ["ctrl+m"])
+                else:
+                    codex_queue.send(prompt.pane_id, prompt.prompt)
             else:
                 self.herdr.agent_prompt(prompt.pane_id, prompt.prompt)
-        except HerdrError as e:
+        except (HerdrError, codex_queue.CodexQueueError) as e:
             db.update(conn, prompt.id, state="failed", last_error=str(e))
             log.warning("prompt %s could not be delivered: %s", prompt.id, e)
             _push("failed")

@@ -31,6 +31,7 @@ import machine
 import wsproto
 import chat
 import panechat
+import codex_queue
 import heartbeat
 from herdr_rpc import HERDR_SOCKET_PATH, call_herdr_rpc
 from terminal import TerminalStream, TerminalError
@@ -291,7 +292,11 @@ def build_agent_rows(ws_list: list, tabs: list, panes: list, agents_raw: list) -
     agent pane and says so; a tab with no agent at all still gets a single row
     for its own pane, which is what keeps an empty workspace reachable.
     """
-    by_pane = {a.get("pane_id"): a for a in agents_raw}
+    # pane.list carries the same agent identity as pane.get. During an idle
+    # transition agent.list can briefly omit a pane, which otherwise turns its
+    # chat tab into a shell icon and hides the conversation on the phone.
+    by_pane = {p.get("pane_id"): p for p in panes if p.get("agent")}
+    by_pane.update({a.get("pane_id"): a for a in agents_raw if a.get("pane_id")})
     tabs_by_ws = {}
     for tab in tabs:
         tabs_by_ws.setdefault(tab.get("workspace_id"), []).append(tab)
@@ -502,12 +507,11 @@ def queue_prompt(pane_id: str, prompt: str) -> tuple:
     if not pane:
         return {"ok": False, "error": f"No such chat: {pane_id}"}, 404
 
-    # A pane with no agent in it is a shell, and the queue has nothing to
-    # deliver into: holding here waits on an agent that nothing will ever
-    # start. So it goes to the terminal as typed input, which is also what
-    # lets `claude` sent from the phone open the session.
+    # Only a pane without an agent is a shell. Herdr can report an existing
+    # Codex as `unknown`; treating that status as a shell types chat messages
+    # into Codex's composer and reports success without submitting them.
     status = pane.get("agent_status")
-    if not status or status == "unknown":
+    if not pane.get("agent"):
         res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
         if "error" not in res:
             res = call_herdr_rpc(
@@ -517,9 +521,24 @@ def queue_prompt(pane_id: str, prompt: str) -> tuple:
             return res, 400
         return {"ok": True, "delivered": "terminal"}, 200
 
+    if status == "unknown":
+        if pane.get("agent") == "codex":
+            if prompt.startswith("/"):
+                return {"ok": False, "error": "Codex is not ready for commands in this tab"}, 409
+            try:
+                codex_queue.send(pane_id, prompt)
+            except codex_queue.CodexQueueError as error:
+                return {"ok": False, "error": str(error)}, 409
+        else:
+            res = call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
+            if "error" in res:
+                return res, 400
+        return {"ok": True, "delivered": "agent"}, 200
+
     if prompt == "/clear":
         sent_at = time.time()
-        res = call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
+        res = send_codex_prompt(pane_id, prompt) if pane.get("agent") == "codex" else \
+            call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
         if "error" in res:
             return res, 400
         panechat.cleared(pane_id, pane, sent_at)
@@ -1956,6 +1975,19 @@ def quota_payload(include_machine: bool = True) -> dict:
     }
 
 
+def send_codex_prompt(pane_id: str, prompt: str) -> dict:
+    """Paste into Codex, then submit after it has processed the text."""
+    res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
+    if "error" in res:
+        return res
+    time.sleep(0.15)
+    res = call_herdr_rpc("agent.send_keys", {"target": pane_id, "keys": ["ctrl+m"]})
+    if "error" not in res and prompt.startswith("/"):
+        time.sleep(0.15)
+        res = call_herdr_rpc("agent.send_keys", {"target": pane_id, "keys": ["ctrl+m"]})
+    return res
+
+
 def send_now(queued) -> tuple:
     """Hand a queued prompt over immediately, whatever the agent is doing.
 
@@ -1965,9 +1997,20 @@ def send_now(queued) -> tuple:
     hold what arrives mid-turn and read it when they come up for air, which is
     the same thing the queue was arranging, minus the waiting.
     """
-    res = call_herdr_rpc("agent.prompt", {"target": queued.pane_id, "text": queued.prompt})
+    pane = call_herdr_rpc("pane.get", {"pane_id": queued.pane_id}).get("result", {}).get("pane") or {}
+    if pane.get("agent") == "codex" and not queued.prompt.startswith("/"):
+        try:
+            codex_queue.send(queued.pane_id, queued.prompt)
+            return True, ""
+        except codex_queue.CodexQueueError as error:
+            return False, str(error)
+    res = (send_codex_prompt(queued.pane_id, queued.prompt) if pane.get("agent") == "codex" else
+           call_herdr_rpc("agent.prompt", {"target": queued.pane_id, "text": queued.prompt}))
     if "error" not in res:
         return True, ""
+    if pane.get("agent") == "codex":
+        error = res["error"]
+        return False, error.get("message") if isinstance(error, dict) else str(error)
     # No agent in the pane: it is a shell, and what it wants is keystrokes.
     typed = call_herdr_rpc("pane.send_text",
                            {"pane_id": queued.pane_id, "text": queued.prompt})

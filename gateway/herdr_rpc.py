@@ -123,6 +123,9 @@ class Herdr:
     def agent_send_keys(self, target: str, keys: list) -> dict:
         return self.call("agent.send_keys", {"target": target, "keys": keys})
 
+    def pane_send_text(self, pane_id: str, text: str) -> dict:
+        return self.call("pane.send_text", {"pane_id": pane_id, "text": text})
+
     def send_line(self, pane_id: str, text: str) -> None:
         """Type text into a pane and press enter.
 

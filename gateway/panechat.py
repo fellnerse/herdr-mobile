@@ -325,7 +325,7 @@ class PaneChat:
                 return
             path = self._find_codex_log(sid)
             if path != self.path:
-                self._adopt(sid or (path.stem if path else None), path)
+                self._adopt(sid or self._codex_session_id(path), path)
             elif path:
                 self.title_seen = self.title
                 self.grew_at = time.time()
@@ -442,6 +442,20 @@ class PaneChat:
             return matched
         return self._codex_log_by_title(matches)
 
+    @staticmethod
+    def _codex_session_id(path):
+        if not path:
+            return None
+        try:
+            with path.open("rb") as stream:
+                for _ in range(4):
+                    entry = json.loads(stream.readline())
+                    if entry.get("type") == "session_meta":
+                        return (entry.get("payload") or {}).get("id")
+        except (OSError, ValueError, TypeError):
+            pass
+        return None
+
     def _codex_log_by_sent_prompt(self, matches):
         """Use this pane's delivered prompts when Codex has no session ID.
 
@@ -503,26 +517,35 @@ class PaneChat:
     def _codex_log_by_title(self, matches):
         """Use Codex's thread index when Herdr has no session ID.
 
-        Terminal titles are short summaries, while index titles are usually the
-        first prompt. Require several shared words and a unique best match so
-        a generic project title cannot show another pane's conversation.
+        A renamed thread's `name` is what Codex puts in the terminal title.
+        The index `title` remains the first prompt, which may share no words
+        with that title. Fall back to the first prompt for older Codex indexes.
         """
         title = self.title.split(" | ", 1)[0]
         words = set(re.findall(r"[a-z0-9]+", title.lower()))
-        if len(words) < 3:
+        if not title:
             return None
         database = tokens.CODEX_HOME / "state_5.sqlite"
         try:
             with sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=0.2) as db:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(threads)")}
+                name_column = "name" if "name" in columns else "NULL"
                 rows = db.execute(
-                    "SELECT rollout_path, title FROM threads WHERE cwd = ? AND archived = 0",
+                    f"SELECT rollout_path, title, {name_column} FROM threads "
+                    "WHERE cwd = ? AND archived = 0",
                     (self.cwd,),
                 ).fetchall()
         except (OSError, sqlite3.Error):
             return None
         candidates = set(matches)
+        named = [Path(path) for path, _, name in rows
+                 if name == title and Path(path) in candidates]
+        if len(named) == 1:
+            return named[0]
+        if named or len(words) < 3:
+            return None
         scored = []
-        for path, thread_title in rows:
+        for path, thread_title, _ in rows:
             if Path(path) not in candidates:
                 continue
             other = set(re.findall(r"[a-z0-9]+", (thread_title or "").lower()))

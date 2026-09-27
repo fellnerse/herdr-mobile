@@ -1322,6 +1322,13 @@
     `;
   }
 
+  function sheepStatus(agent) {
+    const status = knownStatus(agent.status);
+    // Herdr can identify a Codex pane while its activity status is unknown.
+    // A terminal icon means no agent is present, so draw a standing sheep.
+    return status === "unknown" && agent.has_agent ? "idle" : status;
+  }
+
   function agentRowHtml(pen, groupName, queued) {
     if (pen.chat) return chatRowHtml(pen);
     // The tab that speaks for the pen: whichever of them needs you most.
@@ -1340,7 +1347,8 @@
        tab. Hashing the workspace keeps one animal per pen however its tabs
        come and go; hashing the leading pane would change the face every time
        another tab started asking something. */
-    const fleece = status === "unknown"
+    const iconStatus = sheepStatus(agent);
+    const fleece = iconStatus === "unknown"
       ? ""
       : `color:${sheepMarks(penSeed(pen)).breed.fleece}`;
     /* What this pane's subscription has left, and how fast it is going: the
@@ -1369,7 +1377,7 @@
             : ""}
         </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${status}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(status, penSeed(pen), pasture)}</span>
+          <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, penSeed(pen), pasture)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             <span class="agent-row-meta">
@@ -1465,7 +1473,8 @@
     // What the strip calls this tab, including which half of a split it is.
     const chip = tabChipLabel(agent);
     const headline = agent.title || chip;
-    const fleece = status === "unknown"
+    const iconStatus = sheepStatus(agent);
+    const fleece = iconStatus === "unknown"
       ? ""
       : `color:${sheepMarks(agent.pane_id).breed.fleece}`;
     const pasture = pastureOf(agent.has_agent ? agent.agent : "");
@@ -1479,7 +1488,7 @@
             <button class="agent-row-action close" data-action="tab-close" data-tab-id="${escapeHtml(agent.tab_id)}">Close</button>
           </div>
           <button class="agent-row st-${status} ${agent.pane_id === state.activePaneId ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-            <span class="sheep-wrap ${status}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(status, agent.pane_id, pasture)}</span>
+            <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, agent.pane_id, pasture)}</span>
             <span class="agent-row-text">
               <span class="agent-row-name">${escapeHtml(headline)}</span>
               <span class="agent-row-meta">
@@ -2555,7 +2564,7 @@
      until the pane and usage window are ready, but delivers /clear immediately. */
   async function submitPrompt(e) {
     if (e) e.preventDefault();
-    if (state.chatVisible || state.activeChatId) return;
+    if (state.chatVisible || state.activeChatId || !elChatView.classList.contains("hidden")) return;
     const images = attachStrip.list;
     if (images.some((image) => !image.name)) return; // still uploading
     const attachmentText = images.map((image) => `@${image.name}`).join(" ");
@@ -7316,6 +7325,7 @@
         const qs = `id=${encodeURIComponent(chatId)}&since=${since}&epoch=${epoch}&wait=${since ? 1 : 0}`;
         const res = await fetch("/api/chat/events?" + qs, { cache: "no-store", signal: ctrl.signal });
         const data = await res.json();
+        if (ctrl.signal.aborted || current?.id !== chatId) return;
         if (!data.ok) throw new Error(data.error);
         if (data.from === 0) events = [];
         events = events.concat(data.events);
@@ -7391,6 +7401,13 @@
      both, so there is one way in. */
   async function openById(id) {
     const request = ++targetRequest;
+    if (poll) poll.abort();
+    poll = null;
+    if (current?.id !== id) {
+      current = null;
+      events = []; epoch = ""; drawn = [];
+      elChat.classList.add("hidden");
+    }
     try {
       const data = await api(`/api/chat/events?id=${encodeURIComponent(id)}`);
       if (request === targetRequest) openChat(data.chat);

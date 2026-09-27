@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
 
@@ -515,6 +516,14 @@ check("with what it is doing", rows[0]["status"], "working")
 check("and what it is called", rows[0]["title"], "doing a thing")
 check("a tab with no agent is still a row", rows[1]["has_agent"], False)
 check("which says nothing about an agent", rows[1]["status"], "unknown")
+pane_only = pane("w3:p3", "w3", 3)
+pane_only.update(agent="codex", agent_status="idle",
+                 terminal_title_stripped="Codex conversation")
+fallback = server.build_agent_rows(WORKSPACES, TABS,
+                                   [PANES[0], pane_only, PANES[2]], AGENTS)
+check("an idle Codex omitted from agent.list retains its chat identity",
+      (fallback[1]["agent"], fallback[1]["has_agent"], fallback[1]["status"], fallback[1]["title"]),
+      ("codex", True, "idle", "Codex conversation"))
 check("the tab's own label is passed on, numbered or not",
       [r["tab_label"] for r in rows[:2]], ["1", "build"])
 check("as is its number", [r["tab_number"] for r in rows[:2]], [1, 3])
@@ -1247,6 +1256,9 @@ class FakePane:
     def agent_prompt(self, target, text):
         self.sent.append(text)
 
+    def pane_send_text(self, pane_id, text):
+        self.typed.append(text)
+
     def send_line(self, pane_id, text):
         self.typed.append(text)
 
@@ -1284,6 +1296,45 @@ d = Dispatcher(herdr=pane, events=Silent())
 conn = fresh_db()
 check("a pane with an agent and an empty queue is still watched",
       d.watched(conn), ["wA:p1"])
+
+codex_command = FakePane(agent="codex")
+command_db = fresh_db()
+command_id = sched_db.add(command_db, "wA:p1", "/status")
+Dispatcher(herdr=codex_command, events=Silent()).deliver(
+    command_db, sched_db.next_for_pane(command_db, "wA:p1"))
+check("Codex slash command is completed and submitted",
+      (codex_command.typed, codex_command.keys), (["/status"], [["ctrl+m"], ["ctrl+m"]]))
+check("Codex slash command is recorded as sent", sched_db.get(command_db, command_id).state, "sent")
+codex_message = FakePane(agent="codex")
+message_db = fresh_db()
+message_id = sched_db.add(message_db, "wA:p1", "fix the login page")
+import codex_queue  # noqa: E402
+original_codex_send = codex_queue.send
+native_messages = []
+codex_queue.send = lambda pane_id, prompt: native_messages.append((pane_id, prompt))
+try:
+    Dispatcher(herdr=codex_message, events=Silent()).deliver(
+        message_db, sched_db.next_for_pane(message_db, "wA:p1"))
+finally:
+    codex_queue.send = original_codex_send
+check("Codex chat message uses the native session queue",
+      (native_messages, codex_message.typed, codex_message.keys),
+      ([("wA:p1", "fix the login page")], [], []))
+check("Codex chat message is recorded as sent", sched_db.get(message_db, message_id).state, "sent")
+failure_db = fresh_db()
+failure_id = sched_db.add(failure_db, "wA:p1", "message that cannot be queued")
+def fail_codex_send(pane_id, prompt):
+    raise codex_queue.CodexQueueError("session unavailable")
+codex_queue.send = fail_codex_send
+try:
+    Dispatcher(herdr=codex_message, events=Silent()).deliver(
+        failure_db, sched_db.next_for_pane(failure_db, "wA:p1"))
+finally:
+    codex_queue.send = original_codex_send
+check("Codex queue failure remains visible instead of disappearing",
+      (sched_db.get(failure_db, failure_id).state,
+       sched_db.get(failure_db, failure_id).last_error),
+      ("failed", "session unavailable"))
 
 # Hitting the wall parks the pane and puts a resume in front of the queue, with
 # enough recorded on it to survive the pane it belongs to.
@@ -2105,9 +2156,11 @@ _qp_rpc, _qp_add = server.call_herdr_rpc, server.sched_db.add
 _qp_cleared = server.panechat.cleared
 qp_clears = []
 qp_panes = {
-    "wA:p1": {"pane_id": "wA:p1", "agent_status": "idle", "workspace_id": "wA",
+    "wA:p1": {"pane_id": "wA:p1", "agent": "claude", "agent_status": "idle", "workspace_id": "wA",
               "cwd": "/tmp/proj", "agent_session": {"kind": "id", "value": "s-1"}},
     "wA:p2": {"pane_id": "wA:p2", "agent_status": "", "cwd": "/tmp/proj"},
+    "wA:p3": {"pane_id": "wA:p3", "agent": "codex", "agent_status": "unknown",
+              "cwd": "/tmp/proj"},
 }
 qp_sent, qp_added = [], []
 
@@ -2144,11 +2197,30 @@ try:
     payload, code = server.queue_prompt("wA:p1", "  /clear  ")
     check("/clear is delivered immediately even while the agent is working",
           (payload, code), ({"ok": True, "delivered": "agent"}, 200))
-    check("/clear goes to the agent directly",
-          qp_sent, [("agent.prompt", {"target": "wA:p1", "text": "/clear"})])
+    check("/clear completes the Codex slash picker before it is recorded",
+          qp_sent, [("pane.send_text", {"pane_id": "wA:p1", "text": "/clear"}),
+                    ("agent.send_keys", {"target": "wA:p1", "keys": ["ctrl+m"]}),
+                    ("agent.send_keys", {"target": "wA:p1", "keys": ["ctrl+m"]})])
     check("/clear has no queue row", len(qp_added), 1)
     check("/clear invalidates the pane chat cache", len(qp_clears), 1)
     check("/clear invalidates the intended Codex pane", qp_clears[0][0], "wA:p1")
+
+    qp_sent.clear()
+    check("Send now delivers a Codex command", server.send_now(
+          SimpleNamespace(pane_id="wA:p1", prompt="/status")), (True, ""))
+    check("Send now submits the selected Codex command",
+          qp_sent, [("pane.send_text", {"pane_id": "wA:p1", "text": "/status"}),
+                    ("agent.send_keys", {"target": "wA:p1", "keys": ["ctrl+m"]}),
+                    ("agent.send_keys", {"target": "wA:p1", "keys": ["ctrl+m"]})])
+    qp_sent.clear()
+    codex_queue.send = lambda pane_id, prompt: native_messages.append((pane_id, prompt))
+    try:
+        check("Send now delivers a Codex chat message", server.send_now(
+              SimpleNamespace(pane_id="wA:p1", prompt="fix the login page")), (True, ""))
+    finally:
+        codex_queue.send = original_codex_send
+    check("Send now uses the Codex session queue",
+          (native_messages[-1], qp_sent), (("wA:p1", "fix the login page"), []))
 
     payload, code = server.queue_prompt("wA:p2", "claude")
     check("a shell is typed into instead, since nothing would deliver to it",
@@ -2157,6 +2229,18 @@ try:
           qp_sent[-2:], [("pane.send_text", {"pane_id": "wA:p2", "text": "claude"}),
                     ("pane.send_keys", {"pane_id": "wA:p2", "keys": ["enter"]})])
     check("and no row is kept for it", len(qp_added), 1)
+
+    qp_sent.clear()
+    unknown_messages = []
+    codex_queue.send = lambda pane_id, prompt: unknown_messages.append((pane_id, prompt))
+    try:
+        check("unknown Codex sends through its session, not the terminal",
+              server.queue_prompt("wA:p3", "test message"),
+              ({"ok": True, "delivered": "agent"}, 200))
+    finally:
+        codex_queue.send = original_codex_send
+    check("unknown Codex text never becomes terminal input",
+          (unknown_messages, qp_sent), ([("wA:p3", "test message")], []))
 finally:
     server.call_herdr_rpc, server.sched_db.add = _qp_rpc, _qp_add
     server.panechat.cleared = _qp_cleared
@@ -2384,10 +2468,13 @@ for sid, prompt in (("a" * 36, "work on the codex chat view"),
     )) + "\n")
     codex_paths.append(path)
 with sqlite3.connect(codex_home / "state_5.sqlite") as db:
-    db.execute("CREATE TABLE threads (rollout_path TEXT, title TEXT, cwd TEXT, archived INTEGER)")
-    db.executemany("INSERT INTO threads VALUES (?, ?, ?, 0)",
-                   [(str(codex_paths[0]), "lets work on the codex chat view", "/tmp/codex-project"),
-                    (str(codex_paths[1]), "fix the console layout", "/tmp/codex-project")])
+    db.execute("CREATE TABLE threads (rollout_path TEXT, title TEXT, cwd TEXT, "
+               "archived INTEGER, name TEXT)")
+    db.executemany("INSERT INTO threads VALUES (?, ?, ?, 0, ?)",
+                   [(str(codex_paths[0]), "lets work on the codex chat view",
+                     "/tmp/codex-project", "Fix mobile chat submission"),
+                    (str(codex_paths[1]), "fix the console layout",
+                     "/tmp/codex-project", None)])
 
 codex_pane = {"pane_id": "wZ:p1", "agent": "codex", "agent_status": "idle",
               "cwd": "/tmp/codex-project", "terminal_title_stripped": "Update Codex chat view | codex-project",
@@ -2400,11 +2487,15 @@ panechat.call_herdr_rpc = lambda m, p=None, timeout=5.0: {"result": {"pane": dic
 try:
     pc = panechat.get("wZ:p1")
     check("Codex: pane title finds the right indexed session", pc.path, codex_paths[0])
+    check("Codex: session ID comes from the rollout metadata", pc.session, "a" * 36)
     check("Codex: only conversation messages reach chat",
           [(e["type"], e.get("text")) for e in pc.events],
           [("prompt", "work on the codex chat view"), ("assistant", None),
            ("assistant", None), ("tool_results", None)])
     check("Codex: custom tool output resolves the call", pc.unresolved, {})
+    codex_pane["terminal_title_stripped"] = "Fix mobile chat submission | codex-project"
+    pc.refresh()
+    check("Codex: renamed thread matches its terminal title", pc.path, codex_paths[0])
     codex_pane["terminal_title_stripped"] = "codex-project"
     pc.refresh()
     check("Codex: a generic title does not pick another session", pc.path, None)
@@ -2447,6 +2538,24 @@ finally:
     tokens.CODEX_HOME = orig_codex_home
     sched_db.DB_PATH = orig_queue_db
     panechat.call_herdr_rpc = orig[0]
+
+original_get, original_which, original_run = (
+    codex_queue.panechat.get, codex_queue.shutil.which, codex_queue.subprocess.run)
+native_invocations = []
+codex_queue.panechat.get = lambda pane_id: SimpleNamespace(
+    is_codex=True, session="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", cwd="/tmp/codex-project")
+codex_queue.shutil.which = lambda name: "/usr/bin/codex"
+codex_queue.subprocess.run = lambda args, **kwargs: (
+    native_invocations.append((args, kwargs)) or SimpleNamespace(returncode=0, stderr="", stdout=""))
+try:
+    codex_queue.send("wZ:p1", "fix the login page")
+    check("Codex: native queue targets the identified session",
+          native_invocations[0][0],
+          ["/usr/bin/codex", "queue", "--thread", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+           "--message", "fix the login page"])
+finally:
+    codex_queue.panechat.get, codex_queue.shutil.which, codex_queue.subprocess.run = (
+        original_get, original_which, original_run)
 
 # ---- What a turn cost, and only when somebody is billed for it -------------
 # `claude` prices every turn whether or not the tokens are invoiced, so the
