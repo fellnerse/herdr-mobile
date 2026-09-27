@@ -85,48 +85,25 @@ after confirming it is running the same `server.py`, never an unrelated
 process. `caffeinate` is started with `-w <pid>`, so it exits with the app even
 if the app is killed, rather than holding the Mac awake indefinitely.
 
-## If Turn On switches straight back off
+## If the gateway stops after login
 
-The switch shows whether the gateway child is still running. An immediate
-switch back to Off means the gateway did not stay up. The app currently does
-not save the child's stderr or display a launch error, so capture the failure
-before restarting if you can.
+SheepIt retries a failed gateway launch after 5, 10, 20, 40, then 60 seconds
+between attempts. The menu shows **Gateway stopped; retrying** until it starts.
+**Turn Off** cancels pending retries. If the gateway stays up for 30 seconds,
+the next failure starts a fresh 5-second retry cycle.
 
-From the repository, check which processes are running and whether anything
-is listening on the gateway port (3009 by default):
+The app records each launch, exit status, retry, port conflict, and the
+gateway's unbuffered stdout and stderr in `~/Library/Logs/SheepIt/gateway.log`.
+At startup, a log over 1 MiB moves to `gateway.log.old`. Check the log and
+the port before restarting the app:
 
 ```bash
+tail -n 100 ~/Library/Logs/SheepIt/gateway.log
 pgrep -fl 'SheepIt|gateway/server.py'
 /usr/sbin/lsof -nP -iTCP:3009 -sTCP:LISTEN
 ```
 
-To see the gateway's startup error, quit SheepIt and run the same Python
-executable and script that the menu bar app uses:
-
-```bash
-killall SheepIt
-/usr/bin/python3 gateway/server.py
-```
-
-If it stays running, press Ctrl-C. Then run the app from a terminal to capture
-errors from its own startup and any gateway child it launches:
-
-```bash
-/Applications/SheepIt.app/Contents/MacOS/SheepIt 2>&1 | tee /tmp/sheepit-startup.log
-```
-
-Quit that diagnostic instance before returning to the usual launch path:
-
-```bash
-killall SheepIt
-open -a SheepIt
-/usr/sbin/lsof -nP -iTCP:3009 -sTCP:LISTEN
-```
-
-On 2026-09-27, the menu bar app was running but nothing was listening on
-port 3009. The gateway started successfully when run directly with
-`/usr/bin/python3`. Restarting SheepIt made its gateway start, and it remained
-listening after `open -a SheepIt`. The original child exit was not captured,
-so its cause is still unknown. If this recurs, keep the startup output and
-the port check before restarting; those should distinguish a Python error,
-a launch failure, and a port conflict.
+On 2026-09-27, the app was running after a Mac restart but no gateway was
+listening. The gateway started when run directly and after restarting SheepIt.
+The initial failure was not captured, so its cause remains unknown. The log
+now records the next startup failure so it can be diagnosed.
