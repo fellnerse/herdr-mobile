@@ -7666,7 +7666,8 @@
       elInput.value = ""; grow();
       hideMenu();
       attachStrip.clear();
-      if (current.kind === "pane" && current.agent === "codex" && text.trim() === "/clear") {
+      if (current.kind === "pane" && (current.agent === "codex" || current.agent === "claude")
+          && text.trim() === "/clear") {
         if (poll) poll.abort();
         events = []; epoch = ""; drawn = [];
         openTools.clear(); picks.clear();
