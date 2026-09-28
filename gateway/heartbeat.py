@@ -433,6 +433,43 @@ def send_agent_prompt(herdr: Herdr, pane_id: str, text: str) -> None:
         else:
             raise
 
+
+def alert_tab(hb: HeartbeatItem) -> str:
+    """The tab a check that ended in an alert is still in, if any.
+
+    That tab is what the alert is about - the finding, the PR it opened - so
+    the next run leaves it for somebody to read rather than clearing it away.
+    """
+    if hb.last_status != "alert" or not hb.target_pane:
+        return ""
+    try:
+        panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
+    except Exception:
+        return ""
+    return next((p.get("tab_id") or "" for p in panes if p.get("pane_id") == hb.target_pane), "")
+
+
+def started(cfg: HeartbeatConfig, target_hb: HeartbeatItem, pane_id: str, sentinel: str, prompt: str) -> dict:
+    """Record a check as running in its new tab."""
+    target_hb.target_pane = pane_id
+    target_hb.last_run_at = time.time()
+    target_hb.last_status = "running"
+    target_hb.last_summary = "Check in progress…"
+    for i, hb in enumerate(cfg.heartbeats):
+        if hb.id == target_hb.id:
+            cfg.heartbeats[i] = target_hb
+            break
+    cfg.save()
+    return {
+        "ok": True,
+        "id": target_hb.id,
+        "name": target_hb.name,
+        "pane_id": pane_id,
+        "sentinel": sentinel,
+        "prompt": prompt,
+    }
+
+
 def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
                       heartbeat_id: str | None = None) -> dict:
     """Trigger a heartbeat check immediately."""
@@ -469,8 +506,11 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         try:
             tab_res = call_herdr_rpc("tab.list", {"workspace_id": target_hb.target_workspace})
             tabs = tab_res.get("result", {}).get("tabs", [])
+            keep = alert_tab(target_hb)
             for t in tabs:
                 label = t.get("label") or ""
+                if t.get("tab_id") == keep:
+                    continue
                 if label == target_tab_label or label.startswith("hb-") or label == "heartbeat":
                     if t.get("agent_status") == "working":
                         msg = f"Heartbeat '{target_hb.name}' is already running in {t.get('tab_id')}"
@@ -509,6 +549,12 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         try:
             herdr.agent_start(f"hb-{target_hb.id[:8]}", pane_id, kind=target_hb.agent_kind or "claude", args=args)
         except HerdrError as e:
+            # The prompt is a launch argument, so the agent works from its first
+            # second and only reads ready once it has finished: a check longer
+            # than the wait is running, not failed. Calling it failed dropped
+            # the run and retried it, and the retry closed the tab with its PR.
+            if e.code == "agent_never_ready":
+                return started(cfg, target_hb, pane_id, sentinel, prompt)
             pop_heartbeat(pane_id)
             msg = f"Failed to start {target_hb.agent_kind} in {pane_id}: {e}"
             target_hb.last_status = "error"
@@ -516,23 +562,7 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
             cfg.save()
             return {"ok": False, "error": msg}
 
-        target_hb.target_pane = pane_id
-        target_hb.last_run_at = time.time()
-        target_hb.last_status = "running"
-        target_hb.last_summary = "Check in progress…"
-        for i, hb in enumerate(cfg.heartbeats):
-            if hb.id == target_hb.id:
-                cfg.heartbeats[i] = target_hb
-                break
-        cfg.save()
-        return {
-            "ok": True,
-            "id": target_hb.id,
-            "name": target_hb.name,
-            "pane_id": pane_id,
-            "sentinel": sentinel,
-            "prompt": prompt,
-        }
+        return started(cfg, target_hb, pane_id, sentinel, prompt)
 
     # Mode B: Existing agent mode (fallback)
     pane_id = find_target_pane(target_hb)

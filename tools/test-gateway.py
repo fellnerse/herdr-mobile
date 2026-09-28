@@ -1968,6 +1968,45 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-runner-") as hb_dir:
     finally:
         heartbeat.CONFIG_PATH, heartbeat.trigger_heartbeat = orig_config_path, orig_trigger
 
+# A check that outlasts agent.start's wait is running, not failed - and the
+# next run leaves the tab of one that ended in an alert, since that is the PR.
+with tempfile.TemporaryDirectory(prefix="sheepit-hb-start-") as hb_dir:
+    orig = (heartbeat.CONFIG_PATH, heartbeat.call_herdr_rpc, heartbeat.Herdr.open_pane,
+            heartbeat.Herdr.agent_start, heartbeat.workspace_cwd)
+    closed = []
+
+    def fake_rpc(method, params=None):
+        if method == "tab.close":
+            closed.append(params["tab_id"])
+        return {"result": {
+            "tabs": [{"tab_id": "wE:tV", "label": "hb-whatsanaly", "agent_status": "idle"},
+                     {"tab_id": "wE:tU", "label": "hb-whatsanaly", "agent_status": "done"},
+                     {"tab_id": "wE:tJ", "label": "1 · attachment", "agent_status": "idle"}],
+            "panes": [{"pane_id": "wE:pV", "tab_id": "wE:tV"}]}}
+
+    def never_ready(self, name, pane_id, kind="claude", args=None):
+        raise heartbeat.HerdrError("agent_never_ready", f"no ready agent in {pane_id} after 120s")
+
+    try:
+        heartbeat.CONFIG_PATH = Path(hb_dir) / "heartbeat.json"
+        heartbeat.call_herdr_rpc = fake_rpc
+        heartbeat.Herdr.open_pane = lambda self, cwd, workspace_id=None, label=None: "wE:pW"
+        heartbeat.Herdr.agent_start = never_ready
+        heartbeat.workspace_cwd = lambda ws: "/src/whatsanalyze"
+        hb = heartbeat.HeartbeatItem(id="hb_pr", name="Whatsanalyze Sentry check", target_workspace="wE",
+                                     last_status="alert", target_pane="wE:pV")
+        heartbeat.HeartbeatConfig(heartbeats=[hb]).save()
+        res = heartbeat.trigger_heartbeat(hb)
+        check("a check slower than agent.start's wait is started", res.get("ok"), True)
+        saved = heartbeat.HeartbeatConfig.load().heartbeats[0]
+        check("and recorded as running in its tab", (saved.last_status, saved.target_pane), ("running", "wE:pW"))
+        check("and watched", heartbeat.is_heartbeat_active("wE:pW"), True)
+        check("the tab of an alerted check is kept, an old clean one closed", closed, ["wE:tU"])
+    finally:
+        (heartbeat.CONFIG_PATH, heartbeat.call_herdr_rpc, heartbeat.Herdr.open_pane,
+         heartbeat.Herdr.agent_start, heartbeat.workspace_cwd) = orig
+        heartbeat.pop_heartbeat("wE:pW")
+
 # Notification policy filtering and _LAST_FINISHED
 rows = {
     "w1:p2": {"pane_id": "w1:p2", "name": "clean-agent"},
