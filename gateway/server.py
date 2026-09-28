@@ -1032,6 +1032,7 @@ class HerdrHandler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 self.send_json({"error": e.args[0]}, 500)
                 return
+            mark_shell_busy(agents)
             # The headless chats ride along on the same poll: they are rows in
             # the same list, and a second request for them would be a second
             # round trip for a list that is already being drawn.
@@ -1834,6 +1835,32 @@ RE_ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 def strip_ansi(text: str) -> str:
     return RE_ANSI.sub("", text or "")
+
+
+# A shell has no agent_status - Herdr tracks that for an agent's own lifecycle
+# and nothing stands in for it on a pane with none. Read the same way the
+# composer is: a prompt hands the terminal back by ending the last line in the
+# glyph it prompts with, and anything else on that line is a command still
+# running that has not.
+RE_SHELL_PROMPT_END = re.compile(r"[$#%>❯›]\s*$")
+
+
+def shell_is_busy(text: str) -> bool:
+    for line in reversed(strip_ansi(text).splitlines()):
+        line = line.rstrip()
+        if line:
+            return not bool(RE_SHELL_PROMPT_END.search(line))
+    return False  # nothing on screen yet to call busy
+
+
+def mark_shell_busy(rows: list) -> None:
+    """Guess it for every plain-shell row in one pass over what `/api/agents`
+    is about to answer - never for an agent pane, which already has a real
+    status."""
+    for row in rows:
+        if row.get("has_agent"):
+            continue
+        row["busy"] = shell_is_busy(pane_text(row["pane_id"], lines=6))
 
 
 def refresh_codex_usage() -> None:
