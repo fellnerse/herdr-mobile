@@ -81,6 +81,16 @@ the grass is for. A shell has not run out of anything. It also needs no word
 beside it — the drawing already says shell, and the badge saying it again was
 the same fact twice.
 
+The one thing the drawing does say is whether it is busy. Herdr has no
+`agent_status` for a pane with no agent in it — that is an agent's own
+lifecycle, and a shell has none — so `mark_shell_busy` in `server.py` guesses
+it the same way the composer is read: off the last line of the shell's own
+scrollback, on whether it ends in the glyph a prompt hands the terminal back
+with. A guess, not a reading — a command whose own output happens to end in
+`$` reads the same as one still running — so it says as little as the shell
+already does: the `>_` prompt blinks like a cursor waiting on something rather
+than standing still, and nothing is written beside it.
+
 Every animation stops under `prefers-reduced-motion`.
 
 ### The grass says what is left to spend

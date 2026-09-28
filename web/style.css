@@ -872,6 +872,19 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   opacity: 0.8;
 }
 
+/* A shell carries no agent_status for Herdr to read, so this is a guess off
+   its own scrollback rather than a real signal - and it says so quietly, on
+   the one glyph that already means "terminal": the prompt blinks like a
+   cursor waiting on a command instead of standing still on one. */
+.sheep-wrap.shell-busy .shell-prompt {
+  animation: shell-cursor 0.9s step-end infinite;
+}
+
+@keyframes shell-cursor {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 0.15; }
+}
+
 /* The fleece is the whole animal at a glance; the legs, head and ear behind it
    are the same white turned down, which is the only shading a shape this small
    can carry. The eye is the screen showing through. */
@@ -982,7 +995,8 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   .sheep-wrap.blocked,
   .sheep-wrap.done,
   .sheep-wrap.working .sheep-head,
-  .sheep-wrap.working .grass-bite { animation: none; }
+  .sheep-wrap.working .grass-bite,
+  .sheep-wrap.shell-busy .shell-prompt { animation: none; }
 }
 
 .agent-dot {
