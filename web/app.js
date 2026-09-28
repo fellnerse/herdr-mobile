@@ -1080,11 +1080,11 @@
       <circle class="bubble-dot" cx="9.5" cy="6.2" r="1"/>
     </g>`;
 
-  function sheepSvg(status, seed, pasture, chatty, busy) {
+  function sheepSvg(status, seed, pasture, chatty) {
     const pose = POSE[knownStatus(status)];
     // A shell has nobody to tell apart, and no window to draw grass for.
     if (pose === "empty") {
-      return `<svg class="sheep${busy ? " shell-busy" : ""}" viewBox="0 0 44 34" aria-hidden="true">${SHELL_WINDOW}</svg>`;
+      return `<svg class="sheep" viewBox="0 0 44 34" aria-hidden="true">${SHELL_WINDOW}</svg>`;
     }
     const marks = sheepMarks(seed);
     const asleep = pose === "sleep";
@@ -1204,10 +1204,12 @@
      again. A question on screen outranks even that - nothing is ever delivered
      into one, and it is the state that must never be buried.
 
-     A pane with no agent says nothing here: its sheep is already a terminal
-     window, and the word "shell" beside it was the same fact twice. */
+     A pane with no agent uses its shell activity to show Idle or Working. */
   function statusBadge(agent, status, queued) {
-    if (!agent.has_agent) return "";
+    if (!agent.has_agent) {
+      const shellStatus = agent.busy ? "working" : "idle";
+      return `<span class="status-badge status-${shellStatus}">${escapeHtml(shellStatus)}</span>`;
+    }
     const word = queued ? queuedLabel(queued) : "";
     if (!word || status === "blocked") {
       return `<span class="status-badge status-${status}">${escapeHtml(status)}</span>`;
@@ -1372,7 +1374,6 @@
        come and go; hashing the leading pane would change the face every time
        another tab started asking something. */
     const iconStatus = sheepStatus(agent);
-    const shellBusy = !agent.has_agent && agent.busy;
     const fleece = iconStatus === "unknown"
       ? ""
       : `color:${sheepMarks(penSeed(pen)).breed.fleece}`;
@@ -1402,7 +1403,7 @@
             : ""}
         </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${iconStatus}${shellBusy ? " shell-busy" : ""}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, penSeed(pen), pasture, false, shellBusy)}</span>
+          <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, penSeed(pen), pasture, false)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             <span class="agent-row-meta">
@@ -1498,7 +1499,6 @@
     const chip = tabChipLabel(agent);
     const headline = agent.title || chip;
     const iconStatus = sheepStatus(agent);
-    const shellBusy = !agent.has_agent && agent.busy;
     const fleece = iconStatus === "unknown"
       ? ""
       : `color:${sheepMarks(agent.pane_id).breed.fleece}`;
@@ -1513,7 +1513,7 @@
             <button class="agent-row-action close" data-action="tab-close" data-tab-id="${escapeHtml(agent.tab_id)}">Close</button>
           </div>
           <button class="agent-row st-${status} ${agent.pane_id === state.activePaneId ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-            <span class="sheep-wrap ${iconStatus}${shellBusy ? " shell-busy" : ""}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, agent.pane_id, pasture, false, shellBusy)}</span>
+            <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, agent.pane_id, pasture, false)}</span>
             <span class="agent-row-text">
               <span class="agent-row-name">${escapeHtml(headline)}</span>
               <span class="agent-row-meta">

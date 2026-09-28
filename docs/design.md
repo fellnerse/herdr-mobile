@@ -77,19 +77,17 @@ project's plain shell tab shows beside its siblings. The prompt is what makes
 it a terminal rather than a dark card, and the animal is what keeps it in the
 same list as the rest. Bare ground was the first answer and it said the wrong
 thing: an empty field is an agent that has spent its window, and that is what
-the grass is for. A shell has not run out of anything. It also needs no word
-beside it — the drawing already says shell, and the badge saying it again was
-the same fact twice.
+the grass is for. A shell has not run out of anything. Its status badge says
+Idle or Working; the drawing already shows that it is a shell.
 
-The one thing the drawing does say is whether it is busy. Herdr has no
-`agent_status` for a pane with no agent in it — that is an agent's own
+Herdr has no `agent_status` for a pane with no agent in it — that is an agent's own
 lifecycle, and a shell has none — so `mark_shell_busy` in `server.py` guesses
 it the same way the composer is read: off the last line of the shell's own
 scrollback, on whether it ends in the glyph a prompt hands the terminal back
 with. A guess, not a reading — a command whose own output happens to end in
-`$` reads the same as one still running — so it says as little as the shell
-already does: the `>_` prompt blinks like a cursor waiting on something rather
-than standing still, and nothing is written beside it.
+`$` reads the same as one still running. The standard status badge shows
+Working when this signal says busy, and Idle otherwise. The `>_` prompt stays
+still.
 
 Every animation stops under `prefers-reduced-motion`.
 
