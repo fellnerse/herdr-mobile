@@ -493,12 +493,17 @@
     }).join("");
   }
 
+  // An older poll must not replace a list fetched after creating a pane or chat.
+  let agentsRequest = 0;
+
   // Fetch Agent List
   async function fetchAgents() {
+    const request = ++agentsRequest;
     try {
       const res = await fetch("/api/agents");
       if (!res.ok) throw new Error("Failed to fetch agents");
       const data = await res.json();
+      if (request !== agentsRequest) return;
       state.agents = data.agents || [];
       state.chats = data.chats || [];
       // Deleted from another phone, or reaped: the column cannot keep showing it.
@@ -513,8 +518,10 @@
 
       // If no agent selected or active agent no longer exists, select first available
       if (
-        !state.activePaneId ||
-        !state.agents.some((a) => a.pane_id === state.activePaneId)
+        !state.activeChatId && (
+          !state.activePaneId ||
+          !state.agents.some((a) => a.pane_id === state.activePaneId)
+        )
       ) {
         // The first agent on screen, or failing that the first row there is:
         // a project whose tabs are all plain shells is still worth opening.
@@ -1704,25 +1711,22 @@
 
   async function createWorkspace() {
     triggerHaptic();
-    const before = new Set(state.agents.map((a) => a.workspace_id));
     try {
       const res = await fetch("/api/workspaces", { method: "POST" });
       if (!res.ok) throw new Error("create failed");
-      await fetchAgents();
-      // Open the one that was not there a moment ago.
-      const created = state.agents.find((a) => !before.has(a.workspace_id));
-      if (created) {
-        // A workspace made from the flock's + New action is the one kind of
-        // new project that belongs at the top. Other projects discovered by
-        // polling join the end of the saved order.
-        const key = projectKey(created);
-        state.customOrder = [key, ...state.customOrder.filter((item) => item !== key)];
-        saveOrder();
-        orderAgents();
-        renderAgentList();
-        selectAgent(created.pane_id);
+      const data = await res.json();
+      if (!data.pane_id) throw new Error("No pane returned for the new terminal");
+      let created;
+      for (let attempt = 0; attempt < 3 && !created; attempt++) {
+        await fetchAgents();
+        created = state.agents.find((a) => a.pane_id === data.pane_id);
       }
-      else closePicker();
+      // Open the pane Herdr created. A poll can bring in another workspace at
+      // the same time, so a difference between two lists is not its identity.
+      if (created) {
+        selectAgent(created.pane_id);
+        if (!wide.matches) openConsole();
+      } else throw new Error("The new terminal did not appear");
     } catch (err) {
       alert("Could not create workspace: " + err.message);
     }
@@ -1951,9 +1955,11 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data.error || "refused");
       closeNewSheet();
-      // Straight into it: a chat with nothing said in it has nothing to show.
-      await fetchAgents();
+      // The creation response has the chat already; show it without waiting
+      // for the project list to refresh.
+      state.chats = [...state.chats.filter((c) => c.id !== data.chat.id), data.chat];
       openChat(data.chat.id);
+      await fetchAgents();
     } catch (err) {
       alert("Could not start a chat: " + err.message);
     }
@@ -3729,11 +3735,9 @@
    * project's sheep stay where you last saw them, and a new one joins the end
    * of its own project rather than jumping to the front of everything.
    *
-   * The exception is a sheep that is waiting on you, and there are two ways to
-   * be: stopped on a question, and finished a turn nobody has read yet. Both
-   * rise to the top of their project and carry their project to the top of the
-   * list - until a finger says otherwise, because an order somebody made by
-   * hand is a promise that the project stays where it was put.
+   * A sheep waiting on a question or a finished turn may rise within its
+   * project. Project headings stay where they first appeared until moved by
+   * hand.
    * ------------------------------------------------------------------------ */
 
   /* When a row was created, as a number that only ever grows. Herdr numbers
@@ -4036,16 +4040,18 @@
     return to > from ? to + 1 : to;
   }
 
-  /* A hand-made order wins over creation order. Agent activity only sorts rows
-     inside a project; it must never move the project heading itself. */
+  /* A hand-made order wins. Otherwise keep each project's last displayed
+     position and append newly discovered projects, even if their workspace
+     number is older than projects already on screen. */
   function sortGroups(groups) {
     const rank = new Map(state.customOrder.map((key, i) => [key, i]));
-    if (rank.size) {
-      const at = (key) => (rank.has(key) ? rank.get(key) : Number.MAX_SAFE_INTEGER);
-      groups.sort((a, b) => at(a.key) - at(b.key) || a.born - b.born);
-      return;
-    }
-    groups.sort((a, b) => a.born - b.born);
+    const seen = new Map(state.groups.map((group, i) => [group.key, i]));
+    const at = (map, key) => map.has(key) ? map.get(key) : Number.MAX_SAFE_INTEGER;
+    groups.sort((a, b) =>
+      at(rank, a.key) - at(rank, b.key) ||
+      at(seen, a.key) - at(seen, b.key) ||
+      a.born - b.born
+    );
   }
 
   /* Never reshuffle a list under a hand: an agent changing state would slide a

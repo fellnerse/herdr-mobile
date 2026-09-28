@@ -295,9 +295,8 @@ the list to be carried somewhere else, and where it lands is saved by the
 gateway so desktop and mobile share the same order.
 
 An order made by hand outranks creation order. A project the saved order has
-never seen joins at the end, except for a workspace created from the flock's
-global **+ New** action, which is explicitly placed at the top. A project made
-through another action joins at the end.
+never seen joins at the end and stays there until somebody moves it, including
+one created through the flock's global **+ New** action.
 
 Herdr is told too, with `workspace.move`, so the laptop's workspace strip
 follows the phone instead of arguing with it. It is told only when the project

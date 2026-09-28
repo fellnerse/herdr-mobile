@@ -163,8 +163,9 @@ under a project being dragged.
 `number` × 1000 + pane index — Herdr exposes no creation date anywhere, and
 never renumbers); agent attention sorts rows inside each project but never
 moves a project heading. A drag overrides creation order and is saved by the
-gateway so desktop and mobile share it. Only a workspace made through global `+ New`
-is explicitly placed at the top; other new projects join at the end. The drag also calls `workspace.move`,
+gateway so desktop and mobile share it. New projects join at the end, including
+those made through global `+ New`, and keep their displayed position until moved.
+The drag also calls `workspace.move`,
 but only when the project is a single workspace — a project is a repository and
 Herdr reorders workspaces. `workspace.move` counts the workspace being moved
 when it resolves `insert_index`, which is why `insertIndexFor` exists and is

@@ -327,6 +327,29 @@ function order(agents, busy = false, held = [], custom = []) {
 
 {
   const f = order([
+    row("wA:p1", 1, "/p/api", "idle"),
+    row("wB:p1", 2, "/p/web", "idle"),
+  ]);
+  f.state.agents.push(row("wC:p1", 3, "/p/new", "idle"));
+  f.orderAgents();
+  check("a new project joins the end",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/new"]);
+  // A later refresh may discover a workspace Herdr numbered earlier. Its
+  // arrival must not reorder projects already displayed on the phone.
+  f.state.agents.push(row("wOld:p1", 1, "/p/older", "idle"));
+  f.orderAgents();
+  check("later discoveries leave the displayed project order alone",
+        f.state.groups.map((g) => g.key),
+        ["/p/api", "/p/web", "/p/new", "/p/older"]);
+  f.state.customOrder = ["/p/new", "/p/api", "/p/web", "/p/older"];
+  f.orderAgents();
+  check("a user's saved move still changes project order",
+        f.state.groups.map((g) => g.key),
+        ["/p/new", "/p/api", "/p/web", "/p/older"]);
+}
+
+{
+  const f = order([
     row("wB:p1", 2, "/p/web", "working"),
     row("wA:p1", 1, "/p/api", "done"),
   ]);
@@ -344,8 +367,7 @@ function order(agents, busy = false, held = [], custom = []) {
         f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/cli"]);
 }
 
-/* A project carries its loudest sheep: the question first, then the project
-   holding a finished turn, then the ones getting on with it. */
+/* Attention changes rows within a project, never project headings. */
 {
   const f = order([
     row("wA:p1", 1, "/p/api", "working"),
@@ -356,7 +378,7 @@ function order(agents, busy = false, held = [], custom = []) {
         f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/cli"]);
 }
 
-// Two waiting projects do not fight: creation order breaks the tie.
+// Two waiting projects keep their positions too.
 {
   const f = order([
     row("wA:p1", 1, "/p/api", "working"),
@@ -382,16 +404,14 @@ function order(agents, busy = false, held = [], custom = []) {
 }
 
 {
-  /* And lets go of it. The flock is the home screen, so a hold that lasted as
-     long as the list was on screen would last the session, and the question
-     that rises to the top is the whole point of the overview. */
+  /* Letting go of the list still leaves project headings in place. */
   const agents = [
     row("wA:p1", 1, "/p/api", "working"),
     row("wB:p1", 2, "/p/web", "blocked"),
   ];
   const f = order(agents, false, ["wA:p1", "wB:p1"]);
-  check("a list nobody is touching lets the question rise",
-        f.state.agents.map((a) => a.pane_id), ["wB:p1", "wA:p1"]);
+  check("a question does not move a project after the list settles",
+        f.state.agents.map((a) => a.pane_id), ["wA:p1", "wB:p1"]);
 }
 
 {
@@ -424,8 +444,8 @@ function order(agents, busy = false, held = [], custom = []) {
     row("wA:p1", 1, "/p/api", "working"),
   ]);
   check("the flat list follows the groups",
-        f.state.agents.map((a) => a.pane_id), ["wB:p1", "wA:p1"]);
-  check("and the held order is that list", f.state.order, ["wB:p1", "wA:p1"]);
+        f.state.agents.map((a) => a.pane_id), ["wA:p1", "wB:p1"]);
+  check("and the held order is that list", f.state.order, ["wA:p1", "wB:p1"]);
 }
 
 // -- one row per worktree ----------------------------------------------------
@@ -1638,8 +1658,8 @@ function order(agents, busy = false, held = [], custom = []) {
   check("a project with nothing but a chat still gets a heading", !!orphan, true);
   check("named after the project rather than the chat", orphan.name, "api");
   check("with nothing to cut a worktree from", orphan.from, "");
-  check("and sorted to the end, having no workspace number to place it by",
-        f.state.groups.map((g) => g.key), ["/p/web", "/p/api"]);
+  check("and keeps its project position when only its chat remains",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web"]);
 
   // A chat asking permission is as loud as a pane asking one.
   f.state.agents = [row("wA:p1", 1, "/p/api", "idle"),
@@ -1647,8 +1667,8 @@ function order(agents, busy = false, held = [], custom = []) {
   f.state.chats = [chat("c1", "/p/web", { pending: [{ id: "x" }] })];
   f.state.order = [];
   f.orderAgents();
-  check("a chat holding a question takes its project to the top",
-        f.state.groups.map((g) => g.key), ["/p/web", "/p/api"]);
+  check("a chat holding a question leaves its project in place",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web"]);
 
   // Two chats on one project: the one waiting on you leads.
   f.state.agents = [row("wA:p1", 1, "/p/api", "idle")];

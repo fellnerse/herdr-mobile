@@ -1381,7 +1381,12 @@ class HerdrHandler(BaseHTTPRequestHandler):
             if "error" in res:
                 self.send_json(res, 400)
                 return
-            self.send_json({"ok": True, "result": res.get("result", {})})
+            result = res.get("result", {})
+            self.send_json({
+                "ok": True,
+                "result": result,
+                "pane_id": (result.get("root_pane") or {}).get("pane_id", ""),
+            })
             return
 
         # API: Cut another worktree off a project
