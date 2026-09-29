@@ -8433,7 +8433,7 @@
     }
   });
   $("btn-delete").addEventListener("click", async () => {
-    if (!current || !confirm("Delete this chat? The Claude Code session itself stays.")) return;
+    if (!current || !confirm("Delete this chat from SheepIt? Its conversation stays in Claude Code (claude --resume).")) return;
     await api("/api/chat/delete", { id: current.id }).catch(() => {});
     backToFlock();
   });
