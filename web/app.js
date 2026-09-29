@@ -3472,6 +3472,11 @@
   }
 
   function renderChatQueue() {
+    if (!elChatView.classList.contains("hidden")) {
+      chatQueueStrip.render([]);
+      state.queueSignature = null;
+      return;
+    }
     const queued = queuedFor(state.activePaneId);
     if (!queued.length) {
       chatQueueStrip.render([]);
@@ -4337,6 +4342,8 @@
       || (wide.matches ? state.paneView === "chat" : state.chatVisible));
     const targetId = show ? (state.activeChatId || target) : "";
     elChatView.classList.toggle("hidden", !show);
+    // The pane chat owns its queue strip; the dock queue belongs to transcript view.
+    renderChatQueue();
     // The transcript used to sit behind a chat that was `position: fixed`
     // over the whole screen, so leaving it in the document did nothing. Now
     // both are flex items in the same flow, and an unhidden transcript is a
@@ -7580,11 +7587,12 @@
     drawQueue();
   }
 
-  /* Only while there is something to watch: an empty queue costs no requests. */
+  /* A second client can queue a prompt while this chat is open, even when its
+     queue was empty at open time. Keep watching the active pane. */
   function keepWatching() {
     if (queueTimer) clearInterval(queueTimer);
     queueTimer = null;
-    if (!queued.length || !current || current.kind !== "pane") return;
+    if (!current || current.kind !== "pane") return;
     queueTimer = setInterval(fetchQueue, QUEUE_EVERY);
   }
 

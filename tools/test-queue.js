@@ -18,7 +18,7 @@ const SRC = path.join(__dirname, "..", "web", "app.js");
 const FROM = "  function queueSignature() {";
 const TO = "  const chatQueueStrip = SheepItComposer.createQueueStrip";
 
-function loadQueue(state) {
+function loadQueue(state, chatOpen = false) {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf(FROM);
   const to = src.indexOf(TO);
@@ -35,6 +35,8 @@ function loadQueue(state) {
     },
   };
   const composer = { value: "", focused: false, focus() { this.focused = true; } };
+  const view = { open: chatOpen };
+  const elChatView = { classList: { contains: (name) => name === "hidden" && !view.open } };
   const sent = [];
   const PRELUDE = `
     const escapeHtml = (s) => String(s)
@@ -61,11 +63,11 @@ function loadQueue(state) {
     const resetLabel = (iso) => (iso ? "19.9." : "");
   `;
   const mod = new Function(
-    "elChatQueue", "state", "elPromptInput", "sent",
+    "elChatQueue", "elChatView", "state", "elPromptInput", "sent",
     `${PRELUDE}${src.slice(from, to)}
      return { renderChatQueue, queuedFor, queueAction, editQueued };`
-  )(el, state, composer, sent);
-  return { ...mod, el, composer, sent, state };
+  )(el, elChatView, state, composer, sent);
+  return { ...mod, el, composer, sent, state, view };
 }
 
 let failures = 0;
@@ -78,6 +80,21 @@ function check(name, actual, expected) {
 }
 
 const waiting = (id, pane, prompt) => ({ id, pane_id: pane, state: "waiting", prompt });
+
+// The structured pane chat has its own queue strip. Its dock must not show a
+// second copy of the same waiting prompt, including after a queue refresh.
+{
+  const q = loadQueue({
+    activePaneId: "w3:p1", queueSignature: null,
+    queue: [waiting(7, "w3:p1", "Rewrite the importer")],
+  }, true);
+  q.renderChatQueue();
+  check("chat view hides the transcript queue", q.el.hidden, true);
+  check("chat view does not duplicate its queued prompt", q.el.innerHTML, "");
+  q.view.open = false;
+  q.renderChatQueue();
+  check("returning to transcript restores its queue", q.el.hidden, false);
+}
 
 /* The settling grace lives up in the queue's plumbing rather than in the strip
    that draws it, so it is sliced separately. */
