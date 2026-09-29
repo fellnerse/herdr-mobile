@@ -319,10 +319,42 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.picker-title {
-  flex: 1;
-  font-size: 17px;
-  font-weight: 700;
+/* Where the title was: the same two-way switch the chat header uses, a size
+   up. The half that is off screen wears a red dot while something in it is
+   waiting on you. */
+.flock-tabs {
+  display: flex;
+  gap: 2px;
+  margin-right: auto;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: var(--bg-card);
+}
+.flock-tabs button {
+  position: relative;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 14px/1.2 var(--font-sans);
+  cursor: pointer;
+}
+.flock-tabs button[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+}
+.flock-tabs button.wants::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-blocked);
 }
 
 .picker-new {
@@ -343,8 +375,11 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 .picker-new:active { filter: brightness(0.9); }
 
+
 .agent-list {
   flex: 1 0 auto;
+  /* The drop line is placed in the list's own coordinates. */
+  position: relative;
   padding: 8px 12px max(12px, var(--safe-bottom)) 12px;
 }
 
@@ -366,6 +401,18 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   cursor: grabbing;
 }
 
+.folder.dragging {
+  z-index: 3;
+  transition: none;
+  cursor: grabbing;
+}
+
+.agent-group.dragging .agent-group-head,
+.folder.dragging .folder-head {
+  opacity: 0.9;
+}
+
+.folder.dragging .agent-row,
 .agent-group.dragging .agent-row {
   transform: scale(1.02);
   border-color: var(--accent-primary);
@@ -405,10 +452,151 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 .agent-group-name {
   flex: 1;
+  cursor: pointer;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * Folding, and folders
+ *
+ * A project heading and a pen's title each carry a chevron that folds what is
+ * under them away; a folder's whole name row does. Folded, each says what it
+ * is hiding as a row of status dots, so a question is never folded out of
+ * sight - only out of the way.
+ * ------------------------------------------------------------------------- */
+.fold-toggle,
+.fold-chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+/* Grown past the glyph for a thumb, the same trick as the heading's plus. */
+.fold-toggle {
+  margin: -10px -4px -10px -8px;
+  padding: 10px 4px 10px 8px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.agent-group-head .fold-toggle { align-self: center; }
+
+.agent-group.folded > .agent-group-head .fold-toggle,
+.pen-head.folded .fold-toggle,
+.folder.folded .fold-chevron {
+  transform: rotate(-90deg);
+}
+
+.agent-group.folded {
+  margin-bottom: 6px;
+}
+
+.agent-group.folded > .agent-group-head {
+  margin-bottom: 0;
+}
+
+.fold-dots {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: center;
+}
+
+.fold-more {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: none;
+}
+
+/* A folder: a quieter card than a row, since it is a place rather than an
+   agent, holding its projects indented under it on a rule down the left. */
+.folder {
+  position: relative;
+  margin-bottom: 14px;
+  transition: transform 0.18s ease;
+}
+
+.folder-head-wrap {
+  margin-bottom: 6px;
+}
+
+.agent-row.folder-head {
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border-radius: 10px;
+}
+
+.agent-row.folder-head:active {
+  background: var(--bg-hover);
+}
+
+.folder-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--accent-primary);
+}
+
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.folder-body {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-subtle);
+}
+
+.folder-body > .agent-group:last-child {
+  margin-bottom: 4px;
+}
+
+/* The headings inside a folder stick under the folder's own, which does not
+   stick - a folder is short enough once its projects are folded. */
+.folder-body .agent-group-head {
+  font-size: 11px;
+}
+
+.folder-empty {
+  padding: 10px 4px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Where a carried project or folder would land. */
+.drop-line {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  height: 3px;
+  margin-top: -1px;
+  border-radius: 2px;
+  background: var(--accent-primary);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.drop-line.hidden { display: none; }
+
+/* A folder about to take the project held over it. */
+.folder.drop-into > .folder-head-wrap .folder-head {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--accent-primary);
 }
 
 /* Cut another worktree off this project. A heading is 12px tall and a thumb is
@@ -1276,42 +1464,56 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .key-enter { color: var(--accent-primary); border-color: rgba(47, 129, 247, 0.4); }
 
 
-/* Row mirrors the composer below it: text on the left, a round action button
-   on the right at the same size and offset as Send, so the two line up. */
+/* What is already typed into the pane on the desktop, above the composer.
+   It says so in words - a dashed box on its own read as the composer's own
+   text - and offers the two things worth doing with it: carry it over, or
+   clear it out of the console so it is not sent along with the next prompt. */
 .terminal-input-row {
   display: flex;
-  align-items: flex-end;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
   margin: 5px 0 0 0;
 }
 
 .terminal-input-row.hidden { display: none; }
 
-.btn-adopt {
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  /* Secondary to Send: no chrome, just a faded glyph that holds the position. */
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  opacity: 0.55;
+.terminal-input-head {
   display: flex;
   align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: transform 0.15s, opacity 0.2s;
+  gap: 6px;
 }
 
-.btn-adopt:active {
-  transform: scale(0.92);
-  opacity: 1;
-  color: var(--text-primary);
+.terminal-input-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+
+.terminal-input-act {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 0 10px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.terminal-input-act:active { filter: brightness(1.3); }
+.terminal-input-act.danger { color: var(--status-blocked); }
+.terminal-input-act:disabled { opacity: 0.5; }
 
 .terminal-input {
-  flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -2008,6 +2210,12 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 /* A window that has already come back carries no percentage worth reading. */
 .usage-window.past { color: var(--text-muted); }
+
+/* A reading too old to believe: every bar in it is greyed, whatever colour it
+   would have been, and the title says why. */
+.usage.stale,
+.usage.stale .usage-window { color: var(--text-muted); }
+.usage.stale .usage-fill { background: var(--text-muted); }
 
 /* An agent nobody can price says so where its windows would have been. */
 .usage-detail.muted {
@@ -3095,6 +3303,100 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .new-go:active { filter: brightness(0.9); }
 
 .new-go[disabled] { opacity: 0.5; }
+
+/* Where a chat will run, above its settings, and the way to move it. */
+.new-chat-home {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.new-chat-home span {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.new-link {
+  padding: 0 0 0 4px;
+  background: none;
+  border: none;
+  color: var(--accent-primary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* The folder picker for the chat home: the directory on screen, one level of
+   what is in it, and a way to make a new one there. */
+.dir-why { margin: 0 0 10px 0; }
+
+.dir-path {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.dir-list {
+  max-height: 38vh;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--bg-card);
+}
+
+.dir-list .new-choice-hint { margin: 10px; }
+
+.dir-item {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-size: 15px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.dir-item:last-child { border-bottom: none; }
+.dir-item:active { background: var(--bg-hover); }
+.dir-up { color: var(--text-secondary); }
+
+.dir-make {
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.dir-make input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.chat-home-path {
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.chat-home-path.unset {
+  font-family: inherit;
+  color: var(--text-secondary);
+}
 
 /* A chat's sheep carries a speech bubble over its rump - see CHAT_BUBBLE. It
    is outlined in the card's colour like the face and the ears, so it reads as

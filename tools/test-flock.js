@@ -25,12 +25,13 @@ const TO = "  // Opening a project is activity too";
 function loadRows() {
   const src = fs.readFileSync(SRC, "utf8");
   const from = src.indexOf("  function agentListSignature() {");
-  const to = src.indexOf("  async function createWorkspace() {");
+  const to = src.indexOf("  async function createWorkspace(cwd) {");
   if (from < 0 || to < 0) throw new Error(`row anchors moved in ${SRC}`);
   const PRELUDE = `
     const state = { activePaneId: null, groups: [], agents: [], chats: [], queue: [],
                     swiping: false, listSignature: null };
     const elAgentList = { innerHTML: "", querySelector: () => null };
+    const elFlockTabs = { querySelectorAll: () => [] };
     const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const knownStatus = (s) => s || "unknown";
     const sheepSeeds = [];
@@ -45,7 +46,7 @@ function loadRows() {
   /* What a tab is called, and how a project's panes collapse into one row per
      worktree, are tested on their own further down; a row is asked here with
      the real things rather than stubs that could agree with nothing. */
-  const { tabName, tabNumber, tabCount, penSeed, bornAt } = loadFlock();
+  const { tabName, tabNumber, tabCount, penSeed, bornAt, isCollapsed, URGENCY } = loadFlock();
   // What the strip calls a tab, which is what a pen's rows call one too: the
   // two lists must not have separate opinions about a tab's name.
   const { tabChipLabel } = loadStrip();
@@ -56,11 +57,17 @@ function loadRows() {
     "penSeed",
     "bornAt",
     "tabChipLabel",
-    `${PRELUDE}${src.slice(from, to)}
+    "isCollapsedIn",
+    "URGENCY",
+    `${PRELUDE}
+     const isCollapsed = (key) => isCollapsedIn(state, key);
+     ${src.slice(from, to)}
      return { state, elAgentList, sheepSeeds, agentRowHtml, chatRowHtml, renderAgentList,
               agentListSignature, queuedByPane, penQueue, queuedLabel,
-              penHtml, penHeadHtml, penTabRowHtml, penShowsTabs, penTabs };`
-  )(tabName, tabNumber, tabCount, penSeed, bornAt, tabChipLabel);
+              penHtml, penHeadHtml, penTabRowHtml, penShowsTabs, penTabs,
+              folderHtml, projectHtml, foldDotsHtml };`
+  )(tabName, tabNumber, tabCount, penSeed, bornAt, tabChipLabel,
+    (st, key) => Boolean(st.collapsed && st.collapsed.has(key)), URGENCY);
 }
 
 /* The strip above the transcript, which is where a tab is switched, named and
@@ -129,7 +136,8 @@ function loadFlock(busy = false) {
   /* `swiping` is a hand on the list. The flock is the home screen now, so
      being on screen is no longer what holds the order still - a finger is. */
   const PRELUDE = `
-    const state = { agents: [], chats: [], groups: [], order: [], customOrder: [],
+    const state = { agents: [], chats: [], chatPens: [], groups: [], order: [], customOrder: [],
+                    folders: [], layout: [], collapsed: new Set(),
                     swiping: ${busy}, listTouchedAt: 0 };
     const store = {};
     const readPref = (name) => (name in store ? store[name] : null);
@@ -140,7 +148,9 @@ function loadFlock(busy = false) {
      return { state, store, orderAgents, groupByProject, bornAt, listBusy,
               projectKey, tabName, tabNumber, reorder, insertIndexFor, loadOrder, saveOrder,
               urgency, byWorkspace, tabCount, penSeed, collapseTabs,
-              attachChats, chatStatus, chatRowOf };`
+              orderChats, chatStatus, chatRowOf, URGENCY, isCollapsed, toggleCollapsed,
+              layoutGroups, layoutProjects, dropInto, addFolder, removeFolder,
+              loadFolders, folderOfProject };`
   )();
 }
 
@@ -327,6 +337,29 @@ function order(agents, busy = false, held = [], custom = []) {
 
 {
   const f = order([
+    row("wA:p1", 1, "/p/api", "idle"),
+    row("wB:p1", 2, "/p/web", "idle"),
+  ]);
+  f.state.agents.push(row("wC:p1", 3, "/p/new", "idle"));
+  f.orderAgents();
+  check("a new project joins the end",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/new"]);
+  // A later refresh may discover a workspace Herdr numbered earlier. Its
+  // arrival must not reorder projects already displayed on the phone.
+  f.state.agents.push(row("wOld:p1", 1, "/p/older", "idle"));
+  f.orderAgents();
+  check("later discoveries leave the displayed project order alone",
+        f.state.groups.map((g) => g.key),
+        ["/p/api", "/p/web", "/p/new", "/p/older"]);
+  f.state.customOrder = ["/p/new", "/p/api", "/p/web", "/p/older"];
+  f.orderAgents();
+  check("a user's saved move still changes project order",
+        f.state.groups.map((g) => g.key),
+        ["/p/new", "/p/api", "/p/web", "/p/older"]);
+}
+
+{
+  const f = order([
     row("wB:p1", 2, "/p/web", "working"),
     row("wA:p1", 1, "/p/api", "done"),
   ]);
@@ -344,8 +377,7 @@ function order(agents, busy = false, held = [], custom = []) {
         f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/cli"]);
 }
 
-/* A project carries its loudest sheep: the question first, then the project
-   holding a finished turn, then the ones getting on with it. */
+/* Attention changes rows within a project, never project headings. */
 {
   const f = order([
     row("wA:p1", 1, "/p/api", "working"),
@@ -356,7 +388,7 @@ function order(agents, busy = false, held = [], custom = []) {
         f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/cli"]);
 }
 
-// Two waiting projects do not fight: creation order breaks the tie.
+// Two waiting projects keep their positions too.
 {
   const f = order([
     row("wA:p1", 1, "/p/api", "working"),
@@ -382,16 +414,14 @@ function order(agents, busy = false, held = [], custom = []) {
 }
 
 {
-  /* And lets go of it. The flock is the home screen, so a hold that lasted as
-     long as the list was on screen would last the session, and the question
-     that rises to the top is the whole point of the overview. */
+  /* Letting go of the list still leaves project headings in place. */
   const agents = [
     row("wA:p1", 1, "/p/api", "working"),
     row("wB:p1", 2, "/p/web", "blocked"),
   ];
   const f = order(agents, false, ["wA:p1", "wB:p1"]);
-  check("a list nobody is touching lets the question rise",
-        f.state.agents.map((a) => a.pane_id), ["wB:p1", "wA:p1"]);
+  check("a question does not move a project after the list settles",
+        f.state.agents.map((a) => a.pane_id), ["wA:p1", "wB:p1"]);
 }
 
 {
@@ -424,8 +454,8 @@ function order(agents, busy = false, held = [], custom = []) {
     row("wA:p1", 1, "/p/api", "working"),
   ]);
   check("the flat list follows the groups",
-        f.state.agents.map((a) => a.pane_id), ["wB:p1", "wA:p1"]);
-  check("and the held order is that list", f.state.order, ["wB:p1", "wA:p1"]);
+        f.state.agents.map((a) => a.pane_id), ["wA:p1", "wB:p1"]);
+  check("and the held order is that list", f.state.order, ["wA:p1", "wB:p1"]);
 }
 
 // -- one row per worktree ----------------------------------------------------
@@ -781,11 +811,15 @@ function order(agents, busy = false, held = [], custom = []) {
           .map((m) => m[1]),
         ["wA", "wA", "wA", "wA", "wA"]);
 
-  /* A mouse cannot swipe, so the two that are safe enough to press by accident
-     are on the row itself. Remove is not one of them: deleting a checkout stays
-     behind the right-click, where it has to be aimed at. */
-  check("and a pointer gets the first two as icons in the corner",
-        icons(of({ repo: true })), [["rename", "wA"], ["close", "wA"]]);
+  /* A mouse cannot swipe, so the drawer is on the row itself, led by a new tab
+     in this worktree - the one thing a heading's plus no longer offers. Remove
+     asks before it deletes anything, and is only there for a linked worktree. */
+  check("and a pointer gets them as icons in the corner, led by a new tab",
+        icons(of({ repo: true })),
+        [["tab-new", "wA"], ["rename", "wA"], ["close", "wA"], ["remove", "wA"]]);
+  check("but never Remove on the project's own checkout",
+        icons(of({ repo: true, main_checkout: true })).map((t) => t[0]),
+        ["tab-new", "rename", "close"]);
   check("the row no longer grows an ellipsis that did nothing",
         /\\2026/.test(of({ repo: true })), false);
 }
@@ -873,9 +907,9 @@ function order(agents, busy = false, held = [], custom = []) {
   const tools = [...two.matchAll(
     /class="row-tool[^"]*"[\s\S]*?data-action="([a-z-]+)" data-[a-z-]+="([^"]*)"/g)]
     .map((m) => [m[1], m[2]]);
-  check("both halves wear rename and close for a mouse, and nothing else",
+  check("the title takes a new tab, and both halves rename and close for a mouse",
         tools,
-        [["rename", "wA"], ["close", "wA"],
+        [["tab-new", "wA"], ["rename", "wA"], ["close", "wA"], ["remove", "wA"],
          ["tab-rename", "wA:p1"], ["tab-close", "wA:t1"],
          ["tab-rename", "wA:p2"], ["tab-close", "wA:t2"]]);
 
@@ -1488,10 +1522,9 @@ function order(agents, busy = false, held = [], custom = []) {
   check("and nothing is said underneath", /quota-note/.test(out), false);
   check("its bar is full", /class="usage-window out">[\s\S]*?width:100%/.test(out), true);
 
-  /* A reading too old to hold work on is the one thing here no colour can say,
-     so it is said in words - the bars underneath it are the last thing we were
-     told rather than the truth. It was written and then left unrendered when
-     the strip went from one line to a line per agent. */
+  /* A reading too old to hold work on is greyed, with the reason in a tooltip
+     rather than a sentence underneath - the bars are the last thing we were
+     told rather than the truth. */
   const stale = loadUsage({
     threshold: 85,
     agents: [{
@@ -1500,8 +1533,9 @@ function order(agents, busy = false, held = [], custom = []) {
       ],
     }],
   }).quotaHtml();
-  check("a reading nobody can refresh says so",
-        /quota-note">last known reading/.test(stale), true);
+  check("a reading nobody can refresh is greyed",
+        /class="usage stale" title="last known reading/.test(stale), true);
+  check("and says nothing underneath", /quota-note/.test(stale), false);
 
   // An agent nobody can price keeps delivering, so the strip does not shout.
   const unknown = loadUsage({
@@ -1587,12 +1621,12 @@ function order(agents, busy = false, held = [], custom = []) {
   check("and no reading marks nothing at all", u.pastureMark(null), "");
 }
 
-/* -------------------------------------------------- The chats among the pens
+/* -------------------------------------------------- The chats tab
  *
- * A headless chat is a row in this list now. It is not a pane, which is the
- * whole thing worth testing: it must reach the list without reaching
- * `state.agents`, where the badge, the bleat and the selection all assume a
- * pane id Herdr would answer for.
+ * A headless chat is a row in the flock's other tab. It is not a pane, which
+ * is the whole thing worth testing: it must reach its list without reaching
+ * `state.agents` or a project, where the badge, the bleat and the selection
+ * all assume a pane id Herdr would answer for.
  * -------------------------------------------------------------------------- */
 {
   const f = loadFlock();
@@ -1607,7 +1641,7 @@ function order(agents, busy = false, held = [], custom = []) {
   check("a turn in flight is working",
         f.chatStatus(chat("a", "/p/api", { running: true })), "working");
   /* Deliberately never done: nothing marks a chat as read, so a chat that
-     answered last week would sit at the top of its project forever. */
+     answered last week would sit at the top of the list forever. */
   check("and one between turns is idle, never done",
         f.chatStatus(chat("a", "/p/api", { title: "Fix it" })), "idle");
 
@@ -1616,51 +1650,50 @@ function order(agents, busy = false, held = [], custom = []) {
   f.state.chats = [chat("c1", "/p/api", { title: "Fix the parser" })];
   f.orderAgents();
 
-  const api = f.state.groups.find((g) => g.key === "/p/api");
-  check("a chat joins the project its cwd names",
-        api.rows.map((pen) => pen.lead.pane_id), ["wA:p1", "chat:c1"]);
-  check("underneath the worktrees, which are the only rows with one",
-        api.rows[1].workspace_id, undefined);
-  /* The one that matters: nothing downstream of here may find a chat where it
-     expects a pane Herdr can be asked about. */
-  check("and never among the panes",
+  check("a chat is in the chats list",
+        f.state.chatPens.map((pen) => pen.lead.pane_id), ["chat:c1"]);
+  check("and not under the project its cwd names",
+        f.state.groups.flatMap((g) => g.rows.map((pen) => pen.lead.pane_id)),
+        ["wA:p1", "wB:p1"]);
+  check("nor among the panes",
         f.state.agents.map((a) => a.pane_id), ["wA:p1", "wB:p1"]);
   check("nor among the ids the held order is kept by",
         f.state.order, ["wA:p1", "wB:p1"]);
 
-  // A chat outlives its project's panes, and a chat you cannot see is one you
-  // cannot stop.
+  // The chat home is nobody's project: no heading is made up to hold a chat.
   f.state.agents = [row("wB:p1", 2, "/p/web", "idle")];
-  f.state.chats = [chat("c1", "/p/api", { title: "Fix the parser" })];
+  f.state.chats = [chat("c1", "/p/chats")];
   f.state.order = [];
   f.orderAgents();
-  const orphan = f.state.groups.find((g) => g.key === "/p/api");
-  check("a project with nothing but a chat still gets a heading", !!orphan, true);
-  check("named after the project rather than the chat", orphan.name, "api");
-  check("with nothing to cut a worktree from", orphan.from, "");
-  check("and sorted to the end, having no workspace number to place it by",
-        f.state.groups.map((g) => g.key), ["/p/web", "/p/api"]);
+  check("a chat makes no project heading", f.state.groups.map((g) => g.key), ["/p/web"]);
 
-  // A chat asking permission is as loud as a pane asking one.
-  f.state.agents = [row("wA:p1", 1, "/p/api", "idle"),
-                    row("wB:p1", 2, "/p/web", "idle")];
-  f.state.chats = [chat("c1", "/p/web", { pending: [{ id: "x" }] })];
-  f.state.order = [];
-  f.orderAgents();
-  check("a chat holding a question takes its project to the top",
-        f.state.groups.map((g) => g.key), ["/p/web", "/p/api"]);
-
-  // Two chats on one project: the one waiting on you leads.
+  // The one waiting on you first, then the one that moved last.
   f.state.agents = [row("wA:p1", 1, "/p/api", "idle")];
   f.state.chats = [
-    chat("quiet", "/p/api", { title: "Old", updated: 2000 }),
-    chat("asking", "/p/api", { title: "New", pending: [{ id: "x" }], updated: 1500 }),
+    chat("old", "/p/chats", { updated: 1000 }),
+    chat("new", "/p/chats", { updated: 3000 }),
+    chat("asking", "/p/chats", { pending: [{ id: "x" }], updated: 1500 }),
   ];
   f.state.order = [];
   f.orderAgents();
-  check("and among the chats of one project, the asking one is first",
-        f.state.groups[0].rows.map((pen) => pen.lead.pane_id),
-        ["wA:p1", "chat:asking", "chat:quiet"]);
+  check("the asking chat leads, then the newest",
+        f.state.chatPens.map((pen) => pen.chat.id), ["asking", "new", "old"]);
+}
+
+{
+  // A hand on the list holds the chats where they were drawn, too.
+  const f = loadFlock(true);
+  const chat = (id, extra = {}) => ({ id, cwd: "/p/chats", title: "", pending: [],
+                                      running: false, created: 1, updated: 1, ...extra });
+  f.state.agents = [row("wA:p1", 1, "/p/api", "idle")];
+  f.state.order = ["wA:p1"];
+  f.state.chats = [chat("a", { updated: 2 }), chat("b", { updated: 1 })];
+  f.orderChats(false);
+  f.state.chats = [chat("a", { updated: 2 }), chat("b", { updated: 1, pending: [{ id: "x" }] }),
+                   chat("c", { updated: 3 })];
+  f.orderAgents();
+  check("a swiped list does not reshuffle its chats; a new one comes first",
+        f.state.chatPens.map((pen) => pen.chat.id), ["c", "a", "b"]);
 }
 
 // -- what a chat's row says ---------------------------------------------------
@@ -1705,7 +1738,8 @@ function order(agents, busy = false, held = [], custom = []) {
      row shows has to be in it - a chat that starts asking and a chat that gets
      a title are both rows that changed. */
   const sig = (pen) => {
-    r.state.groups = [{ key: "/p/api", name: "api", from: "wA", rows: [pen] }];
+    r.state.flockTab = "chats";
+    r.state.chatPens = [pen];
     return r.agentListSignature();
   };
   check("a chat that starts asking redraws the list",
@@ -1714,6 +1748,114 @@ function order(agents, busy = false, held = [], custom = []) {
         sig(chatPen()) === sig(chatPen({ title: "Something else" })), false);
   check("and one that has not moved does not",
         sig(chatPen()), sig(chatPen()));
+}
+
+// -- folders ----------------------------------------------------------------
+
+/* A folder stands in the top-level order as `folder:<id>`, and what is filed
+   in it comes out of that order and into the folder's own. */
+{
+  const agents = () => [
+    row("wA:p1", 1, "/p/api", "idle"),
+    row("wB:p1", 2, "/p/web", "idle"),
+    row("wC:p1", 3, "/p/cli", "blocked"),
+  ];
+  const f = loadFlock();
+  f.state.agents = agents();
+  f.state.folders = [{ id: "x", name: "Later", projects: ["/p/web", "/p/gone"] }];
+  f.state.customOrder = ["/p/api", "folder:x", "/p/cli"];
+  f.orderAgents();
+  const top = () => f.state.layout.map((i) => i.key);
+  check("a folder takes its place in the order", top(), ["/p/api", "folder:x", "/p/cli"]);
+  check("and draws the open projects filed in it, not the closed ones",
+        f.state.layout[1].groups.map((g) => g.key), ["/p/web"]);
+  check("the flat list is the order the screen draws",
+        f.state.groups.map((g) => g.key), ["/p/api", "/p/web", "/p/cli"]);
+
+  f.state.customOrder = ["/p/api", "/p/cli"];
+  f.orderAgents();
+  check("a folder the order has not seen goes at the end", top(),
+        ["/p/api", "/p/cli", "folder:x"]);
+
+  // Into the folder, at the top of what it draws.
+  let next = f.dropInto(f.state.layout, "/p/api", { folder: "x", index: 0 });
+  check("a project dropped in a folder leaves the top level", next.order, ["/p/cli", "folder:x"]);
+  check("and is filed ahead of the project it was dropped over",
+        next.folders[0].projects, ["/p/api", "/p/web", "/p/gone"]);
+
+  // Below the last open project: past the closed one filed after it.
+  next = f.dropInto(f.state.layout, "/p/api", { folder: "x", index: 1 });
+  check("dropped after everything drawn goes at the end",
+        next.folders[0].projects, ["/p/web", "/p/gone", "/p/api"]);
+
+  // Out again.
+  next = f.dropInto(f.state.layout, "/p/web", { index: 0 });
+  check("a project dragged out is back at the top level", next.order,
+        ["/p/web", "/p/api", "/p/cli", "folder:x"]);
+  check("and no longer in the folder", next.folders[0].projects, ["/p/gone"]);
+
+  // A folder is only ever put between things.
+  next = f.dropInto(f.state.layout, "folder:x", { folder: "x", index: 0 });
+  check("a folder is never filed in a folder", next.order, ["/p/api", "/p/cli", "folder:x"]);
+  next = f.dropInto(f.state.layout, "folder:x", { index: 0 });
+  check("a folder moves like a project", next.order, ["folder:x", "/p/api", "/p/cli"]);
+
+  // Removing one files nothing anywhere else.
+  f.state.customOrder = ["/p/api", "folder:x", "/p/cli"];
+  f.orderAgents();
+  f.state.collapsed.add("f:x");
+  f.removeFolder("x");
+  check("an ungrouped folder's projects go back where it stood",
+        f.state.customOrder, ["/p/api", "/p/web", "/p/gone", "/p/cli"]);
+  check("and it is not remembered as folded", f.state.collapsed.has("f:x"), false);
+
+  const made = f.addFolder("New");
+  check("a new folder goes at the top", f.state.customOrder[0], "folder:" + made.id);
+}
+
+// -- folding ------------------------------------------------------------------
+
+{
+  const r = loadRows();
+  const agents = [
+    { ...row("wA:p1", 1, "/p/api", "blocked"), name: "api", title: "Which?" },
+    { ...row("wA:p2", 1, "/p/api", "working"), name: "api", title: "Go", tab_id: "t2" },
+  ];
+  agents[0].tab_id = "t1";
+  const group = { key: "/p/api", name: "api", from: "wA", agents, rows: byWorkspace(agents) };
+  const draw = () => {
+    r.state.groups = [group];
+    r.state.listSignature = null;
+    r.renderAgentList();
+    return r.elAgentList.innerHTML;
+  };
+
+  const open = draw();
+  check("an open project draws its rows", /class="agent-row st-/.test(open), true);
+  const before = r.agentListSignature();
+  r.state.collapsed = new Set(["p:/p/api"]);
+  check("folding is part of what redraws the list", before === r.agentListSignature(), false);
+  const folded = draw();
+  check("a folded project draws no rows", /class="agent-row st-/.test(folded), false);
+  check("but still says what is asking, loudest first",
+        [...folded.matchAll(/agent-dot ([a-z]+)/g)].map((m) => m[1]), ["blocked", "working"]);
+
+  r.state.collapsed = new Set(["w:wA"]);
+  const pen = draw();
+  check("a folded pen keeps its title", /pen-head folded/.test(pen), true);
+  check("and hides its tabs", /pen-tabs/.test(pen), false);
+
+  r.state.collapsed = new Set();
+  r.state.layout = [{ kind: "folder", key: "folder:x",
+                      folder: { id: "x", name: "Later", projects: ["/p/api"] },
+                      groups: [group] }];
+  const shelf = draw();
+  check("a folder draws its projects inside it", /folder-body[\s\S]*data-project="\/p\/api"/.test(shelf), true);
+  r.state.collapsed = new Set(["f:x"]);
+  const shut = draw();
+  check("a folded folder draws only its name", /data-project=/.test(shut), false);
+  check("with a dot for the question inside it", /agent-dot blocked/.test(shut), true);
+  r.state.layout = [];
 }
 
 if (failures) {

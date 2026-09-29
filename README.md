@@ -51,6 +51,17 @@ project telling you at a glance who is working and who is waiting.
   agent on the same branch, `×` to close one without touching the rest. Shells
   included, which is the row you want at 11pm when the thing you need is the
   dev server.
+- **`+ New`** at the top starts a **chat** — a Claude Code with no terminal,
+  with its permission mode and model — or a new project — a console in your
+  home directory — or makes a folder. The first chat asks which folder chats
+  live in; the settings show it and change it.
+- **Projects / Chats** at the top switches the list between the projects and
+  the chats started from `+ New`. The other tab wears a red dot while
+  something in it is waiting on you.
+- **`+` on a project** asks for a **console** — a whole Herdr workspace of its
+  own in the project's directory — or a **worktree** on a branch of its own. A
+  new **tab** is the `+` on a worktree's row (on hover, beside rename and
+  close) or in the tab strip above the transcript.
 - **Rename from the phone.** Projects and tabs both, using Herdr's own labels
   — so a project named on the sofa is named on the laptop too.
 - **What is queued**, on the sheep it is stacked behind: prompts waiting for a
@@ -278,6 +289,15 @@ Herdr when the project is a single workspace, so the laptop's strip reorders to
 match. Let go near the top or bottom and the list scrolls itself. An order you
 made by hand stays made: after a drag, nothing waiting pulls a project to the
 front.
+
+**Folders.** **+ New → Folder** makes a folder at the top of the list; drag a
+project onto its name to file it there, and drag it back out the same way.
+Tap a folder's name to fold it shut, swipe it for **Rename** and **Ungroup**
+(which only takes the folder away — its projects go back where it stood).
+Project headings and a worktree's tab list fold too, from the chevron beside
+them. Anything folded still shows a dot per agent in it, so a question folded
+away still pulses red. Folders are kept by the gateway, like the order; what is
+folded is each device's own.
 
 **Rename.** Swipe a row left for **Rename** and **Close**. A row is a
 worktree, so Rename changes the workspace's name; a single tab is renamed by

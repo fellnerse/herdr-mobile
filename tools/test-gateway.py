@@ -1077,6 +1077,35 @@ check("a pane with no composer at all is left alone",
 check("the composer is read from the bottom, not the top",
       server.composer_is_empty("> an old prompt, answered\nsome reply\n> "), True)
 
+# -- a shell's own guess at busy ---------------------------------------------
+
+# Herdr tracks agent_status for an agent; a plain shell has none, so this reads
+# its scrollback the way the composer above is read: from the bottom, off the
+# glyph a prompt ends a line with.
+check("sitting at a prompt is not busy",
+      server.shell_is_busy("~/code/sheepit\n$ "), False)
+check("a command still on the prompt line, not yet run, is busy",
+      server.shell_is_busy("$ npm run build"), True)
+check("output with no prompt after it is busy",
+      server.shell_is_busy("$ npm run build\nBuilding...\nStill going"), True)
+check("a shell nobody has typed into yet is not busy",
+      server.shell_is_busy(""), False)
+check("a zsh-style prompt is read the same way",
+      server.shell_is_busy("~/code/sheepit ❯ "), False)
+
+_shell_rows = [
+    {"pane_id": "wA:p1", "has_agent": True, "status": "working"},
+    {"pane_id": "wA:p2", "has_agent": False},
+]
+_orig_pane_text = server.pane_text
+server.pane_text = lambda pane_id, lines=6: "$ still running\nno prompt back yet"
+try:
+    server.mark_shell_busy(_shell_rows)
+finally:
+    server.pane_text = _orig_pane_text
+check("only the shell row is asked", "busy" not in _shell_rows[0], True)
+check("and it is marked busy from its own scrollback", _shell_rows[1]["busy"], True)
+
 # -- what counts as out of usage --------------------------------------------
 
 # A window is not a wall until it has nothing left. 87% of a weekly window is

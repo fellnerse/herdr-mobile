@@ -6,8 +6,12 @@
     /* The headless chats, kept apart from the panes on purpose. They are rows
        in the same list, but they are not panes - no workspace, no tab strip,
        no transcript - and everything from the badge to the bleat walks
-       `state.agents` assuming one. They join the list at `attachChats`. */
+       `state.agents` assuming one. They have a tab of their own in the flock,
+       drawn from `state.chatPens` (`orderChats`). */
     chats: [],
+    chatPens: [],
+    // Which half of the flock is on screen: "projects" or "chats".
+    flockTab: "projects",
     activePaneId: null,
     // Which headless chat the wide layout's right column is showing, if any.
     activeChatId: null,
@@ -23,6 +27,12 @@
     drafts: {},
     order: [],
     customOrder: [],
+    // Folders the projects are filed in, and what the list draws at its top
+    // level: projects and folders in order (`layoutGroups`).
+    folders: [],
+    layout: [],
+    // What is folded shut on this device (`toggleCollapsed`).
+    collapsed: new Set(),
     groups: [],
     // The flock is what the app opens on: a chat is something you go into.
     pickerOpen: true,
@@ -70,6 +80,7 @@
   const elAgentList = document.getElementById("agent-list");
   const elBtnClosePicker = document.getElementById("btn-close-picker");
   const elBtnNewWorkspace = document.getElementById("btn-new-workspace");
+  const elFlockTabs = document.getElementById("flock-tabs");
   const elHistoryContainer = document.getElementById("history-container");
   const elHistoryContent = document.getElementById("history-content");
   const elBtnScrollBottom = document.getElementById("btn-scroll-bottom");
@@ -83,6 +94,7 @@
   const elAttachStrip = document.getElementById("attach-strip");
   const elTerminalInputRow = document.getElementById("terminal-input-row");
   const elBtnAdopt = document.getElementById("btn-adopt");
+  const elBtnUnadopt = document.getElementById("btn-unadopt");
   const elBtnCycleMode = document.getElementById("btn-cycle-mode");
   const elBtnKeys = document.getElementById("btn-keys");
   const elComposerMenu = document.getElementById("composer-menu");
@@ -110,6 +122,8 @@
   const elPushHint = document.getElementById("push-hint");
   const elBtnTestPush = document.getElementById("btn-test-push");
   const elGlobalSettingsView = document.getElementById("global-settings-view");
+  const elChatHomePath = document.getElementById("chat-home-path");
+  const elBtnChatHome = document.getElementById("btn-chat-home");
   const elBtnCloseGlobalSettings = document.getElementById("btn-close-global-settings");
   const elBtnFlockSettings = document.getElementById("btn-flock-settings");
   const elBtnAddHeartbeat = document.getElementById("btn-add-heartbeat");
@@ -472,7 +486,8 @@
   /* What the desktop currently has typed into the pane, mirrored above the
      phone's composer so the two inputs do not look like one. */
   function renderLiveInput(textValue) {
-    const show = Boolean(textValue);
+    // A headless chat has no console, whatever the pane behind it has typed.
+    const show = Boolean(textValue) && !state.activeChatId;
     elTerminalInputRow.classList.toggle("hidden", !show);
     if (show) elTerminalInput.textContent = textValue;
   }
@@ -493,12 +508,17 @@
     }).join("");
   }
 
+  // An older poll must not replace a list fetched after creating a pane or chat.
+  let agentsRequest = 0;
+
   // Fetch Agent List
   async function fetchAgents() {
+    const request = ++agentsRequest;
     try {
       const res = await fetch("/api/agents");
       if (!res.ok) throw new Error("Failed to fetch agents");
       const data = await res.json();
+      if (request !== agentsRequest) return;
       state.agents = data.agents || [];
       state.chats = data.chats || [];
       // Deleted from another phone, or reaped: the column cannot keep showing it.
@@ -513,8 +533,10 @@
 
       // If no agent selected or active agent no longer exists, select first available
       if (
-        !state.activePaneId ||
-        !state.agents.some((a) => a.pane_id === state.activePaneId)
+        !state.activeChatId && (
+          !state.activePaneId ||
+          !state.agents.some((a) => a.pane_id === state.activePaneId)
+        )
       ) {
         // The first agent on screen, or failing that the first row there is:
         // a project whose tabs are all plain shells is still worth opening.
@@ -1101,7 +1123,20 @@
      change without any single row changing at all. */
   function agentListSignature() {
     const queued = queuedByPane();
-    return state.groups
+    if (state.flockTab === "chats") {
+      return "chats\u001d" + (state.chatPens || []).map((pen) => penMark(pen, queued)).join("\u001e");
+    }
+    /* The folders and what is folded shut: filing a project or folding one
+       away moves no row at all, and is still a different list. */
+    const shelves = (state.layout || [])
+      .map((item) =>
+        item.kind === "folder"
+          ? [item.key, item.folder.name, item.groups.map((g) => g.key).join("\u001c")].join("\u001b")
+          : item.key
+      )
+      .join("\u001a");
+    const folded = [...(state.collapsed || [])].sort().join("\u001a");
+    return shelves + "\u001d" + folded + "\u001d" + state.groups
       .map((group) =>
         [
           group.key,
@@ -1110,35 +1145,39 @@
           // whether it can offer a worktree: a project with no checkout open
           // can still take a tab.
           (group.from ? "w" : "") + (group.rows.some((pen) => pen.workspace_id) ? "t" : ""),
-          ...group.rows.map((pen) =>
-            [
-              pen.lead.pane_id,
-              pen.workspace_id,
-              // A tab opened or closed changes the row even when the pane
-              // leading it did not move.
-              tabCount(pen),
-              pen.lead.status,
-              pen.lead.has_agent ? "a" : "",
-              pen.lead.name,
-              tabName(pen.lead),
-              pen.lead.title || pen.lead.cwd,
-              rowAgo(pen.lead),
-              queuedLabel(penQueue(pen, queued)),
-              pastureMark(pastureOf(pen.lead.has_agent ? pen.lead.agent : "")),
-              // Any of its tabs being the open one lights the row up: the
-              // chat you came from is in this pen even when another tab leads.
-              // A headless chat lights up the same way, from its own id.
-              pen.chat
-                ? (state.activeChatId === pen.chat.id ? "1" : "")
-                : pen.tabs.some((a) => a.pane_id === state.activePaneId) ? "1" : "",
-              // And every tab of a pen that has them out, since a second tab
-              // going blocked moves nothing about the tab leading the pen.
-              penTabsMark(pen, queued),
-            ].join("\u001f")
-          ),
+          ...group.rows.map((pen) => penMark(pen, queued)),
         ].join("\u001e")
       )
       .join("\u001d");
+  }
+
+  // Everything one row draws, for the signature.
+  function penMark(pen, queued) {
+    return [
+      pen.lead.pane_id,
+      pen.workspace_id,
+      // A tab opened or closed changes the row even when the pane
+      // leading it did not move.
+      tabCount(pen),
+      pen.lead.status,
+      pen.lead.has_agent ? "a" : "",
+      pen.lead.busy ? "b" : "",
+      pen.lead.name,
+      tabName(pen.lead),
+      pen.lead.title || pen.lead.cwd,
+      rowAgo(pen.lead),
+      queuedLabel(penQueue(pen, queued)),
+      pastureMark(pastureOf(pen.lead.has_agent ? pen.lead.agent : "")),
+      // Any of its tabs being the open one lights the row up: the
+      // chat you came from is in this pen even when another tab leads.
+      // A headless chat lights up the same way, from its own id.
+      pen.chat
+        ? (state.activeChatId === pen.chat.id ? "1" : "")
+        : pen.tabs.some((a) => a.pane_id === state.activePaneId) ? "1" : "",
+      // And every tab of a pen that has them out, since a second tab
+      // going blocked moves nothing about the tab leading the pen.
+      penTabsMark(pen, queued),
+    ].join("\u001f");
   }
 
   /* A row under a heading that already names the project should not spend its
@@ -1196,10 +1235,12 @@
      again. A question on screen outranks even that - nothing is ever delivered
      into one, and it is the state that must never be buried.
 
-     A pane with no agent says nothing here: its sheep is already a terminal
-     window, and the word "shell" beside it was the same fact twice. */
+     A pane with no agent uses its shell activity to show Idle or Working. */
   function statusBadge(agent, status, queued) {
-    if (!agent.has_agent) return "";
+    if (!agent.has_agent) {
+      const shellStatus = agent.busy ? "working" : "idle";
+      return `<span class="status-badge status-${shellStatus}">${escapeHtml(shellStatus)}</span>`;
+    }
     const word = queued ? queuedLabel(queued) : "";
     if (!word || status === "blocked") {
       return `<span class="status-badge status-${status}">${escapeHtml(status)}</span>`;
@@ -1250,6 +1291,13 @@
        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
      </svg>`;
 
+  const ICON_PLUS =
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <line x1="12" y1="5" x2="12" y2="19"></line>
+       <line x1="5" y1="12" x2="19" y2="12"></line>
+     </svg>`;
+
   const ICON_REMOVE =
     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1270,10 +1318,13 @@
     return `<span class="${cls}">${icons.join("")}</span>`;
   }
 
-  // The pointer controls offer the same workspace actions as the swipe drawer.
+  // The pointer controls offer the same workspace actions as the swipe drawer,
+  // plus a new tab in this worktree - which a phone gets from the strip's +.
   // Only a linked worktree can have its checkout removed.
   function penTools(pen) {
     const tools = [
+      { action: "tab-new", key: "workspace-id", value: pen.workspace_id,
+        label: "New tab in this worktree", icon: ICON_PLUS },
       { action: "rename", key: "workspace-id", value: pen.workspace_id,
         label: "Rename this worktree", icon: ICON_PENCIL },
       { action: "close", key: "workspace-id", value: pen.workspace_id,
@@ -1393,7 +1444,7 @@
             : ""}
         </div>
         <button class="agent-row st-${status} ${isActive ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-          <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, penSeed(pen), pasture)}</span>
+          <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, penSeed(pen), pasture, false)}</span>
           <span class="agent-row-text">
             <span class="agent-row-name">${escapeHtml(headline)}</span>
             <span class="agent-row-meta">
@@ -1455,10 +1506,13 @@
      asked for most are on the row itself. `style.css` hides them wherever
      there is no hover to reveal them, which is every phone. A linked
      worktree also offers Remove here; removeWorktree asks before deletion. */
-  function penHeadHtml(pen) {
+  function penHeadHtml(pen, folded) {
     const lead = pen.lead;
     const label = lead.workspace_label || lead.name || pen.workspace_id;
     const removable = lead.repo && !lead.main_checkout;
+    /* Folded, the title is all there is of the pen, so it carries what the
+       tabs under it would have said: which of them needs you most. */
+    const summary = folded ? foldDotsHtml(pen.tabs) : "";
     return `
       <div class="agent-row-wrap">
         <div class="agent-row-actions">
@@ -1468,9 +1522,11 @@
             ? `<button class="agent-row-action remove" data-action="remove" data-workspace-id="${escapeHtml(pen.workspace_id)}">Remove</button>`
             : ""}
         </div>
-        <button class="agent-row pen-head" data-pane-id="${escapeHtml(lead.pane_id)}">
+        <button class="agent-row pen-head${folded ? " folded" : ""}" data-pane-id="${escapeHtml(lead.pane_id)}">
+          ${foldToggleHtml("w:" + pen.workspace_id, folded, `${label} tabs`)}
           <span class="pen-head-name">${escapeHtml(label)}</span>
           ${rowToolsHtml(penTools(pen), "pen-head-tools")}
+          ${summary}
           <span class="row-tabs">${tabCount(pen)} tabs</span>
         </button>
       </div>`;
@@ -1503,7 +1559,7 @@
             <button class="agent-row-action close" data-action="tab-close" data-tab-id="${escapeHtml(agent.tab_id)}">Close</button>
           </div>
           <button class="agent-row st-${status} ${agent.pane_id === state.activePaneId ? "active" : ""}" data-pane-id="${escapeHtml(agent.pane_id)}">
-            <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, agent.pane_id, pasture)}</span>
+            <span class="sheep-wrap ${iconStatus}"${wrapStyle ? ` style="${wrapStyle}"` : ""}>${sheepSvg(iconStatus, agent.pane_id, pasture, false)}</span>
             <span class="agent-row-text">
               <span class="agent-row-name">${escapeHtml(headline)}</span>
               <span class="agent-row-meta">
@@ -1542,6 +1598,7 @@
           a.pane_id,
           a.status,
           a.has_agent ? "a" : "",
+          a.busy ? "b" : "",
           a.title || a.cwd,
           tabChipLabel(a),
           rowAgo(a),
@@ -1556,9 +1613,11 @@
   // Either shape a workspace takes: one row, or a title with its tabs out.
   function penHtml(pen, groupName, counts) {
     if (!penShowsTabs(pen)) return agentRowHtml(pen, groupName, penQueue(pen, counts));
+    const folded = isCollapsed("w:" + pen.workspace_id);
+    if (folded) return `<div class="pen">${penHeadHtml(pen, true)}</div>`;
     return `
       <div class="pen">
-        ${penHeadHtml(pen)}
+        ${penHeadHtml(pen, false)}
         <div class="pen-tabs">
           ${penTabs(pen)
               .map((a) => penTabRowHtml(a, counts.get(a.pane_id) || null))
@@ -1572,7 +1631,9 @@
      are right there to be counted, and the ones asking you something are
      already at the top of the list, in the pose and the colour that says so. */
   function renderAgentList() {
-    if (state.groups.length === 0) {
+    renderFlockTabs();
+    if (state.flockTab === "chats") return renderChatList();
+    if (state.groups.length === 0 && !(state.layout || []).length) {
       state.listSignature = null;
       elAgentList.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
       return;
@@ -1586,38 +1647,173 @@
     state.listSignature = signature;
 
     const queued = queuedByPane();
-    elAgentList.innerHTML = state.groups
-      .map((group) => {
-        const owed = group.agents.reduce(
-          (sum, a) => sum + ((queued.get(a.pane_id) || {}).waiting || 0), 0
-        );
-        /* The one number left in a heading: prompts this project has not been
-           given yet. It stays because nothing else on the screen says so - a
-           sheep with a prompt still queued behind it looks idle. */
-        const owedChip = owed
-          ? `<span class="agent-group-queued">${owed} queued</span>`
-          : "";
-        /* Another one of these, please: a worktree cut off this project or a
-           tab beside what is already open - the sheet asks which. It lives in
-           the heading because the project is what both of them need to be
-           told, and the heading is the only thing on this screen that names
-           one. A project with nothing open has neither to offer. */
-        const add = group.from || group.rows.some((pen) => pen.workspace_id)
-          ? `<button class="agent-group-add" type="button"
-                     data-action="worktree" data-project="${escapeHtml(group.key)}"
-                     aria-label="New in ${escapeHtml(group.name)}">+</button>`
-          : "";
-        return `
-          <section class="agent-group" data-project="${escapeHtml(group.key)}">
-            <h2 class="agent-group-head">
-              <span class="agent-group-name">${escapeHtml(group.name)}</span>
-              ${owedChip}
-              ${add}
-            </h2>
-            ${group.rows.map((pen) => penHtml(pen, group.name, queued)).join("")}
-          </section>`;
-      })
+    const items = state.layout && state.layout.length
+      ? state.layout
+      : state.groups.map((group) => ({ kind: "project", key: group.key, group }));
+    elAgentList.innerHTML = items
+      .map((item) =>
+        item.kind === "folder" ? folderHtml(item, queued) : projectHtml(item.group, queued)
+      )
       .join("");
+  }
+
+  /* The switch at the top of the flock. Whichever half is off screen still
+     says when something in it is waiting on you: a question in the other tab
+     must not be one nobody sees. */
+  function renderFlockTabs() {
+    const blocked = {
+      projects: state.agents.some((a) => knownStatus(a.status) === "blocked"),
+      chats: (state.chatPens || []).some((pen) => pen.lead.status === "blocked"),
+    };
+    for (const btn of elFlockTabs.querySelectorAll("[data-flock-tab]")) {
+      const tab = btn.dataset.flockTab;
+      btn.setAttribute("aria-pressed", String(tab === state.flockTab));
+      btn.classList.toggle("wants", tab !== state.flockTab && blocked[tab]);
+    }
+  }
+
+  function renderChatList() {
+    const pens = state.chatPens || [];
+    if (!pens.length) {
+      state.listSignature = null;
+      elAgentList.innerHTML = '<div class="history-empty">No chats yet. Start one with + New.</div>';
+      return;
+    }
+    if (state.swiping || elAgentList.querySelector(".agent-row.swiped")) return;
+    const signature = agentListSignature();
+    if (signature === state.listSignature) return;
+    state.listSignature = signature;
+    // Not an .agent-group: there is no project here to lift and carry.
+    elAgentList.innerHTML = `<div class="chat-list">${pens.map(chatRowHtml).join("")}</div>`;
+  }
+
+  function setFlockTab(tab) {
+    if (tab !== "chats") tab = "projects";
+    if (tab === state.flockTab) return;
+    state.flockTab = tab;
+    savePref("sheepit.flocktab", tab);
+    state.listSignature = null;
+    resetSwipe();
+    renderAgentList();
+  }
+
+  function projectHtml(group, queued) {
+    const owed = group.agents.reduce(
+      (sum, a) => sum + ((queued.get(a.pane_id) || {}).waiting || 0), 0
+    );
+    /* The one number left in a heading: prompts this project has not been
+       given yet. It stays because nothing else on the screen says so - a
+       sheep with a prompt still queued behind it looks idle. */
+    const owedChip = owed
+      ? `<span class="agent-group-queued">${owed} queued</span>`
+      : "";
+    /* Another one of these, please: a worktree cut off this project or a
+       tab beside what is already open - the sheet asks which. It lives in
+       the heading because the project is what both of them need to be
+       told, and the heading is the only thing on this screen that names
+       one. A project with nothing open has neither to offer. */
+    const add = group.from || group.rows.some((pen) => pen.workspace_id)
+      ? `<button class="agent-group-add" type="button"
+                 data-action="worktree" data-project="${escapeHtml(group.key)}"
+                 aria-label="New in ${escapeHtml(group.name)}">+</button>`
+      : "";
+    /* Folded, the heading is the whole project, so it says what the sheep
+       under it would have: one dot each, in the colour of what it is doing -
+       a question folded away still pulses red. */
+    const folded = isCollapsed("p:" + group.key);
+    const summary = folded ? foldDotsHtml(group.agents) : "";
+    return `
+      <section class="agent-group${folded ? " folded" : ""}" data-project="${escapeHtml(group.key)}">
+        <h2 class="agent-group-head">
+          ${foldToggleHtml("p:" + group.key, folded, group.name)}
+          <span class="agent-group-name" data-action="fold" data-fold="${escapeHtml("p:" + group.key)}">${escapeHtml(group.name)}</span>
+          ${summary}
+          ${owedChip}
+          ${add}
+        </h2>
+        ${folded ? "" : group.rows.map((pen) => penHtml(pen, group.name, queued)).join("")}
+      </section>`;
+  }
+
+  /* A folder: its name on a row of its own, which is what a thumb holds to
+     carry it and swipes to rename or delete it, and the projects filed in it
+     underneath. Tapping the name folds it. */
+  function folderHtml(item, queued) {
+    const { folder, groups } = item;
+    const folded = isCollapsed("f:" + folder.id);
+    const count = groups.length === 1 ? "1 project" : `${groups.length} projects`;
+    const everyone = groups.flatMap((g) => g.agents);
+    const tools = [
+      { action: "folder-rename", key: "folder-id", value: folder.id,
+        label: "Rename this folder", icon: ICON_PENCIL },
+      { action: "folder-delete", key: "folder-id", value: folder.id,
+        label: "Remove this folder (its projects stay)", icon: ICON_TRASH, danger: true },
+    ];
+    const inside = groups.length
+      ? groups.map((group) => projectHtml(group, queued)).join("")
+      : '<div class="folder-empty">Drag a project here</div>';
+    return `
+      <section class="folder${folded ? " folded" : ""}" data-folder="${escapeHtml(folder.id)}">
+        <div class="agent-row-wrap folder-head-wrap">
+          <div class="agent-row-actions">
+            <button class="agent-row-action rename" data-action="folder-rename" data-folder-id="${escapeHtml(folder.id)}">Rename</button>
+            <button class="agent-row-action close" data-action="folder-delete" data-folder-id="${escapeHtml(folder.id)}">Ungroup</button>
+          </div>
+          <button class="agent-row folder-head" data-folder-id="${escapeHtml(folder.id)}"
+                  aria-expanded="${folded ? "false" : "true"}">
+            <span class="fold-chevron" aria-hidden="true">${ICON_CHEVRON}</span>
+            <span class="folder-icon" aria-hidden="true">${ICON_FOLDER}</span>
+            <span class="folder-name">${escapeHtml(folder.name || "Folder")}</span>
+            ${rowToolsHtml(tools, "pen-head-tools")}
+            ${folded ? foldDotsHtml(everyone) : ""}
+            <span class="row-tabs">${count}</span>
+          </button>
+        </div>
+        ${folded ? "" : `<div class="folder-body">${inside}</div>`}
+      </section>`;
+  }
+
+  const ICON_CHEVRON =
+    `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <polyline points="6 9 12 15 18 9"></polyline>
+     </svg>`;
+
+  const ICON_FOLDER =
+    `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+       <path d="M3 19V6a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+     </svg>`;
+
+  /* The chevron that folds a project or a pen. A span rather than a button,
+     since it sits inside the pen's title, which is a button already - the
+     click handler reads `data-action` before it reads the row. */
+  function foldToggleHtml(key, folded, name) {
+    return `<span class="fold-toggle" role="button" data-action="fold"
+                  data-fold="${escapeHtml(key)}" aria-expanded="${folded ? "false" : "true"}"
+                  aria-label="${folded ? "Show" : "Hide"} ${escapeHtml(name)}">${ICON_CHEVRON}</span>`;
+  }
+
+  /* What a folded thing still owes you: a dot per agent, loudest first, in
+     the colours the dots have everywhere else. Shells are left out - a dot
+     that is always grey says nothing - and a long flock is cut short with a
+     count, since the point is the red one, not the census. */
+  const FOLD_DOTS = 8;
+
+  function foldDotsHtml(rows) {
+    const agents = rows
+      .filter((a) => a.has_agent)
+      .map((a) => knownStatus(displayedStatus(a)))
+      .sort((a, b) => (URGENCY[a] ?? 4) - (URGENCY[b] ?? 4));
+    if (!agents.length) return "";
+    const dots = agents
+      .slice(0, FOLD_DOTS)
+      .map((st) => `<span class="agent-dot ${st}"></span>`)
+      .join("");
+    const more = agents.length > FOLD_DOTS
+      ? `<span class="fold-more">+${agents.length - FOLD_DOTS}</span>`
+      : "";
+    return `<span class="fold-dots" title="${escapeHtml(agents.join(", "))}">${dots}${more}</span>`;
   }
 
   /* Renaming happens on the laptop as well. These are Herdr's own labels - the
@@ -1702,27 +1898,31 @@
     return data;
   }
 
-  async function createWorkspace() {
+  /* A new Herdr workspace - a whole console of its own, not a tab in one
+     that is already open. Opened in the project's directory when it is asked
+     for from a project, so it lands under that heading. */
+  async function createWorkspace(cwd) {
     triggerHaptic();
-    const before = new Set(state.agents.map((a) => a.workspace_id));
     try {
-      const res = await fetch("/api/workspaces", { method: "POST" });
+      const res = await fetch("/api/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cwd ? { cwd } : {}),
+      });
       if (!res.ok) throw new Error("create failed");
-      await fetchAgents();
-      // Open the one that was not there a moment ago.
-      const created = state.agents.find((a) => !before.has(a.workspace_id));
-      if (created) {
-        // A workspace made from the flock's + New action is the one kind of
-        // new project that belongs at the top. Other projects discovered by
-        // polling join the end of the saved order.
-        const key = projectKey(created);
-        state.customOrder = [key, ...state.customOrder.filter((item) => item !== key)];
-        saveOrder();
-        orderAgents();
-        renderAgentList();
-        selectAgent(created.pane_id);
+      const data = await res.json();
+      if (!data.pane_id) throw new Error("No pane returned for the new terminal");
+      let created;
+      for (let attempt = 0; attempt < 3 && !created; attempt++) {
+        await fetchAgents();
+        created = state.agents.find((a) => a.pane_id === data.pane_id);
       }
-      else closePicker();
+      // Open the pane Herdr created. A poll can bring in another workspace at
+      // the same time, so a difference between two lists is not its identity.
+      if (created) {
+        selectAgent(created.pane_id);
+        if (!wide.matches) openConsole();
+      } else throw new Error("The new terminal did not appear");
     } catch (err) {
       alert("Could not create workspace: " + err.message);
     }
@@ -1744,8 +1944,8 @@
    * ------------------------------------------------------------------------ */
 
   let newSheet = null;
-  // The projects and permission modes a chat may be started with. Asked for
-  // once, when a chat is first asked for, rather than on every poll.
+  // The permission modes a chat may be started with, and the directory it
+  // starts in. Asked for whenever a chat is, since the settings can move it.
   let chatOptions = null;
 
   function openNewSheet(where, extra) {
@@ -1763,9 +1963,13 @@
     elSheetBackdrop.classList.add("hidden");
   }
 
-  // The plus at the top of the flock: nothing exists yet, so nothing is known.
+  /* The plus at the top of the flock: nothing exists yet, so nothing is known.
+     This is where a new project starts - a console in the home directory, to
+     cd and clone from - and where a folder is made. */
   function openNewAnything() {
     openNewSheet("flock");
+    // In the chats tab there is only one thing `+ New` could mean.
+    if (state.flockTab === "chats") chooseChat();
   }
 
   /* The plus on a project heading. It knows the project, and which of its
@@ -1778,16 +1982,23 @@
       return fallback ? { ...fallback, rows: byWorkspace(fallback.agents) } : null;
     })();
     if (!group) return;
-    /* The project's own checkout when it is open, and failing that whichever
-       of its worktrees leads the list - a project that is nothing but
-       worktrees can still be given another tab, it just cannot be branched. */
+    /* No tab from here: a tab belongs to one worktree, and a heading does not
+       know which one you meant. That is the plus on the worktree's own row. */
     const lead = group.rows.find((pen) => pen.workspace_id);
     openNewSheet("project", {
       project: group.key,
       name: group.name,
       from: group.from,
-      workspaceId: group.from || (lead && lead.workspace_id) || "",
+      cwd: projectDir(group.key, lead && lead.lead),
     });
+  }
+
+  /* Where a new console for a project opens: the project's own directory,
+     which is the repository root for a repository - so the workspace groups
+     under the same heading - and whatever a pane stands in otherwise. */
+  function projectDir(key, row) {
+    if (key && key.startsWith("/")) return key;
+    return (row && row.cwd) || "";
   }
 
   /* The plus in the tab strip. Same sheet, but here the worktree you are
@@ -1803,13 +2014,15 @@
       from: group ? group.from : "",
       workspaceId,
       workspaceName: row.workspace_label || row.name,
+      cwd: projectDir(group ? group.key : projectKey(row), row),
     });
   }
 
   const ICON = {
     chat: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
-    terminal: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2"/><polyline points="6.5 9 9.5 12 6.5 15"/><line x1="12" y1="15.5" x2="17" y2="15.5"/></svg>',
+    console: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2"/><polyline points="6.5 9 9.5 12 6.5 15"/><line x1="12" y1="15.5" x2="17" y2="15.5"/></svg>',
     worktree: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 7.5v9M6 12h5a4 4 0 0 0 4-1.2"/></svg>',
+    folder: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19V6a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>',
     tab: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19V7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   };
 
@@ -1831,13 +2044,8 @@
       elNewSheetTitle.textContent = "New";
       elNewSheetBody.innerHTML =
         choiceHtml("chat", "Chat", "a Claude Code you talk to, with no terminal behind it") +
-        choiceHtml("terminal", "Terminal", "an empty Herdr workspace to start something in");
-      return;
-    }
-    if (where === "flock" && step === "chat") {
-      elNewSheetTitle.textContent = "New chat";
-      elNewSheetBody.innerHTML = chatFormHtml();
-      restoreChatPrefs();
+        choiceHtml("console", "Console", "an empty Herdr workspace to start a new project in") +
+        choiceHtml("folder", "Folder", "somewhere to drag projects you are not touching this week");
       return;
     }
     if (where === "project" && step === "choose") {
@@ -1851,8 +2059,24 @@
         ? `another agent beside the one in ${newSheet.workspaceName}`
         : "another agent on the branch that is already checked out";
       const tab = newSheet.workspaceId ? choiceHtml("tab", "Tab", here) : "";
-      elNewSheetBody.innerHTML = (worktree + tab) ||
+      // A workspace of its own, in the project's directory: nothing is shared
+      // with what is open already, and it needs no repository to be made.
+      const own = newSheet.cwd
+        ? choiceHtml("console", "Console", "a new Herdr workspace of its own in this project")
+        : "";
+      elNewSheetBody.innerHTML = (tab + own + worktree) ||
         '<p class="new-choice-hint">Nothing of this project is open to add to.</p>';
+      return;
+    }
+    if (step === "chat") {
+      elNewSheetTitle.textContent = "New chat";
+      elNewSheetBody.innerHTML = chatFormHtml();
+      restoreChatPrefs();
+      return;
+    }
+    if (step === "home") {
+      elNewSheetTitle.textContent = where === "settings" ? "Chats live in" : "Where should chats live?";
+      elNewSheetBody.innerHTML = dirPickerHtml();
       return;
     }
     if (where === "project" && step === "worktree") {
@@ -1869,23 +2093,17 @@
   }
 
   /* The settings a chat is started with, which are the only ones it ever gets:
-     the directory, what it may do without asking, and which model. Remembered
-     between chats, because the answer is nearly always the last answer. */
+     what it may do without asking, and which model. Remembered between chats,
+     because the answer is nearly always the last answer. Where it runs is not
+     asked: every chat from here starts in the one directory the settings name. */
   function chatFormHtml() {
-    if (!chatOptions) return '<p class="new-choice-hint">Reading projects…</p>';
-    if (!chatOptions.dirs.length) {
-      return '<p class="new-choice-hint">No projects open. A chat starts in a directory the flock already has a pane in.</p>';
-    }
-    const dirs = chatOptions.dirs
-      .map((d) => `<option value="${escapeHtml(d.cwd)}">${escapeHtml(d.name)}</option>`)
-      .join("");
+    if (!chatOptions) return '<p class="new-choice-hint">Reading…</p>';
     const modes = chatOptions.modes
       .map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`)
       .join("");
     return `
-      <label class="new-field">Project
-        <select id="new-chat-cwd">${dirs}</select>
-      </label>
+      <p class="new-chat-home">in <span>${escapeHtml(chatOptions.home)}</span>
+        <button type="button" class="new-link" data-choose="home">change</button></p>
       <div class="new-row">
         <label class="new-field">Permissions
           <select id="new-chat-mode">${modes}</select>
@@ -1903,42 +2121,53 @@
   }
 
   function restoreChatPrefs() {
-    const cwd = document.getElementById("new-chat-cwd");
     const mode = document.getElementById("new-chat-mode");
     const model = document.getElementById("new-chat-model");
-    if (!cwd) return;
-    /* The project a chat is most likely to be about is the one whose row you
-       were just looking at, and failing that the last one you picked. */
-    const here = state.agents.find((a) => a.pane_id === state.activePaneId);
-    const guess = (here && here.project) || readPref("chat.cwd");
-    if (guess && chatOptions.dirs.some((d) => d.cwd === guess)) cwd.value = guess;
     if (mode) mode.value = readPref("chat.mode") || "auto";
     if (model) model.value = readPref("chat.model") || "";
   }
 
   async function loadChatOptions() {
-    if (chatOptions) return;
     try {
       const res = await fetch("/api/chat");
       const data = await res.json();
-      chatOptions = { dirs: data.dirs || [], modes: data.modes || ["auto"] };
+      chatOptions = { home: data.home || "", modes: data.modes || ["auto"] };
     } catch (err) {
-      chatOptions = { dirs: [], modes: ["auto"] };
+      chatOptions = null;
+      throw err;
     }
-    if (newSheet && newSheet.step === "chat") renderNewSheet();
+    return chatOptions;
+  }
+
+  /* Chat first asks where chats live, once: a phone has no folder dialog for
+     the machine the agents are on, so the gateway walks it one level at a time. */
+  async function chooseChat() {
+    newSheet.step = "chat";
+    chatOptions = null;
+    renderNewSheet();
+    try {
+      await loadChatOptions();
+    } catch (err) {
+      closeNewSheet();
+      alert("Could not reach the gateway: " + err.message);
+      return;
+    }
+    if (!newSheet) return;
+    if (!chatOptions.home) {
+      newSheet.step = "home";
+      newSheet.then = "chat";
+      return browseDir("");
+    }
+    renderNewSheet();
   }
 
   async function startChat() {
-    const cwd = document.getElementById("new-chat-cwd");
     const mode = document.getElementById("new-chat-mode");
     const model = document.getElementById("new-chat-model");
-    if (!cwd || !cwd.value) return;
     const body = {
-      cwd: cwd.value,
       mode: (mode && mode.value) || "auto",
       model: (model && model.value) || "",
     };
-    savePref("sheepit.chat.cwd", body.cwd);
     savePref("sheepit.chat.mode", body.mode);
     savePref("sheepit.chat.model", body.model);
     triggerHaptic();
@@ -1951,32 +2180,139 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data.error || "refused");
       closeNewSheet();
-      // Straight into it: a chat with nothing said in it has nothing to show.
-      await fetchAgents();
+      // The creation response has the chat already; show it without waiting
+      // for the project list to refresh.
+      state.chats = [...state.chats.filter((c) => c.id !== data.chat.id), data.chat];
+      setFlockTab("chats");
       openChat(data.chat.id);
+      await fetchAgents();
     } catch (err) {
       alert("Could not start a chat: " + err.message);
     }
   }
 
+  /* The folder picker, for the chat home. `newSheet.dir` is the directory on
+     screen - its path, its parent and its children, as the gateway read them. */
+  async function browseDir(path) {
+    if (!newSheet) return;
+    newSheet.dir = { ...(newSheet.dir || {}), loading: true, error: "" };
+    renderNewSheet();
+    try {
+      const target = path || (chatOptions && chatOptions.home) || "";
+      const res = await fetch("/api/chat/dirs?path=" + encodeURIComponent(target));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || "refused");
+      if (!newSheet) return;
+      newSheet.dir = { path: data.path, parent: data.parent, dirs: data.dirs, home: data.home };
+    } catch (err) {
+      if (!newSheet) return;
+      newSheet.dir = { ...newSheet.dir, loading: false, error: err.message };
+    }
+    renderNewSheet();
+  }
+
+  function dirPickerHtml() {
+    const dir = newSheet.dir || {};
+    if (!dir.path) {
+      return `<p class="new-choice-hint">${dir.error ? escapeHtml("Could not read it: " + dir.error) : "Reading…"}</p>`;
+    }
+    const up = dir.parent
+      ? `<button type="button" class="dir-item dir-up" data-dir="${escapeHtml(dir.parent)}">..</button>`
+      : "";
+    const items = dir.dirs
+      .map((name) => {
+        const full = (dir.path === "/" ? "" : dir.path) + "/" + name;
+        return `<button type="button" class="dir-item" data-dir="${escapeHtml(full)}">${escapeHtml(name)}</button>`;
+      })
+      .join("");
+    const first = newSheet.then === "chat"
+      ? '<p class="new-choice-hint dir-why">Every chat started from here runs in this folder. You can change it later in the settings.</p>'
+      : "";
+    return `${first}
+      <div class="dir-path">${escapeHtml(dir.path)}</div>
+      <div class="dir-list">${up}${items || (up ? "" : '<p class="new-choice-hint">No folders in here.</p>')}</div>
+      ${dir.error ? `<p class="new-choice-hint">${escapeHtml(dir.error)}</p>` : ""}
+      <div class="new-row dir-make">
+        <input id="new-dir-name" type="text" autocapitalize="off" autocorrect="off"
+               spellcheck="false" placeholder="new folder in here">
+        <button type="button" class="sheet-btn-small" data-go="mkdir">Make</button>
+      </div>
+      <button type="button" class="new-go" data-go="home"${dir.loading ? " disabled" : ""}>Use this folder</button>`;
+  }
+
+  async function makeDir() {
+    const input = document.getElementById("new-dir-name");
+    const name = input ? input.value.trim() : "";
+    if (!name || !newSheet || !newSheet.dir) return;
+    try {
+      const res = await fetch("/api/chat/dirs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: newSheet.dir.path, name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || "refused");
+      browseDir(data.path);
+    } catch (err) {
+      alert("Could not make that folder: " + err.message);
+    }
+  }
+
+  async function saveChatHome() {
+    if (!newSheet || !newSheet.dir || !newSheet.dir.path) return;
+    triggerHaptic();
+    try {
+      const res = await fetch("/api/chat/home", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: newSheet.dir.path }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || "refused");
+      chatOptions = { ...(chatOptions || { modes: ["auto"] }), home: data.home };
+      renderChatHomeSetting(data.home);
+    } catch (err) {
+      alert("Could not keep that folder: " + err.message);
+      return;
+    }
+    if (newSheet.then === "chat") {
+      newSheet.step = "chat";
+      renderNewSheet();
+    } else {
+      closeNewSheet();
+    }
+  }
+
   elNewSheet.addEventListener("click", (e) => {
+    const dir = e.target.closest("[data-dir]");
+    if (dir) {
+      browseDir(dir.dataset.dir);
+      return;
+    }
     const choice = e.target.closest("[data-choose]");
     if (choice) {
       const pick = choice.dataset.choose;
       triggerHaptic();
       // The two that need nothing more said happen now; the two that do get
       // the second step of the same sheet rather than a dialog over it.
-      if (pick === "terminal") {
+      if (pick === "console") {
+        const cwd = newSheet.cwd;
         closeNewSheet();
-        createWorkspace();
+        createWorkspace(cwd);
+      } else if (pick === "folder") {
+        closeNewSheet();
+        newFolder();
       } else if (pick === "tab") {
         const workspaceId = newSheet.workspaceId;
         closeNewSheet();
         createTab(workspaceId);
       } else if (pick === "chat") {
-        newSheet.step = "chat";
-        renderNewSheet();
-        loadChatOptions();
+        chooseChat();
+      } else if (pick === "home") {
+        // From the chat form: pick again, then come back to it.
+        newSheet.step = "home";
+        newSheet.then = "chat";
+        browseDir("");
       } else if (pick === "worktree") {
         newSheet.step = "worktree";
         renderNewSheet();
@@ -1985,8 +2321,10 @@
     }
     const go = e.target.closest("[data-go]");
     if (!go) return;
-    if (go.dataset.go === "chat") startChat();
-    else if (go.dataset.go === "worktree") cutWorktreeFromSheet();
+    if (go.dataset.go === "worktree") cutWorktreeFromSheet();
+    else if (go.dataset.go === "chat") startChat();
+    else if (go.dataset.go === "home") saveChatHome();
+    else if (go.dataset.go === "mkdir") makeDir();
   });
 
   /* Return in the branch field is the same as the button: a name and a return
@@ -1995,6 +2333,9 @@
     if (e.key === "Enter" && e.target.id === "new-branch") {
       e.preventDefault();
       cutWorktreeFromSheet();
+    } else if (e.key === "Enter" && e.target.id === "new-dir-name") {
+      e.preventDefault();
+      makeDir();
     }
   });
 
@@ -2254,6 +2595,8 @@
   /* Select a pane and start at its first available view. */
   function selectAgent(paneId, open = true) {
     if (open) state.chatVisited = true; // there is now a chat to go back to
+    const draftBefore = draftKey();
+    rememberDraft(draftBefore);
     // A pane takes the column back off whatever headless chat had it.
     state.activeChatId = null;
     const pane = state.agents.find((agent) => agent.pane_id === paneId);
@@ -2262,15 +2605,16 @@
     if (open) closePicker();
     if (changed) {
       setCtrlCArmed(false);
-      rememberDraft(state.activePaneId);
       touchAgent(paneId);
       state.activePaneId = paneId;
-      resetRecall();
-      restoreDraft(paneId);
       attachStrip.clear();
       state.historyText = "";
       state.heldHistory = null;
       elHistoryContent.innerHTML = '<div class="history-empty">Loading…</div>';
+    }
+    if (draftKey() !== draftBefore) {
+      resetRecall();
+      restoreDraft(draftKey());
     }
     state.paneView = hasChat ? "chat" : "transcript";
     state.chatVisible = hasChat;
@@ -2587,6 +2931,7 @@
     if (!text || !state.activePaneId || state.isSending) return;
 
     state.isSending = true;
+    state.queueRequest++; // and one already asked is answered too early
     elBtnSend.disabled = true;
     triggerHaptic();
 
@@ -2619,7 +2964,6 @@
       // - straight into a free chat - never draws a queue chip at all. What is
       // actually being held shows up when the grace is up.
       holdBack(data.id);
-      fetchQueue();
       setTimeout(() => {
         fetchAgents();
         fetchHistory(true);
@@ -2629,6 +2973,7 @@
     } finally {
       state.isSending = false;
     }
+    fetchQueue();
   }
 
   /* Send Key Action. A refused key used to fail silently, which on a phone is
@@ -3062,11 +3407,13 @@
   }
 
   async function fetchQueue() {
+    // A poll answered mid-send has the new row in it but not yet its grace.
+    if (state.isSending) return;
     const request = ++state.queueRequest;
     try {
       const res = await fetch("/api/queue");
       const data = await res.json();
-      if (!data.ok || request !== state.queueRequest) return;
+      if (!data.ok || request !== state.queueRequest || state.isSending) return;
       state.queue = stillOwed(data.prompts || []);
       renderChatQueue();
       // The herd is polled before the queue, so the counts on the rows arrive
@@ -3387,13 +3734,12 @@
       .join("");
 
     /* An expired reading is too old to hold work on, so the queue has stopped
-       believing it and the strip says so rather than showing a wall that is not
-       there. The bars are the last thing we were told, not the truth - and it
-       is the one thing here worth a sentence, because no colour can say "these
-       numbers are stale". A window that is merely full needs no commentary:
-       its own colour is the sentence. */
-    const note = a.expired
-      ? '<div class="quota-note">last known reading — running anyway until usage can be read</div>'
+       believing it. The bars are the last thing we were told, not the truth,
+       so the whole line is greyed and the reason is left to a tooltip rather
+       than a sentence underneath that pushes the strip down. A window that is
+       merely full needs no commentary: its own colour is the sentence. */
+    const stale = a.expired
+      ? ' stale" title="last known reading — running anyway until usage can be read'
       : "";
 
     /* How fast this one is eating, under its own name. The bars say what is
@@ -3404,12 +3750,11 @@
     const rate = rateLabel(burnRate(fastestWindow(a)));
 
     return `
-      <div class="usage">
+      <div class="usage${stale}">
         <span class="usage-agent">${escapeHtml(name)}${
           rate ? `<span class="usage-rate">${escapeHtml(rate)}</span>` : ""}</span>
         ${windows}
-      </div>
-      ${note}`;
+      </div>`;
   }
 
   // The shortest window still running: the one that says what is being spent
@@ -3462,6 +3807,16 @@
   }
 
   function renderChatQueue() {
+    /* A chat draws its own strip inside the chat view. Asked by state as well
+       as by the view's class, because switching chats hides the view for the
+       moment a fetch takes - long enough for this one to draw the same rows a
+       second time under it, at the dock's width. */
+    if (state.chatVisible || state.activeChatId
+        || !elChatView.classList.contains("hidden")) {
+      chatQueueStrip.render([]);
+      state.queueSignature = null;
+      return;
+    }
     const queued = queuedFor(state.activePaneId);
     if (!queued.length) {
       chatQueueStrip.render([]);
@@ -3518,7 +3873,7 @@
     triggerHaptic();
     elPromptInput.value = queued.prompt || "";
     autoResizeTextarea();
-    saveDraft();
+    rememberDraft();
     elBtnSend.disabled = !elPromptInput.value.trim();
     elPromptInput.focus();
     await queueAction(id, "delete");
@@ -3579,6 +3934,7 @@
   function loadPrefs() {
     try {
       state.paneView = readPref("view") || (wide.matches ? "chat" : "transcript");
+      state.flockTab = readPref("flocktab") === "chats" ? "chats" : "projects";
       // Normal is a phone-only view. Older builds may have saved either its
       // current or former name; migrate both values before the first render.
       if (wide.matches && ["normal", "transcript"].includes(state.paneView)) {
@@ -3588,6 +3944,8 @@
       setKeysBar(readPref("keys") !== "0");
       state.activity = loadActivity();
       state.customOrder = loadOrder();
+      state.folders = loadFolders();
+      state.collapsed = loadCollapsed();
       state.drafts = loadDrafts();
       state.history = loadHistory();
       state.bleat = readPref("bleat") !== "0";
@@ -3643,11 +4001,30 @@
     draftStore.save();
   }
 
-  /* Remember what is in the composer now, against the pane it belongs to.
-     Called as you type, and again before the pane changes under it. */
-  function rememberDraft(paneId) {
-    const id = paneId || state.activePaneId;
-    draftStore.remember(id);
+  /* Whose the text in the composer is: a headless chat's own, or the pane's.
+     A pane read as a chat shares its pane's draft - it is the same agent, and
+     the same sentence, whichever way it is being read. */
+  function draftKey() {
+    return state.activeChatId ? "chat:" + state.activeChatId : state.activePaneId;
+  }
+
+  /* Remember what is in the composer now, against the chat it belongs to.
+     Called as you type, and again before the chat changes under it. */
+  function rememberDraft(key) {
+    draftStore.remember(key || draftKey());
+  }
+
+  /* Run something that may change which chat is in front, keeping the
+     composer's text with the one it was typed for and bringing back the
+     other's. */
+  function switchDraft(change) {
+    const before = draftKey();
+    rememberDraft(before);
+    change();
+    const after = draftKey();
+    if (after === before) return;
+    resetRecall();
+    restoreDraft(after);
   }
 
   function restoreDraft(paneId) {
@@ -3729,11 +4106,9 @@
    * project's sheep stay where you last saw them, and a new one joins the end
    * of its own project rather than jumping to the front of everything.
    *
-   * The exception is a sheep that is waiting on you, and there are two ways to
-   * be: stopped on a question, and finished a turn nobody has read yet. Both
-   * rise to the top of their project and carry their project to the top of the
-   * list - until a finger says otherwise, because an order somebody made by
-   * hand is a promise that the project stays where it was put.
+   * A sheep waiting on a question or a finished turn may rise within its
+   * project. Project headings stay where they first appeared until moved by
+   * hand.
    * ------------------------------------------------------------------------ */
 
   /* When a row was created, as a number that only ever grows. Herdr numbers
@@ -3909,48 +4284,29 @@
     };
   }
 
-  /* Hang each chat on the project its cwd names. A project whose panes are all
-     closed still gets a heading, because the chat in it is still running and a
-     chat you cannot see is a chat you cannot stop - such a group gets no `+`
-     for a worktree, since there is no open checkout to cut one from. */
-  function attachChats(groups) {
-    if (!state.chats || !state.chats.length) return groups;
-    const byKey = new Map(groups.map((g) => [g.key, g]));
-    for (const chat of state.chats) {
-      const row = chatRowOf(chat);
-      let group = byKey.get(row.project);
-      if (!group) {
-        group = {
-          key: row.project,
-          name: row.project_name || row.project,
-          agents: [],
-          from: "",
-          chats: [],
-        };
-        byKey.set(group.key, group);
-        groups.push(group);
-      }
-      (group.chats || (group.chats = [])).push(row);
+  /* The chats tab: every headless chat, the one waiting on you first and then
+     the one that moved last. They used to hang under the project their cwd
+     named, but a chat from `+ New` runs in the chat home, which is nobody's
+     project - its heading was a project made up to hold them. While a hand is
+     on the list the order they were drawn in holds, like the projects'. */
+  function orderChats(held) {
+    const pens = state.chats.map(chatRowOf).map((row) => ({
+      key: row.pane_id, chat: row.chat, lead: row, tabs: [row],
+    }));
+    if (held) {
+      const rank = new Map((state.chatPens || []).map((pen, i) => [pen.key, i]));
+      const at = (key) => (rank.has(key) ? rank.get(key) : -1);
+      pens.sort((a, b) => at(a.key) - at(b.key) || (b.lead.updated || 0) - (a.lead.updated || 0));
+    } else {
+      pens.sort((a, b) =>
+        attentionOf(b.lead) - attentionOf(a.lead) || (b.lead.updated || 0) - (a.lead.updated || 0));
     }
-    return groups;
-  }
-
-  /* Which chats a project shows, loudest first. Same pair the panes sort by,
-     so a chat holding a permission prompt sits above one merely thinking. */
-  function orderChats(group) {
-    (group.chats || []).sort(
-      (a, b) => attentionOf(b) - attentionOf(a) || (b.updated || 0) - (a.updated || 0)
-    );
+    state.chatPens = pens;
   }
 
   function collapseTabs(groups) {
     for (const group of groups) {
       group.rows = byWorkspace(group.agents);
-      // Under the pens: a chat has no worktree to stand in, and putting it
-      // among them would make the list look like it had one.
-      for (const row of group.chats || []) {
-        group.rows.push({ key: row.pane_id, chat: row.chat, lead: row, tabs: [row] });
-      }
     }
     return groups;
   }
@@ -4020,6 +4376,45 @@
     }
   }
 
+  const FOLDERS_KEY = "sheepit.folders";
+
+  function loadFolders() {
+    try {
+      const raw = JSON.parse(readPref("folders") || "[]");
+      return Array.isArray(raw) ? raw.filter(validFolder) : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function validFolder(f) {
+    return f && typeof f.id === "string" && typeof f.name === "string" &&
+      Array.isArray(f.projects);
+  }
+
+  function saveFolders() {
+    savePref(FOLDERS_KEY, JSON.stringify(state.folders));
+    fetch("/api/folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folders: state.folders }),
+    }).catch(() => {});
+  }
+
+  async function loadServerFolders() {
+    try {
+      const res = await fetch("/api/folders");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.saved) state.folders = (data.folders || []).filter(validFolder);
+      else if (state.folders.length) saveFolders();
+      orderAgents();
+      renderAgentList();
+    } catch (err) {
+      // Keep the cached folders when the gateway cannot be reached.
+    }
+  }
+
   // A project carried from one slot to another, as a list of keys.
   function reorder(keys, from, to) {
     const next = keys.slice();
@@ -4036,16 +4431,173 @@
     return to > from ? to + 1 : to;
   }
 
-  /* A hand-made order wins over creation order. Agent activity only sorts rows
-     inside a project; it must never move the project heading itself. */
+  /* A hand-made order wins. Otherwise keep each project's last displayed
+     position and append newly discovered projects, even if their workspace
+     number is older than projects already on screen. */
   function sortGroups(groups) {
     const rank = new Map(state.customOrder.map((key, i) => [key, i]));
-    if (rank.size) {
-      const at = (key) => (rank.has(key) ? rank.get(key) : Number.MAX_SAFE_INTEGER);
-      groups.sort((a, b) => at(a.key) - at(b.key) || a.born - b.born);
-      return;
+    const seen = new Map(state.groups.map((group, i) => [group.key, i]));
+    const at = (map, key) => map.has(key) ? map.get(key) : Number.MAX_SAFE_INTEGER;
+    groups.sort((a, b) =>
+      at(rank, a.key) - at(rank, b.key) ||
+      at(seen, a.key) - at(seen, b.key) ||
+      a.born - b.born
+    );
+  }
+
+  /* ---------------------------------------------------------- Folders ---
+   *
+   * Nine projects is a list you scroll to the end of to find the one you
+   * wanted, and most of them are ones you are not touching this week. A
+   * folder is somewhere to put those: a name, and the projects dragged into
+   * it, drawn together and folded shut until you want them.
+   *
+   * The top level is still `customOrder`, with a folder standing in it as
+   * `folder:<id>` - so a folder is carried about exactly like a project is -
+   * and what is inside a folder is in the folder's own `projects`, in the
+   * order they are drawn. A project is in at most one folder; the first one
+   * that names it wins. A key whose panes are all closed stays in its folder,
+   * so reopening the project next week puts it back where it was filed.
+   *
+   * The folders are the gateway's, like the order. Which of them are folded
+   * shut is this device's: a laptop has room for everything open and a phone
+   * does not.
+   * ---------------------------------------------------------------------- */
+  const FOLDER_PREFIX = "folder:";
+
+  function folderKey(folder) {
+    return FOLDER_PREFIX + folder.id;
+  }
+
+  function folderOfProject(key) {
+    return (state.folders || []).find((f) => f.projects.includes(key)) || null;
+  }
+
+  /* The top level as drawn: every project that is in no folder, and every
+     folder, placed by `customOrder`. Projects arrive already sorted, and the
+     ones the order knows form a prefix of them (sortGroups), so a folder the
+     order knows slots in among that prefix by rank and one it does not goes
+     at the end. Each folder carries the groups filed in it that are open. */
+  function layoutGroups(groups) {
+    const folders = state.folders || [];
+    const byKey = new Map(groups.map((g) => [g.key, g]));
+    const filed = new Map();
+    for (const folder of folders) {
+      for (const key of folder.projects) if (!filed.has(key)) filed.set(key, folder);
     }
-    groups.sort((a, b) => a.born - b.born);
+    const rank = new Map(state.customOrder.map((key, i) => [key, i]));
+    const at = (key) => (rank.has(key) ? rank.get(key) : Number.MAX_SAFE_INTEGER);
+    const items = groups
+      .filter((g) => !filed.has(g.key))
+      .map((group) => ({ kind: "project", key: group.key, group }));
+    const shelved = folders
+      .map((folder) => ({
+        kind: "folder",
+        key: folderKey(folder),
+        folder,
+        groups: folder.projects
+          .filter((key) => filed.get(key) === folder && byKey.has(key))
+          .map((key) => byKey.get(key)),
+      }))
+      .sort((a, b) => at(a.key) - at(b.key));
+    for (const item of shelved) {
+      const r = at(item.key);
+      const i = items.findIndex((other) => at(other.key) > r);
+      if (i < 0) items.push(item);
+      else items.splice(i, 0, item);
+    }
+    return items;
+  }
+
+  // The projects in the order the layout draws them, folders opened out.
+  function layoutProjects(items) {
+    return items.flatMap((item) => (item.kind === "folder" ? item.groups : [item.group]));
+  }
+
+  /* Where a carried project or folder was put down. `target` is either a slot
+     at the top level (`{ index }`, counted without the thing being carried)
+     or a place inside a folder (`{ folder: id, index }`). Returns the new
+     top-level order and the new folders; the caller saves them. A folder is
+     never put in a folder. */
+  function dropInto(items, key, target) {
+    if (target.folder && key.startsWith(FOLDER_PREFIX)) {
+      return { order: items.map((item) => item.key), folders: state.folders || [] };
+    }
+    const folders = (state.folders || []).map((f) => ({
+      ...f,
+      projects: f.projects.filter((k) => k !== key),
+    }));
+    const top = items.map((item) => item.key).filter((k) => k !== key);
+    if (target.folder) {
+      const folder = folders.find((f) => f.id === target.folder);
+      if (folder) {
+        /* The index counts what the folder draws, which is only the projects
+           that are open; the closed ones filed around them keep their place
+           relative to those. */
+        const shown = folder.projects.filter((k) => items.some(
+          (item) => item.kind === "folder" && item.folder.id === folder.id &&
+            item.groups.some((g) => g.key === k)
+        ));
+        const before = shown[target.index];
+        const i = before === undefined ? folder.projects.length : folder.projects.indexOf(before);
+        folder.projects.splice(i, 0, key);
+        return { order: top, folders };
+      }
+    }
+    const index = Math.max(0, Math.min(top.length, target.index || 0));
+    top.splice(index, 0, key);
+    return { order: top, folders };
+  }
+
+  /* A new folder goes at the top, where it can be seen being made and is
+     right there for the first project to be dragged into. */
+  function addFolder(name) {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const folder = { id, name, projects: [] };
+    state.folders = [...(state.folders || []), folder];
+    const top = (state.layout || []).map((item) => item.key);
+    state.customOrder = [folderKey(folder), ...top.filter((k) => k !== folderKey(folder))];
+    return folder;
+  }
+
+  /* Taking a folder away files nothing anywhere else: what was in it goes back
+     to the top level in the folder's place, in the order it was in. */
+  function removeFolder(id) {
+    const folder = (state.folders || []).find((f) => f.id === id);
+    if (!folder) return;
+    const key = folderKey(folder);
+    const inside = folder.projects;
+    state.folders = state.folders.filter((f) => f !== folder);
+    const top = (state.layout || []).map((item) => item.key);
+    const at = top.indexOf(key);
+    if (at < 0) state.customOrder = [...top, ...inside];
+    else state.customOrder = [...top.slice(0, at), ...inside, ...top.slice(at + 1)];
+    state.collapsed.delete("f:" + id);
+  }
+
+  /* What is folded shut on this device: `f:<folder id>`, `p:<project key>`
+     and `w:<workspace id>`. Kept in the device's own storage, because how
+     much of the flock fits on a screen is a fact about the screen. */
+  const COLLAPSED_KEY = "sheepit.collapsed";
+
+  function loadCollapsed() {
+    try {
+      const raw = JSON.parse(readPref("collapsed") || "[]");
+      return new Set(Array.isArray(raw) ? raw.filter((k) => typeof k === "string") : []);
+    } catch (err) {
+      return new Set();
+    }
+  }
+
+  function isCollapsed(key) {
+    return Boolean(state.collapsed && state.collapsed.has(key));
+  }
+
+  function toggleCollapsed(key) {
+    if (!state.collapsed) state.collapsed = new Set();
+    if (state.collapsed.has(key)) state.collapsed.delete(key);
+    else state.collapsed.add(key);
+    savePref(COLLAPSED_KEY, JSON.stringify([...state.collapsed]));
   }
 
   /* Never reshuffle a list under a hand: an agent changing state would slide a
@@ -4073,39 +4625,31 @@
       state.agents.sort((a, b) => at(a.pane_id) - at(b.pane_id));
       // A pane that appeared while you were reading joins its own project at
       // the end, rather than being stranded below every group.
-      state.groups = collapseTabs(attachChats(groupByProject(state.agents)));
+      const pens = collapseTabs(groupByProject(state.agents));
+      state.layout = layoutGroups(pens);
+      state.groups = layoutProjects(state.layout);
+      orderChats(true);
       return;
     }
 
-    const groups = attachChats(groupByProject(state.agents));
+    const groups = groupByProject(state.agents);
     for (const group of groups) {
       group.agents.sort(
         (a, b) => attentionOf(b) - attentionOf(a) || bornAt(a) - bornAt(b)
       );
-      orderChats(group);
       // A project is as loud as its loudest sheep: a question ahead of a
-      // finished turn, both ahead of a project that wants nothing. A chat
-      // holding a permission prompt is as loud as a pane holding one.
-      group.wants = Math.max(
-        0,
-        ...group.agents.map(attentionOf),
-        ...(group.chats || []).map(attentionOf)
-      );
-      /* Creation order, which only the panes have: Herdr numbers a workspace
-         and a chat has no number to be given. A project that is nothing but
-         chats therefore sorts to the end, which is where the newest thing
-         belongs anyway - and the moment a pane opens in it, it takes its real
-         place in the strip. */
-      group.born = group.agents.length
-        ? Math.min(...group.agents.map(bornAt))
-        : Number.MAX_SAFE_INTEGER;
+      // finished turn, both ahead of a project that wants nothing.
+      group.wants = Math.max(0, ...group.agents.map(attentionOf));
+      group.born = Math.min(...group.agents.map(bornAt));
     }
     sortGroups(groups);
     collapseTabs(groups);
 
-    state.groups = groups;
-    state.agents = groups.flatMap((g) => g.agents);
+    state.layout = layoutGroups(groups);
+    state.groups = layoutProjects(state.layout);
+    state.agents = state.groups.flatMap((g) => g.agents);
     state.order = state.agents.map((a) => a.pane_id);
+    orderChats(false);
   }
 
   // Opening a project is activity too, even when its agent sat still.
@@ -4231,7 +4775,17 @@
       else if (action.dataset.action === "rename") renameRow(action.dataset.workspaceId);
       else if (action.dataset.action === "remove") removeWorktree(action.dataset.workspaceId);
       else if (action.dataset.action === "worktree") openNewInProject(action.dataset.project);
+      else if (action.dataset.action === "tab-new") createTab(action.dataset.workspaceId);
       else if (action.dataset.action === "chat-delete") deleteChat(action.dataset.chatId);
+      else if (action.dataset.action === "fold") {
+        if (suppressClick) {
+          suppressClick = false;
+          return;
+        }
+        fold(action.dataset.fold);
+      }
+      else if (action.dataset.action === "folder-rename") renameFolder(action.dataset.folderId);
+      else if (action.dataset.action === "folder-delete") deleteFolder(action.dataset.folderId);
       /* A tab of an opened pen, which is the only row whose drawer acts on
          something smaller than the worktree. Closing is the same one the
          strip's x calls, so it asks the same question before it stops an
@@ -4258,9 +4812,53 @@
       suppressClick = false;
       return;
     }
-    if (row.dataset.chatId) openChat(row.dataset.chatId);
+    if (row.dataset.folderId) fold("f:" + row.dataset.folderId);
+    else if (row.dataset.chatId) openChat(row.dataset.chatId);
     else if (row.dataset.paneId && !openAsChat(row.dataset.paneId)) selectAgent(row.dataset.paneId);
   });
+
+  function fold(key) {
+    triggerHaptic();
+    resetSwipe();
+    toggleCollapsed(key);
+    renderAgentList();
+  }
+
+  /* Folders are this app's own, not Herdr's, so these ask nothing of the
+     laptop: the gateway keeps them and the next poll draws them. */
+  function newFolder() {
+    const name = prompt("New folder", "");
+    if (name === null || !name.trim()) return;
+    triggerHaptic();
+    addFolder(name.trim().slice(0, 200));
+    saveFolders();
+    saveOrder();
+    orderAgents();
+    renderAgentList();
+  }
+
+  function renameFolder(id) {
+    const folder = state.folders.find((f) => f.id === id);
+    resetSwipe();
+    if (!folder) return;
+    const name = prompt("Rename folder", folder.name);
+    if (name === null || !name.trim() || name.trim() === folder.name) return;
+    triggerHaptic();
+    folder.name = name.trim().slice(0, 200);
+    saveFolders();
+    renderAgentList();
+  }
+
+  // Only the folder goes: its projects are put back where it stood.
+  function deleteFolder(id) {
+    resetSwipe();
+    triggerHaptic();
+    removeFolder(id);
+    saveFolders();
+    saveOrder();
+    orderAgents();
+    renderAgentList();
+  }
 
   /* A headless chat has no pane behind it, so there is nothing to select and
      nothing to show a transcript of: on a phone it is the chat page, and past
@@ -4269,8 +4867,7 @@
   function openChat(chatId) {
     if (!chatId) return;
     triggerHaptic();
-    rememberDraft(state.activePaneId);
-    state.activeChatId = chatId;
+    switchDraft(() => { state.activeChatId = chatId; });
     state.chatVisible = true;
     // Neither the console nor the diff has a pane to read here.
     closePaneViews();
@@ -4298,6 +4895,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data.error || "refused");
+      clearDraft("chat:" + chatId);
       if (state.activeChatId === chatId) state.activeChatId = null;
       resetSwipe();
       await fetchAgents();
@@ -4327,6 +4925,8 @@
       || (wide.matches ? state.paneView === "chat" : state.chatVisible));
     const targetId = show ? (state.activeChatId || target) : "";
     elChatView.classList.toggle("hidden", !show);
+    // The pane chat owns its queue strip; the dock queue belongs to transcript view.
+    renderChatQueue();
     // The transcript used to sit behind a chat that was `position: fixed`
     // over the whole screen, so leaving it in the document did nothing. Now
     // both are flex items in the same flow, and an unhidden transcript is a
@@ -4367,20 +4967,24 @@
   document.addEventListener("sheepit:chat-open", (event) => {
     const chat = event.detail;
     if (chat && chat.kind === "pane") {
-      state.activeChatId = null;
-      state.activePaneId = chat.pane_id || state.activePaneId;
+      switchDraft(() => {
+        state.activeChatId = null;
+        state.activePaneId = chat.pane_id || state.activePaneId;
+      });
       closePicker();
       setPaneView("chat");
     } else if (chat) {
-      state.activeChatId = chat.id;
+      switchDraft(() => { state.activeChatId = chat.id; });
       state.chatVisible = true;
       closePicker();
       renderAgentBar();
     }
   });
+  // The chat half of this file queues its own prompts; they get the same grace.
+  document.addEventListener("sheepit:queued", (event) => holdBack(event.detail));
   document.addEventListener("sheepit:chat-close", () => {
     const headless = !!state.activeChatId;
-    state.activeChatId = null;
+    switchDraft(() => { state.activeChatId = null; });
     state.chatVisible = false;
     if (!headless) state.paneView = wide.matches ? "chat" : "transcript";
     elChatView.classList.add("hidden");
@@ -4403,7 +5007,6 @@
   function openAsChat(paneId) {
     const agent = state.agents.find((a) => a.pane_id === paneId);
     if (!paneHasChat(agent)) return false;
-    rememberDraft(state.activePaneId);
     selectAgent(paneId, false);
     if (!wide.matches) closePicker();
     setPaneView("chat");
@@ -4505,10 +5108,13 @@
   // start carrying a project once its heading or row moves a few pixels.
   let pointerDrag = null;
   elAgentList.addEventListener("pointerdown", (e) => {
-    if (e.pointerType !== "mouse" || e.button !== 0 || state.groups.length < 2) return;
-    const group = e.target.closest(".agent-group");
-    const row = group && group.querySelector(".agent-row");
-    if (row) pointerDrag = { row, x: e.clientX, y: e.clientY };
+    if (e.pointerType !== "mouse" || e.button !== 0) return;
+    suppressClick = false;
+    if (!canCarry()) return;
+    // Not from a folder's own contents that are no project, like its hint.
+    if (!e.target.closest(".agent-group, .folder-head-wrap")) return;
+    if (e.target.closest(".agent-row-actions")) return;
+    pointerDrag = { row: e.target, x: e.clientX, y: e.clientY };
   });
   window.addEventListener("pointermove", (e) => {
     if (!pointerDrag) return;
@@ -4533,11 +5139,14 @@
   elAgentList.addEventListener("touchstart", (e) => {
     touchList();
     const row = e.target.closest(".agent-row");
-    if (!row) return;
+    // A project's heading lifts it too, which is the only handle a folded
+    // project has left - but it has no drawer behind it to swipe open.
+    const head = !row && e.target.closest(".agent-group-head");
+    if (!row && !head) return;
     suppressClick = false;
-    if (!row.classList.contains("swiped")) resetSwipe();
+    if (!row || !row.classList.contains("swiped")) resetSwipe();
     const touch = e.touches[0];
-    const actions = row.parentElement.querySelector(".agent-row-actions");
+    const actions = row && row.parentElement.querySelector(".agent-row-actions");
     swipe = {
       row,
       width: (actions && actions.offsetWidth) || SWIPE_WIDTH,
@@ -4549,9 +5158,10 @@
     state.swiping = true; // hold the redraw until the finger is off the row
     // The project is what gets carried, whichever of its rows the finger is
     // on - and there is nothing to reorder in a list of one.
-    if (state.groups.length > 1) {
+    if (canCarry()) {
+      const held = row || head;
       cancelLift();
-      liftTimer = setTimeout(() => startDrag(row, touch.clientY), LIFT_MS);
+      liftTimer = setTimeout(() => startDrag(held, touch.clientY), LIFT_MS);
     }
   }, { passive: true });
 
@@ -4570,6 +5180,7 @@
     const dx = touch.clientX - swipe.x;
     const dy = touch.clientY - swipe.y;
     if (Math.abs(dx) > LIFT_SLOP || Math.abs(dy) > LIFT_SLOP) cancelLift();
+    if (!swipe.row) return; // a heading: held or scrolled, never swiped
     if (swipe.axis === null) {
       if (Math.abs(dx) < SWIPE_SLOP && Math.abs(dy) < SWIPE_SLOP) return;
       swipe.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
@@ -4618,6 +5229,13 @@
     swipe = null;
   }, { passive: true });
 
+  // Something to carry and somewhere else to put it: two things at the top,
+  // or two projects anywhere, or one project and a folder to file it in.
+  function canCarry() {
+    if (state.flockTab === "chats") return false;
+    return (state.layout || []).length > 1 || state.groups.length > 1;
+  }
+
   /* Whichever of the two is actually scrolling: on a phone the flock is the
      document, past 900px it is a column with its own overflow. */
   function listScroller() {
@@ -4635,79 +5253,122 @@
     return y - elAgentList.getBoundingClientRect().top + elAgentList.scrollTop;
   }
 
-  /* Carrying a project.
+  /* Carrying a project, or a folder.
 
-     Every position is measured once, when the project comes up, and in the
-     list's own coordinates rather than the screen's - so the arithmetic still
-     holds when the list scrolls itself at the edges. Nothing is reordered
-     while the finger is down: the rows in between slide by the height of the
-     one being carried, which is a transform and costs nothing, and the list is
-     only rebuilt once it is put down. */
-  function startDrag(row, y) {
-    const group = row.closest(".agent-group");
-    if (!group) return;
+     Every position is measured once, when it comes up, and in the list's own
+     coordinates rather than the screen's - so the arithmetic still holds when
+     the list scrolls itself at the edges. Nothing moves while the finger is
+     down but the thing being carried: where it would land is a line between
+     two others, or a folder lit up to take it, and the list is only rebuilt
+     once it is put down. Sliding the rest out of the way worked while the
+     list was one level deep; with folders there is no one row to slide past. */
+  function startDrag(el, y) {
+    const unit = el.closest(".agent-group, .folder");
+    if (!unit) return;
     swipe = null; // this finger is lifting, not swiping
     resetSwipe();
     suppressClick = true;
 
-    const groups = Array.from(elAgentList.querySelectorAll(".agent-group"));
     const listTop = elAgentList.getBoundingClientRect().top;
     const scroll = elAgentList.scrollTop;
-    const tops = groups.map((g) => g.getBoundingClientRect().top - listTop + scroll);
-    const heights = groups.map((g) => g.getBoundingClientRect().height);
-    const from = groups.indexOf(group);
-    if (from < 0) return;
+    const box = (node) => {
+      const r = node.getBoundingClientRect();
+      return { top: r.top - listTop + scroll, bottom: r.bottom - listTop + scroll };
+    };
+    const isFolder = unit.classList.contains("folder");
+    const blocks = Array.from(elAgentList.children)
+      .filter((node) => node !== unit && node.matches(".agent-group, .folder"))
+      .map((node) => {
+        const block = { node, ...box(node), folder: null };
+        if (node.classList.contains("folder")) {
+          const head = node.querySelector(".folder-head-wrap");
+          block.folder = {
+            id: node.dataset.folder,
+            head: head ? box(head) : { top: block.top, bottom: block.top },
+            open: !node.classList.contains("folded"),
+            children: Array.from(node.querySelectorAll(".folder-body > .agent-group"))
+              .filter((child) => child !== unit)
+              .map(box),
+          };
+        }
+        return block;
+      });
+    const origin = box(unit).top;
 
     drag = {
-      group,
-      groups,
-      tops,
-      heights,
-      from,
-      to: from,
-      // The gap the CSS leaves between projects, read off the layout rather
-      // than written down twice.
-      gap: groups.length > 1 ? tops[1] - (tops[0] + heights[0]) : 0,
-      grab: pointInList(y) - tops[from],
+      unit,
+      key: isFolder ? FOLDER_PREFIX + unit.dataset.folder : unit.dataset.project,
+      isFolder,
+      blocks,
+      origin,
+      grab: pointInList(y) - origin,
+      target: null,
+      line: document.createElement("div"),
       y,
     };
-    group.classList.add("dragging");
+    drag.line.className = "drop-line hidden";
+    elAgentList.appendChild(drag.line);
+    unit.classList.add("dragging");
     elAgentList.classList.add("dragging");
     triggerHaptic("warning");
     dragTo(y);
     requestAnimationFrame(edgeScroll);
   }
 
+  /* Where the finger is pointing, as a place `dropInto` understands. Over a
+     folder is into it - at the top when it is folded or the finger is on its
+     name, between two of its projects when it is open - except for the top of
+     its name and the very bottom of it, which are the way past it. A folder
+     being carried only ever goes between things. */
+  function dropTarget(p) {
+    if (!drag.isFolder) {
+      for (const block of drag.blocks) {
+        const folder = block.folder;
+        if (!folder) continue;
+        const head = folder.head;
+        const edge = head.top + (head.bottom - head.top) * 0.3;
+        if (p < edge || p > block.bottom - 6) continue;
+        const kids = folder.children;
+        if (!folder.open || p <= head.bottom || !kids.length) {
+          return { folder: folder.id, index: 0, node: block.node, line: null };
+        }
+        let index = 0;
+        for (const kid of kids) if (p > (kid.top + kid.bottom) / 2) index++;
+        const line = index < kids.length ? kids[index].top - 4 : kids[kids.length - 1].bottom + 2;
+        return { folder: folder.id, index, node: block.node, line };
+      }
+    }
+    const blocks = drag.blocks;
+    let index = 0;
+    for (const block of blocks) if (p > (block.top + block.bottom) / 2) index++;
+    const line = !blocks.length
+      ? drag.origin
+      : index < blocks.length
+        ? blocks[index].top - 7
+        : blocks[blocks.length - 1].bottom + 7;
+    return { index, node: null, line };
+  }
+
   function dragTo(y) {
     drag.y = y;
     const top = pointInList(y) - drag.grab;
-    drag.group.style.transform = `translateY(${top - drag.tops[drag.from]}px)`;
+    drag.unit.style.transform = `translateY(${top - drag.origin}px)`;
 
-    // Where it would land: the first slot whose middle the carried project has
-    // passed, in whichever direction it is going.
-    const center = top + drag.heights[drag.from] / 2;
-    let to = drag.from;
-    for (let i = 0; i < drag.groups.length; i++) {
-      if (i === drag.from) continue;
-      const middle = drag.tops[i] + drag.heights[i] / 2;
-      if (i < drag.from && center < middle) to = Math.min(to, i);
-      else if (i > drag.from && center > middle) to = Math.max(to, i);
+    const target = dropTarget(pointInList(y));
+    const before = drag.target;
+    drag.target = target;
+    if (target.line === null) drag.line.classList.add("hidden");
+    else {
+      drag.line.classList.remove("hidden");
+      drag.line.style.top = `${target.line}px`;
     }
-    if (to === drag.to) return;
-    drag.to = to;
-    shiftGroups();
-    triggerHaptic();
-  }
-
-  function shiftGroups() {
-    const step = drag.heights[drag.from] + drag.gap;
-    drag.groups.forEach((g, i) => {
-      if (i === drag.from) return;
-      let shift = 0;
-      if (drag.to > drag.from && i > drag.from && i <= drag.to) shift = -step;
-      else if (drag.to < drag.from && i >= drag.to && i < drag.from) shift = step;
-      g.style.transform = shift ? `translateY(${shift}px)` : "";
-    });
+    if (before && before.node && before.node !== target.node) {
+      before.node.classList.remove("drop-into");
+    }
+    if (target.node) target.node.classList.add("drop-into");
+    if (!before || before.folder !== target.folder || before.index !== target.index) {
+      triggerHaptic();
+    }
   }
 
   function edgeScroll() {
@@ -4732,18 +5393,27 @@
   }
 
   function endDrag() {
-    const { groups, group, from, to } = drag;
-    for (const g of groups) g.style.transform = "";
-    group.classList.remove("dragging");
+    const { unit, key, isFolder, target, line } = drag;
+    unit.style.transform = "";
+    unit.classList.remove("dragging");
     elAgentList.classList.remove("dragging");
+    elAgentList.querySelectorAll(".drop-into").forEach((n) => n.classList.remove("drop-into"));
+    line.remove();
     drag = null;
     state.swiping = false;
-    if (to === from) return;
+    if (!target) return;
 
-    const before = groups.map((g) => g.dataset.project);
-    const after = reorder(before, from, to);
-    state.customOrder = after;
+    const items = state.layout || [];
+    const before = layoutProjects(items).map((g) => g.key);
+    const next = dropInto(items, key, target);
+    const same =
+      JSON.stringify(next.order) === JSON.stringify(items.map((item) => item.key)) &&
+      JSON.stringify(next.folders) === JSON.stringify(state.folders || []);
+    if (same) return;
+    state.customOrder = next.order;
+    state.folders = next.folders;
     saveOrder();
+    saveFolders();
     triggerHaptic();
     /* The held order exists to stop the list shuffling itself while somebody
        reads it; this is somebody rearranging it on purpose, so let go of it
@@ -4751,7 +5421,7 @@
     state.order = [];
     orderAgents();
     renderAgentList();
-    moveProject(before[from], before, after);
+    if (!isFolder) moveProject(key, before, layoutProjects(state.layout).map((g) => g.key));
   }
 
   /* Tell the laptop, when there is something unambiguous to tell it. A project
@@ -4802,6 +5472,12 @@
   }
 
   elBtnNewWorkspace.addEventListener("click", openNewAnything);
+  elFlockTabs.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-flock-tab]");
+    if (!btn) return;
+    triggerHaptic();
+    setFlockTab(btn.dataset.flockTab);
+  });
   elBtnCloseNewSheet.addEventListener("click", closeNewSheet);
 
 
@@ -4836,9 +5512,9 @@
 
   elPromptInput.addEventListener("input", () => {
     autoResizeTextarea();
+    rememberDraft();
     if (state.chatVisible || state.activeChatId) return;
     scheduleCompletion();
-    rememberDraft();
     elBtnSend.disabled = !elPromptInput.value.trim() && !attachStrip.list.length;
   });
   // Tapping a chip blurs the textarea, so the bar must outlive the blur long
@@ -4919,7 +5595,37 @@
     const existing = elPromptInput.value.trim();
     elPromptInput.value = existing ? `${existing} ${draft}` : draft;
     elPromptInput.focus();
-    autoResizeTextarea();
+    elPromptInput.dispatchEvent(new Event("input"));
+  });
+
+  /* Empty the console's own input, so what was left typed at the desk is not
+     sent along with the next prompt the queue delivers. Backspaces rather than
+     ^C: in a working agent ^C is an interrupt, not an erase. The caret is
+     taken to the end first, and a few more than the mirror shows, since the
+     mirror trims what the agent draws around a wrapped line. */
+  elBtnUnadopt.addEventListener("click", async () => {
+    const draft = elTerminalInput.textContent;
+    if (!draft || !state.activePaneId) return;
+    triggerHaptic("warning");
+    elBtnUnadopt.disabled = true;
+    const erase = Array(Math.min(draft.length + 16, 4000)).fill("backspace");
+    const post = (keys) => fetch(`/api/agents/${encodeURIComponent(state.activePaneId)}/keys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys }),
+    });
+    try {
+      let res = await post(["end", ...erase]);
+      // A Herdr that does not know "end" refuses the whole list.
+      if (!res.ok) res = await post(erase);
+      if (!res.ok) throw new Error("refused");
+      renderLiveInput("");
+      setTimeout(() => fetchHistory(true), 300);
+    } catch (err) {
+      alert("Could not clear the console's input");
+    } finally {
+      elBtnUnadopt.disabled = false;
+    }
   });
   elBtnCopy.addEventListener("click", copyHistory);
 
@@ -5119,8 +5825,33 @@
     }
   });
 
+  /* Where chats live, in the settings: read from the gateway, since it is the
+     gateway's to keep and every phone shares it. Changed through the same
+     folder picker the first chat asked with. */
+  function renderChatHomeSetting(home) {
+    if (!elChatHomePath) return;
+    elChatHomePath.textContent = home || "not chosen yet - the first chat asks";
+    elChatHomePath.classList.toggle("unset", !home);
+  }
+
+  async function refreshChatHomeSetting() {
+    try {
+      renderChatHomeSetting((await loadChatOptions()).home);
+    } catch (err) {
+      /* gateway offline */
+    }
+  }
+
+  if (elBtnChatHome) {
+    elBtnChatHome.addEventListener("click", () => {
+      openNewSheet("settings", { step: "home" });
+      browseDir("");
+    });
+  }
+
   async function refreshGlobalSettings() {
     refreshPushState();
+    refreshChatHomeSetting();
     if (!elHeartbeatsList) return;
     try {
       const res = await fetch("/api/heartbeat");
@@ -6969,7 +7700,7 @@
   document.addEventListener("pointerdown", unlockAudio, { once: true });
   document.addEventListener("touchstart", unlockAudio, { once: true });
   autoResizeTextarea();
-  loadServerOrder().finally(() => {
+  Promise.all([loadServerOrder(), loadServerFolders()]).finally(() => {
     loop();
     startPolling();
   });
@@ -7518,7 +8249,7 @@
     elInput.focus();
     const caret = name.length + 2;
     try { elInput.setSelectionRange(caret, caret); } catch (_) {}
-    grow();
+    typed();
   }
 
   elMenu.addEventListener("mousedown", (e) => e.preventDefault()); // keep the keyboard up
@@ -7558,11 +8289,13 @@
 
   async function fetchQueue() {
     if (!current || current.kind !== "pane") { queued = []; drawQueue(); return; }
+    // A poll answered mid-send has the new row in it but not yet its grace.
+    if (sendingMessage) return;
     const request = ++queueRequest;
     const pane = current.pane_id;
     try {
       const data = await api("/api/queue");
-      if (!current || current.pane_id !== pane || request !== queueRequest) return;
+      if (!current || current.pane_id !== pane || request !== queueRequest || sendingMessage) return;
       queued = owed((data.prompts || []).filter((p) => p.pane_id === pane));
     } catch (e) {
       return; // the poll's own error line already says the gateway is away
@@ -7570,11 +8303,12 @@
     drawQueue();
   }
 
-  /* Only while there is something to watch: an empty queue costs no requests. */
+  /* A second client can queue a prompt while this chat is open, even when its
+     queue was empty at open time. Keep watching the active pane. */
   function keepWatching() {
     if (queueTimer) clearInterval(queueTimer);
     queueTimer = null;
-    if (!queued.length || !current || current.kind !== "pane") return;
+    if (!current || current.kind !== "pane") return;
     queueTimer = setInterval(fetchQueue, QUEUE_EVERY);
   }
 
@@ -7614,7 +8348,7 @@
     const row = queued.find((p) => String(p.id) === String(id));
     if (!row) return;
     elInput.value = row.prompt || "";
-    grow();
+    typed();
     elInput.focus();
     queueAct(id, "delete");
   }
@@ -7628,6 +8362,12 @@
     elSend.disabled = !elInput.value.trim() && !attachStrip.list.length;
   }
   elInput.addEventListener("input", grow);
+  // Text put in the box by anything but a keystroke still has to reach the
+  // other half of this file, which keeps it as this chat's draft - or, sent,
+  // forgets it.
+  function typed() {
+    elInput.dispatchEvent(new Event("input"));
+  }
   elInput.addEventListener("keydown", (e) => {
     if (!elMenu.classList.contains("hidden")) {
       const first = elMenu.querySelector("button[data-cmd]");
@@ -7653,14 +8393,16 @@
     const images = attachStrip.list.map((a) => a.name);
     if ((!text.trim() && !images.length) || !current) return;
     sendingMessage = true;
+    queueRequest++; // and one already asked is answered too early
     elSend.disabled = true;
     try {
       const data = await api("/api/chat/send", { id: current.id, text, images });
       current = data.chat;
-      elInput.value = ""; grow();
+      elInput.value = ""; typed();
       hideMenu();
       attachStrip.clear();
-      if (current.kind === "pane" && current.agent === "codex" && text.trim() === "/clear") {
+      if (current.kind === "pane" && (current.agent === "codex" || current.agent === "claude")
+          && text.trim() === "/clear") {
         if (poll) poll.abort();
         events = []; epoch = ""; drawn = [];
         openTools.clear(); picks.clear();
@@ -7675,13 +8417,14 @@
       if (data.queued) {
         settling.set(data.queued, Date.now() + SETTLE_MS);
         setTimeout(fetchQueue, SETTLE_MS + 50);
+        document.dispatchEvent(new CustomEvent("sheepit:queued", { detail: data.queued }));
       }
-      fetchQueue();
     } catch (err) { alert(err.message); }
     finally {
       sendingMessage = false;
       elSend.disabled = false;
     }
+    fetchQueue();
   }
   SheepItComposer.bindSubmit(document.getElementById("prompt-form"), submitMessage);
   elStop.addEventListener("click", () => {

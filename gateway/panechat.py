@@ -378,6 +378,9 @@ class PaneChat:
         worse than an empty screen, and the title arrives within a turn or two.
         """
         logs = tokens.session_logs(self.cwd)
+        if self.clear_at is not None:
+            logs = [p for p in logs if p != self.cleared_path
+                    and self._mtime_at_least(p, self.clear_at)]
         if not logs:
             return None
         title = self.title
@@ -400,6 +403,13 @@ class PaneChat:
             if len(updated) == 1:
                 return updated[0]
         return logs[0] if len(logs) == 1 else None
+
+    @staticmethod
+    def _mtime_at_least(path: Path, when: float) -> bool:
+        try:
+            return path.stat().st_mtime >= when
+        except OSError:
+            return False
 
     def _find_codex_log(self, session_id=None):
         """Find a rollout for this pane, refusing ambiguous same-cwd matches."""
@@ -562,7 +572,10 @@ class PaneChat:
         self.unresolved, self.asks, self.answered, self.pending = {}, {}, set(), {}
 
     def clear_after_command(self, sent_at: float):
-        """Drop the old Codex conversation as soon as /clear is accepted."""
+        """Drop the old conversation as soon as /clear is accepted, rather than
+        waiting on the title/quiet-timer heuristics to notice a new session -
+        which, for a single-session cwd, otherwise re-adopt the very log
+        /clear just ended."""
         self.cleared_path = self.path
         self._adopt(None, None)
         self.clear_at = sent_at
@@ -788,8 +801,11 @@ _queue = None
 
 
 def cleared(pane_id: str, pane: dict, sent_at: float) -> None:
-    """Invalidate a Codex pane from either the transcript or chat send path."""
-    if pane.get("agent") != "codex":
+    """Invalidate a pane's chat, read as either the transcript or the chat
+    send path, the moment /clear is accepted - Claude included, since its
+    log-identity heuristics alone re-adopt the old session until a new log
+    exists to tell them apart."""
+    if pane.get("agent") not in ("codex", "claude"):
         return
     with _LOCK:
         pc = _PANES.setdefault(pane_id, PaneChat(pane_id))

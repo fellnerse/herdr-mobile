@@ -135,7 +135,7 @@ not read as one agent. A tab's own drawer is what the strip offers it, Rename
 (`tab.rename`) and Close (`tab.close`), which is safe there because a pen only
 draws this way while it has a second tab to keep the workspace alive.
 **Every row carries its drawer's first two as hover icons** on a pointer — a
-pencil and a bin in the corner the `…` hint used to occupy (`rowToolsHtml`,
+worktree's led by a `+` for a new tab in it — a pencil and a bin in the corner the `…` hint used to occupy (`rowToolsHtml`,
 `.row-tools`, and the title's `.pen-head-tools`, all of it hidden wherever there
 is no hover) — since a mouse cannot swipe. They sit above the status badge and
 hide nothing: hovering a row must not take anything off it. A chat's is the bin
@@ -163,12 +163,21 @@ under a project being dragged.
 `number` × 1000 + pane index — Herdr exposes no creation date anywhere, and
 never renumbers); agent attention sorts rows inside each project but never
 moves a project heading. A drag overrides creation order and is saved by the
-gateway so desktop and mobile share it. Only a workspace made through global `+ New`
-is explicitly placed at the top; other new projects join at the end. The drag also calls `workspace.move`,
+gateway so desktop and mobile share it. New projects join at the end, including
+those made through global `+ New`, and keep their displayed position until moved.
+The drag also calls `workspace.move`,
 but only when the project is a single workspace — a project is a repository and
 Herdr reorders workspaces. `workspace.move` counts the workspace being moved
 when it resolves `insert_index`, which is why `insertIndexFor` exists and is
 tested exhaustively. `state_change_seq` orders nothing; it feeds the "3m" label.
+
+**Folders sit in that order as `folder:<id>`** (`layoutGroups`, `dropInto` in
+`app.js`; `/api/folders` on the gateway). What is filed in a folder is ordered
+by the folder, not by `customOrder`, and `state.groups` is the flattened list
+the layout draws — so everything that walks the projects still sees them all.
+Folding a folder, project or pen is per device (`sheepit.collapsed`), and a
+folded thing always draws its agents' status dots: folding must never hide a
+question.
 
 **Renames go through Herdr** (`workspace.rename`, `tab.rename`) rather than
 being kept phone-side, so the desktop's workspace strip and tab bar change too.
@@ -253,22 +262,34 @@ its options with (`1` yes, `2` always, Esc no). Pane chats and headless chats
 use the same in-page renderer in `app.js`; the shared app header stays in place
 while the pane chooses chat or verbatim transcript (`state.paneView`).
 
-**The headless chats are rows in the flock, not a list of their own.** They
-ride along on `/api/agents` (`flock_chats` in `server.py`, which only has to
-add which project each belongs under) and are folded in at `attachChats` in
-`app.js`, *after* the grouping and never into `state.agents` -- a chat has no
+**The headless chats are the flock's other tab.** The switch at the top of
+the flock (`flock-tabs`, `setFlockTab`, kept per device as `sheepit.flocktab`)
+shows the projects or the chats. The chats ride along on `/api/agents`
+(`flock_chats` in `server.py`) and are ordered at `orderChats` in `app.js` into
+`state.chatPens` -- never into `state.agents` or a project, since a chat has no
 workspace, no tab strip and no pane id Herdr would answer for, and the badge,
-the bleat and the selection all walk that list assuming one. A chat's status is
+the bleat and the selection all walk that list assuming one. The tab that is
+off screen wears a red dot while something in it is blocked, so switching
+tabs never hides a question; `+ New` in the chats tab skips straight to a chat. A chat's status is
 the same vocabulary with no `done` in it, since nothing marks one as read; its
 sheep wears a speech bubble; its drawer offers Delete and none of the three
 things that belong to a worktree. `docs/design.md` is the detail.
 
 **Two plusses, and both of them ask.** `+ New` at the top of the flock asks
-chat or terminal; `+` on a project heading and `+` in the tab strip are the
-same sheet asking worktree or tab, differing only in which workspace each
-knows a tab would join. One element draws all of it (`renderNewSheet`), and
-the answers that need nothing more said happen on the tap. Do not add a third:
-the four this replaced were four unrelated things behind one glyph.
+chat, console or folder: a console is a bare workspace in the home directory, which is
+how a new project starts, and a chat is a headless `claude -p` in the one
+directory the settings name as the chat home (`chat-home.json` in the state
+dir, `/api/chat/home`). The first chat ever asks for that directory with a
+folder picker the gateway walks one level at a time (`/api/chat/dirs`, which
+can also make one); `handle_new` accepts that directory or a project root the
+flock has a pane in, nothing else. `+` on a project heading asks console or worktree: a console
+is a new workspace of its own in the project's directory
+(`createWorkspace(cwd)`), a worktree is a branch cut from the project's
+checkout. A tab is not offered there, since a heading does not know which
+worktree it would join: it is the `+` among a worktree's hover icons
+(`penTools`), and the `+` in the tab strip, whose sheet offers it as well. One
+element draws all of it (`renderNewSheet`). The project `+` starts no headless
+chat: in a project, a chat is a way of *reading* a pane.
 
 **Push carries no payload.** iOS/Web Push here sends an empty notification; the
 service worker (`web/sw.js`) then fetches `/api/push/last`, which the gateway's
@@ -298,7 +319,7 @@ refuses paths that escape the pane's directory.
   `tools/test-*.js` after refactoring `app.js`. `test-flock.js` slices four
   times: `/* ---- The flock ---` → `// Opening a project is activity too`
   (the order, and the collapse to one row per workspace),
-  `function agentListSignature() {` → `async function createWorkspace() {`
+  `function agentListSignature() {` → `async function createWorkspace(cwd) {`
   (a row's markup, which borrows `tabChipLabel` from the strip slice below it),
   `// In the order the laptop's tab bar has them` →
   `// Render Metadata (lives in the settings sheet)` (the tab strip), and
