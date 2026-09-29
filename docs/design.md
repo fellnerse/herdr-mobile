@@ -313,6 +313,28 @@ workspaces, and the two line up exactly while nothing has been cut into
 worktrees. The rest keep their order on the phone alone rather than have one
 drag rewrite a strip nobody asked it to.
 
+## Folders, and folding
+
+A folder is a name and a list of project keys (`/api/folders`, kept in
+`folders.json` beside the order). It stands in the top-level order as
+`folder:<id>`, so a folder is carried exactly the way a project is; what is
+inside it is ordered by the folder's own list, not by `customOrder`
+(`layoutGroups` in `app.js`). A project whose panes are all closed stays filed,
+so reopening it next week puts it back in its folder. A folder is never put in
+a folder, and removing one files nothing anywhere else - its projects go back
+to the top level in its place.
+
+With folders there is no single row to slide past, so a carry no longer shifts
+the other projects out of the way: it draws a line where the thing would land,
+or lights up the folder that would take it (`dropTarget`, `dropInto`). The top
+third of a folder's name and its last few pixels are the way past it.
+
+A folder, a project and a pen with its tabs out each fold (`f:`, `p:` and `w:`
+keys in `sheepit.collapsed`). That is stored per device rather than by the
+gateway, since how much of the flock fits is a fact about the screen. Folded,
+each draws a dot per agent inside, loudest first, because a question folded
+out of sight is the one failure the flock exists to prevent.
+
 One detail that is easy to get backwards: `workspace.move` inserts before
 whatever sits at `insert_index` *counting the workspace being moved*, so a
 project dropped below where it started lands one slot further along than the
@@ -411,40 +433,67 @@ new, with a terminal in front of it or a model*.
 So there are two, and both of them ask. The sheet is one element with a title,
 a body drawn from whichever question is being asked, and a cancel.
 
-**`+ New`, at the top of the flock**, asks chat or terminal. A terminal is
-`workspace.create` and needs nothing more said, so it happens on the tap. A
-chat needs three answers — which project, what it may do without asking, and
-which model — so the same sheet becomes that form, with the last answers filled
-in, and the project guessed from the row you were looking at.
+**`+ New`, at the top of the flock**, asks chat, console or folder. A console is
+`workspace.create` in the home directory and happens on the tap: that is where
+a new project starts, before there is a heading to put a `+` on. A chat asks
+its permission mode and model, remembered from the last one, and starts in the
+*chat home*: one directory, kept by the gateway so every phone shares it. It
+used to ask which project too, from the ones the flock had a pane in, which
+made a chat about nothing in particular impossible and a chat about one project
+a detour through a list. The first chat asks for the home instead, with a
+folder picker the gateway walks a level at a time - a phone has no folder
+dialog for another machine - and can make a new folder from; the settings
+show it and move it with the same picker. Whatever becomes the home gets
+Claude Code's fences written into it (`guard_home` in `chat.py`):
+`.claude/settings.local.json` turns the sandbox on for Bash, with no way out
+of it, and hooks `.claude/hooks/restrict-writes.sh` in front of Edit, Write
+and NotebookEdit, which the sandbox does not cover, to refuse any path outside
+the home. Reads are fenced as well, since a chat that reads the web can be
+talked into sending on whatever it can read: the file tools stay inside the
+home (`blockReadsOutsideWorkingDirectories`) and Bash is kept out of the
+credential folders (`sandbox.filesystem.denyRead`). Both files, `.claude/` and
+`.claude/hooks/` are then `chflags uchg`, so neither the chat nor a script it
+runs can loosen, rename or delete them; files already there are kept, and
+locked all the same. A `CLAUDE.md` goes in beside them, unlocked since it is
+advice rather than a fence: a folder per task under `work/`, since many chats
+share the home, sources cited, and whatever came off the web read as data and
+never as instructions.
+Codex has no equivalent yet.
 
-**`+` on a project heading, and `+` in the tab strip**, ask worktree or tab.
-They are the same sheet: a worktree is its own branch and its own copy of the
-tree, a tab is another agent on the branch that is already checked out. What
-differs is only what each one knows. The strip knows exactly which worktree a
-tab would join, and says so; the heading has to aim at the project's own
-checkout, which is the same workspace a branch would be cut from. A worktree
-asks for a name and takes a blank answer, which means *you name it* — one tap
-and a return key when you have not thought that far. A project with no checkout
-of its own open is offered a tab and no worktree, because Herdr resolves a
-branch through a workspace and there is none to resolve through.
+**`+` on a project heading, and `+` in the tab strip**, are the same sheet.
+The heading asks console or worktree; the strip asks tab as well, because it
+knows which worktree a tab would join and the heading does not - on a pointer,
+a worktree's row carries its own `+` among its hover icons for the same thing.
+A tab is another agent beside what is already open, a console is a Herdr workspace of its own opened in the
+project's directory (the repository root, so it lands under the same heading),
+and a worktree is its own branch and its own copy of the tree. What differs is
+only what each one knows. The strip knows exactly which worktree a tab would
+join, and says so; the heading has to aim at the project's own checkout, which
+is the same workspace a branch would be cut from. A worktree asks for a name
+and takes a blank answer, which means *you name it* — one tap and a return key
+when you have not thought that far. A project with no checkout of its own open
+is offered no worktree, because Herdr resolves a branch through a workspace and
+there is none to resolve through.
 
 ## The chats among the pens
 
 A headless chat is the same Claude Code spending the same subscription in the
 same checkout as the panes around it, and it used to live on a list of its own
 that nothing pointed at — so a chat left holding a permission prompt was a
-question nobody saw for a day. It is a row in the flock now, under the project
-its directory names, with a speech bubble over its sheep's rump. The bubble
+question nobody saw for a day. It is a row in the flock now, in the flock's
+second tab - Projects and Chats, switched at the top where the title was -
+with a speech bubble over its sheep's rump. It used to hang under the project
+its directory named, but a chat from `+ New` runs in the chat home, which is
+nobody's project, and the heading made up to hold them was a project that did
+not exist. The tab that is off screen wears a red dot while anything in it is
+blocked, which is what keeps a question from hiding behind the switch. The bubble
 sits there rather than by the head because the head moves with every pose, and
 a mark that jumps around the animal is one you have to find each time.
 
 What it is *not* is a pane. It has no workspace, no tab strip, no transcript
 and no pane id Herdr would recognise, so it never enters the list of panes that
-the badge, the bleat and the selection all walk. It is hung on its project
-after the grouping and given a pen of its own at the end of that project's
-rows, below the worktrees, which are the only rows that have one. A project
-whose panes are all closed still gets a heading if a chat is running in it,
-because a chat you cannot see is a chat you cannot stop.
+the badge, the bleat and the selection all walk. The chats tab lists them
+flat, the one holding a question first and then the one that moved last.
 
 Its status is the same vocabulary the panes use, with one deliberate gap: a
 question waiting on you is `blocked` and a turn in flight is `working`, but
@@ -484,8 +533,11 @@ line belongs to decides its colour.
 The part that has to be right is the foot of the pane, because that is where
 the composer, the status bar, and the question an agent is waiting on all live.
 Those first two are live UI rather than conversation: what the laptop has typed
-is mirrored in a one-line strip above the phone's own composer, and the status
-bar is hidden behind a toggle. A prompt must survive both.
+is mirrored in a strip above the phone's own composer - labelled as the
+console's, with *Copy text* to carry it over and *Remove text* to backspace it
+out of the pane, since the queue would otherwise deliver the next prompt on
+the end of it - and the status bar is hidden behind a toggle. A prompt must
+survive both.
 
 Anchor on the composer's own glyph — `❯` in Claude Code, `›` in Codex — and not
 on the last pair of horizontal rules. Rules are not a frame you can trust:

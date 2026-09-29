@@ -85,6 +85,60 @@ def save_project_order(value) -> bool:
         return False
 
 
+# Folders the projects can be dragged into: a name and the project keys inside
+# it, in the order they are drawn. Kept here beside the order rather than on
+# one phone, so the laptop's browser and the phone file things in one place.
+# Whether a folder is folded shut is not in here - that is a question about
+# how much screen a device has, and each one answers it for itself.
+FOLDERS_PATH = sched_config.STATE_DIR / "folders.json"
+
+
+def valid_folders(value) -> bool:
+    if not isinstance(value, list) or len(value) > 100:
+        return False
+    for folder in value:
+        if not isinstance(folder, dict):
+            return False
+        fid, name, projects = folder.get("id"), folder.get("name"), folder.get("projects")
+        if not isinstance(fid, str) or not fid or len(fid) > 64:
+            return False
+        if not isinstance(name, str) or len(name) > 200:
+            return False
+        if not isinstance(projects, list) or len(projects) > 500 or any(
+            not isinstance(key, str) or len(key) > 4096 for key in projects
+        ):
+            return False
+    return True
+
+
+def load_folders() -> list:
+    try:
+        value = json.loads(FOLDERS_PATH.read_text(encoding="utf-8"))
+        if valid_folders(value):
+            return [
+                {"id": f["id"], "name": f["name"], "projects": f["projects"]}
+                for f in value
+            ]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def save_folders(value) -> bool:
+    if not valid_folders(value):
+        return False
+    clean = [{"id": f["id"], "name": f["name"], "projects": f["projects"]} for f in value]
+    try:
+        FOLDERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = FOLDERS_PATH.with_suffix(".tmp")
+        with PROJECT_ORDER_LOCK:
+            temporary.write_text(json.dumps(clean), encoding="utf-8")
+            temporary.replace(FOLDERS_PATH)
+        return True
+    except OSError:
+        return False
+
+
 
 # Directories that are never worth completing into on a phone.
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".direnv",
@@ -450,9 +504,9 @@ def flock_chats(rows: list) -> list:
     """The headless chats, shaped enough to sit in the flock beside the panes.
 
     All they are missing is which project they belong under, and a chat's cwd
-    is a project root by construction - `handle_new` refuses any directory the
-    flock has no pane in - so the rows just read are enough to name it without
-    asking Herdr a second time.
+    is a project root or the chat home by construction - `handle_new` refuses
+    anything else - so the rows just read are enough to name it without asking
+    Herdr a second time.
     """
     try:
         chats = chat.summaries()
@@ -1024,6 +1078,14 @@ class HerdrHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/folders":
+            self.send_json({
+                "ok": True,
+                "saved": FOLDERS_PATH.exists(),
+                "folders": load_folders(),
+            })
+            return
+
 
         # API: List all active agents
         if path == "/api/agents":
@@ -1291,6 +1353,14 @@ class HerdrHandler(BaseHTTPRequestHandler):
             order = body.get("order") if isinstance(body, dict) else None
             if not save_project_order(order):
                 self.send_json({"ok": False, "error": "Invalid project order"}, 400)
+                return
+            self.send_json({"ok": True})
+            return
+
+        if path == "/api/folders":
+            folders = body.get("folders") if isinstance(body, dict) else None
+            if not save_folders(folders):
+                self.send_json({"ok": False, "error": "Invalid folders"}, 400)
                 return
             self.send_json({"ok": True})
             return

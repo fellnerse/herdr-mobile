@@ -44,7 +44,7 @@ function loadQueue(state, chatOpen = false) {
     const QUEUE_WORD = { waiting: "queued", failed: "failed" };
     const triggerHaptic = () => {};
     const autoResizeTextarea = () => {};
-    const saveDraft = () => {};
+    const rememberDraft = () => {};
     const fetchHistory = () => {};
     const setTimeout = () => {};
     const elBtnSend = {};
