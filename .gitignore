@@ -4,3 +4,4 @@ __pycache__/
 sheepit.log
 .direnv/
 menubar/build/
+.claude/worktrees/
