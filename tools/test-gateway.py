@@ -2614,6 +2614,42 @@ try:
     pc.refresh()
     check("Codex: new rollout replaces cleared history",
           (pc.path, [e.get("text") for e in pc.events]), (new_path, ["new conversation"]))
+
+    later_sid = "d" * 36
+    later_path = rollouts / f"rollout-{later_sid}.jsonl"
+    later_path.write_text("\n".join(json.dumps(row) for row in (
+        {"type": "session_meta", "payload": {"id": later_sid, "cwd": "/tmp/codex-project"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                     "content": [{"type": "input_text", "text": "after the clear"}]}},
+    )) + "\n")
+    cleared_at = time.time()
+    panechat.cleared("wZ:p1", dict(codex_pane), cleared_at)
+    # Stamped half a second before the command that started it: the clock the
+    # gateway timed /clear with is finer than the one the filesystem stamps
+    # inodes with, so this is the ordinary case, not a contrived one. Refusing
+    # it used to leave the chat empty for good - clear_at is only dropped once
+    # some log is adopted, and this is the log that would have done it.
+    os.utime(later_path, (cleared_at - 0.5, cleared_at - 0.5))
+    codex_pane["agent_session"] = {"kind": "id", "value": later_sid}
+    pc.refresh()
+    check("Codex: a rollout stamped just before /clear is still the new one",
+          (pc.path, [e.get("text") for e in pc.events]),
+          (later_path, ["after the clear"]))
+
+    # Far enough back to be a genuinely older session, which must stay gone.
+    stale_sid = "e" * 36
+    stale_path = rollouts / f"rollout-{stale_sid}.jsonl"
+    stale_path.write_text("\n".join(json.dumps(row) for row in (
+        {"type": "session_meta", "payload": {"id": stale_sid, "cwd": "/tmp/codex-project"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                     "content": [{"type": "input_text", "text": "last week"}]}},
+    )) + "\n")
+    cleared_at = time.time()
+    panechat.cleared("wZ:p1", dict(codex_pane), cleared_at)
+    os.utime(stale_path, (cleared_at - 600, cleared_at - 600))
+    codex_pane["agent_session"] = {"kind": "id", "value": stale_sid}
+    pc.refresh()
+    check("Codex: but one from before the clear is still refused", pc.path, None)
 finally:
     tokens.CODEX_HOME = orig_codex_home
     sched_db.DB_PATH = orig_queue_db

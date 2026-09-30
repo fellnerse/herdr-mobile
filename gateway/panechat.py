@@ -45,6 +45,13 @@ IDENTIFY_BYTES = 128 * 1024
 # How long a working pane's log may stay silent before we suspect it is not
 # that pane's log any more.
 QUIET_AFTER = 20.0
+# Slack on "this file was written after that moment". The moment is a
+# time.time() the gateway took; the file's stamp comes from the filesystem,
+# which is coarser - Linux stamps inodes off a tick-granularity clock, and
+# several filesystems keep mtime to the whole second. A log written just after
+# /clear can therefore carry an mtime just before it, and without this the
+# comparison throws away the very session it was meant to find.
+MTIME_SLACK = 2.0
 
 COMMAND_NAME = re.compile(r"<command-name>([^<]*)</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>([^<]*)</command-args>")
@@ -393,13 +400,8 @@ class PaneChat:
         # prompt is evidence of the session that prompt started. Refuse ties so
         # another active pane in the same cwd is never mistaken for this one.
         if self.first_prompt_at is not None:
-            updated = []
-            for path in logs:
-                try:
-                    if path.stat().st_mtime >= self.first_prompt_at:
-                        updated.append(path)
-                except OSError:
-                    continue
+            updated = [p for p in logs
+                       if self._mtime_at_least(p, self.first_prompt_at)]
             if len(updated) == 1:
                 return updated[0]
         return logs[0] if len(logs) == 1 else None
@@ -407,7 +409,7 @@ class PaneChat:
     @staticmethod
     def _mtime_at_least(path: Path, when: float) -> bool:
         try:
-            return path.stat().st_mtime >= when
+            return path.stat().st_mtime >= when - MTIME_SLACK
         except OSError:
             return False
 
@@ -423,7 +425,7 @@ class PaneChat:
             return None
         if self.clear_at is not None:
             candidates = [p for p in candidates if p != self.cleared_path
-                          and p.stat().st_mtime >= self.clear_at]
+                          and self._mtime_at_least(p, self.clear_at)]
         matches = []
         for path in candidates:
             try:
