@@ -697,7 +697,15 @@ function order(agents, busy = false, held = [], custom = []) {
         text(shell, "agent-row-name"), "tab 2");
   check("and says nothing about a status it does not have",
         /shell<\/span>/.test(shell), false);
-  check("with no status badge on it", /status-badge/.test(shell), false);
+  /* It has no agent status, but it does have a terminal, and whether that is
+     busy is the difference between a dev server running and one that fell
+     over an hour ago. That is the word the badge carries instead. */
+  check("its badge is its shell activity instead",
+        /status-badge status-idle">idle</.test(shell), true);
+  const busyShell = agentRowHtml(
+    pen(tab({ tab_label: "2", tab_number: 2, cwd: "/p/api", busy: true })), "api");
+  check("and says working while the terminal is busy",
+        /status-badge status-working">working</.test(busyShell), true);
   check("a pane without an agent keeps its terminal icon",
         /sheep-wrap unknown/.test(shell), true);
 
@@ -804,12 +812,13 @@ function order(agents, busy = false, held = [], custom = []) {
 
   /* Every one of them acts on the workspace, and now says so: Rename used to
      be handed a pane and rename the tab behind it, which on a two-tab worktree
-     renamed something the row was not showing. Five, because the first two are
-     on the row as icons as well. */
+     renamed something the row was not showing. Six, because all three are on
+     the row as icons as well - the hyphenated `tab-new` is the one this
+     pattern does not count. */
   check("and so do the other two",
         [...of({ repo: true }).matchAll(/data-action="[a-z]+" data-workspace-id="([^"]*)"/g)]
           .map((m) => m[1]),
-        ["wA", "wA", "wA", "wA", "wA"]);
+        ["wA", "wA", "wA", "wA", "wA", "wA"]);
 
   /* A mouse cannot swipe, so the drawer is on the row itself, led by a new tab
      in this worktree - the one thing a heading's plus no longer offers. Remove
@@ -921,18 +930,16 @@ function order(agents, busy = false, held = [], custom = []) {
   check("and a tab with nothing to show is called what the strip calls it",
         /<span class="agent-row-name">tab 1<\/span>/.test(bare), true);
 
-  /* The chat you came from is one of these tabs: that tab is the active row,
-     and the title says so as well, since a long pen can have it scrolled out
-     of sight. */
+  /* The chat you came from is one of these tabs, and that tab is the active
+     row. The pen's title used to be tinted to say so as well; that was taken
+     back out in e21bba8, so the tab marking itself is the whole of it. */
   r.state.activePaneId = "wA:p2";
   const here = draw(tab("wA:p1"), tab("wA:p2"));
   check("the tab holding the open chat is the active row",
         /class="agent-row st-working active" data-pane-id="wA:p2"/.test(here), true);
-  check("and its pen is marked as the one you are in",
-        /class="agent-row pen-head here"/.test(here), true);
   r.state.activePaneId = null;
-  check("a pen you are not in is not",
-        /pen-head here/.test(draw(tab("wA:p1"), tab("wA:p2"))), false);
+  check("and no tab is active when you are not in the pen",
+        /active" data-pane-id/.test(draw(tab("wA:p1"), tab("wA:p2"))), false);
 }
 
 /* A tab that is not leading its pen is drawn now, so the list has to be
