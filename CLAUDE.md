@@ -57,6 +57,11 @@ that prints failures and exits non-zero, so "run one test" means run one of the
 seven suites. Restart `server.py` after changing the gateway; changing `web/` only
 needs a reload.
 
+Getting finished work from a worktree onto the phone — suites, commit, PR,
+merge, pull into the production checkout, restart the gateway — is the
+`ship-sheepit` skill in `.claude/skills/`, which Claude Code picks up from the
+repository itself.
+
 Environment: `SHEEPIT_PORT` (or `PORT`, default 3009), `HOST` (default
 127.0.0.1), `HERDR_SOCKET`, `HERDR_CLIENT_SOCKET`, `SHEEPIT_STATE_DIR`
 (default `~/.config/sheepit`, holds VAPID keys and push subscriptions).
