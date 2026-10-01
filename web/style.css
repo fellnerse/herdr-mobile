@@ -100,6 +100,10 @@ body:has(.sheet-backdrop:not(.hidden)) {
   position: relative;
   min-height: 100dvh;
   width: 100%;
+  /* Nothing in a chat is meant to be panned to sideways - wide code and tables
+     scroll in their own boxes - so a stray overflow must not make the whole
+     page draggable. `clip`, not `hidden`, which would break the sticky dock. */
+  overflow-x: clip;
   background-color: var(--bg-base);
 }
 
@@ -1354,8 +1358,39 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 
 /* iOS can retain the home indicator inset while the keyboard is open. The
    keyboard owns that bottom area, so don't reserve it a second time. */
-.keyboard-open .input-dock {
+.pinned .input-dock {
   padding-bottom: 0;
+}
+
+/* With the keyboard up or the console open, the chat is a fixed box the size
+   of what is visible, the way the `.full-view`s always are, and the
+   transcript scrolls inside it (syncPinned in app.js). Left in the flow, the sticky composer sits at
+   the bottom of a layout viewport the keyboard covers, and Safari - which
+   ignores `interactive-widget` - slides the whole page around to find the
+   caret: the header goes - above the console too, sometimes for good - and
+   the page drags in every direction. */
+@media (max-width: 899px) {
+  .pinned body:not(:has(.agent-picker:not(.hidden))) { overflow: hidden; }
+  .pinned .app-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    min-height: 0;
+    height: var(--app-height, 100dvh);
+    transform: translateY(var(--app-offset, 0px));
+    overflow: hidden;
+  }
+  .pinned .history-container,
+  .pinned #chat-chat-view,
+  .pinned #chat-chat-view .scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .pinned .history-container,
+  .pinned #chat-chat-view .scroll {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 /* Prompt Form */
@@ -1706,6 +1741,20 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .thumb { position: relative; flex-shrink: 0; }
 .thumb img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; display: block; }
 .thumb.loading img { opacity: 0.4; }
+/* A file that is not a picture shows its name where a thumbnail would be. */
+.thumb.file .file-label {
+  display: flex; align-items: center; justify-content: center;
+  width: 96px; height: 56px; padding: 4px 8px; box-sizing: border-box;
+  border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border-subtle);
+  color: var(--text-secondary); font-size: 11px; text-align: center;
+  overflow: hidden; overflow-wrap: anywhere; line-height: 1.2;
+}
+.thumb.file.loading .file-label { opacity: 0.4; }
+.file-chip {
+  display: inline-block; padding: 6px 10px; border-radius: 8px;
+  background: rgba(255, 255, 255, 0.12); color: inherit; font-size: 13px; font-weight: 600;
+  text-decoration: none;
+}
 .thumb button {
   position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
   border: 0; background: var(--bg-card); color: var(--text-primary); font-size: 14px; line-height: 20px; padding: 0;

@@ -136,7 +136,10 @@
            thumbnail here is only shown while its path is still in it. -->
       <div id="attach-strip" class="attach-strip hidden"></div>
 
-      <form id="prompt-form" class="prompt-form composer">
+      <!-- A div, not a form: iPhone Safari hangs its ^ v Done bar over the
+           keyboard for a field inside a <form>. The send button is wired by hand
+           (SheepItComposer.bindSubmit). -->
+      <div id="prompt-form" class="prompt-form composer">
         <textarea
           id="prompt-input"
           class="prompt-input"
@@ -167,7 +170,7 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5h6M8 15l2.5-2.5L13 15l1.5-1.5L17 16H8z"/><circle cx="15.5" cy="9" r="1"/></svg>
           </button>
           <button type="button" id="chat-btn-slash" class="btn-attach slash chat-only" aria-label="Skills and commands">/</button>
-          <input type="file" id="chat-attach-input" accept="image/*" multiple hidden>
+          <input type="file" id="chat-attach-input" multiple hidden>
           <button type="button" id="btn-keys" class="btn-attach btn-keys normal-only" aria-label="Keyboard keys" title="Keyboard keys" aria-pressed="false">⌨</button>
           <div id="composer-menu" class="composer-menu normal-only">
             <button type="button" id="btn-more" class="btn-attach btn-more" aria-label="More composer actions" title="More" aria-haspopup="menu" aria-expanded="false">
@@ -178,9 +181,10 @@
               <button type="button" id="btn-copy" class="composer-menu-item" role="menuitem">Copy transcript</button>
             </div>
           </div>
-          <!-- iOS turns this into Photo Library / Take Photo / Choose File. -->
-          <input type="file" id="attach-input" class="attach-input" accept="image/*" multiple>
-          <button type="submit" id="btn-send" class="btn-send send" aria-label="Send prompt" disabled>
+          <!-- iOS turns this into Photo Library / Take Photo / Choose File.
+               No `accept`: a video or a PDF is as welcome as a photo. -->
+          <input type="file" id="attach-input" class="attach-input" multiple>
+          <button type="button" id="btn-send" class="btn-send send" aria-label="Send prompt" disabled>
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="19" x2="12" y2="5"></line>
               <polyline points="5 12 12 5 19 12"></polyline>
@@ -188,7 +192,7 @@
           </button>
           <button type="button" id="chat-btn-stop" class="send stop hidden normal-stop" aria-label="Stop agent" title="Stop agent"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg></button>
         </div>
-      </form>
+      </div>
     </footer>
   </div>
 
@@ -255,7 +259,7 @@
       <button type="button" class="key-btn key-arrow" data-key="right" aria-label="Right arrow"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
       <button type="button" class="key-btn key-enter" data-key="enter" aria-label="Enter"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 7v5h14M13 6l6 6-6 6"/></svg></button>
     </div>
-    <input type="file" id="console-attach-input" accept="image/*" multiple hidden>
+    <input type="file" id="console-attach-input" multiple hidden>
   </section>
 
   <!-- Changed files: what the agent actually did to the working tree -->

@@ -746,29 +746,14 @@ def last_finished() -> dict:
 # the clipboard of the machine it runs on, which is not the machine you are
 # holding, and the console forwards keystrokes rather than bytes.
 #
-# So the phone uploads the image and the gateway writes it down beside the
-# work. The prompt then carries its path, which is a thing both agents already
-# understand.
+# So the phone uploads the file - a screenshot, a video, anything - and the
+# gateway writes it down beside the work. The prompt then carries its path,
+# which is a thing both agents already understand. What the file is called is
+# the gateway's choice: only an extension is taken from the phone
+# (`chat.upload_suffix`), and the body is streamed to disk, so a video is
+# not held in memory and has no ceiling but the disk.
 
-# What an agent can be handed, and what the file is called when it lands. The
-# content type decides the extension - never the name the client sent, which is
-# a string from a phone and belongs to nobody this server trusts.
-ATTACH_TYPES = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-    "image/heic": ".heic",
-    "image/heif": ".heic",
-}
-
-# Three orders of magnitude above every other route, so it gets its own
-# ceiling rather than lifting the one that keeps the rest small. The phone
-# scales images down before sending; this is the room for one that arrives
-# whole anyway.
-MAX_ATTACHMENT = 16 * 1024 * 1024
-
-# Images land in the directory the agent is already working in, because
+# Files land in the directory the agent is already working in, because
 # anywhere else costs a permission prompt per image on the desktop - and a
 # question you have to answer before the agent may look at the screenshot you
 # just sent is the whole problem again.
@@ -805,7 +790,7 @@ def _git_exclude_inbox(root: Path) -> None:
         with exclude.open("a") as f:
             if existing and not existing.endswith("\n"):
                 f.write("\n")
-            f.write(f"# images sent from SheepIt\n{line}\n")
+            f.write(f"# files sent from SheepIt\n{line}\n")
     except (OSError, subprocess.SubprocessError):
         pass  # an un-excluded image is untidy; a failed upload is broken
 
@@ -821,15 +806,12 @@ def _prune_inbox(inbox: Path) -> None:
         pass
 
 
-def save_attachment(cwd: str, data: bytes, content_type: str) -> str:
-    """Write an image beside the work and return the path to put in a prompt.
+def attachment_target(cwd: str, content_type: str, filename: str = "") -> tuple[Path, str]:
+    """Where a file from the phone goes, and the path to put in a prompt.
 
     The path comes back relative to the agent's own directory: shorter to read
     on a phone, and it is what the agent is already rooted at.
     """
-    suffix = ATTACH_TYPES.get((content_type or "").split(";")[0].strip().lower())
-    if not suffix:
-        raise ValueError("that is not an image this can pass on")
     root = Path(cwd)
     if not root.is_dir():
         raise ValueError("the pane is not anywhere this can write to")
@@ -840,9 +822,14 @@ def save_attachment(cwd: str, data: bytes, content_type: str) -> str:
     # Named for when it arrived, with enough randomness that two phones in the
     # same second do not land on one file.
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    name = f"{stamp}-{secrets.token_hex(2)}{suffix}"
-    (inbox / name).write_bytes(data)
-    return f"{INBOX}/{name}"
+    name = f"{stamp}-{secrets.token_hex(2)}{chat.upload_suffix(content_type, filename)}"
+    return inbox / name, f"{INBOX}/{name}"
+
+
+def save_attachment(cwd: str, data: bytes, content_type: str, filename: str = "") -> str:
+    path, rel = attachment_target(cwd, content_type, filename)
+    path.write_bytes(data)
+    return rel
 
 
 # A body large enough to be a mistake or a wedge. Every route here takes a
@@ -1273,37 +1260,22 @@ class HerdrHandler(BaseHTTPRequestHandler):
         self.serve_static(path, head_only=self.head_only)
 
     def handle_attach(self, pane_id: str) -> None:
-        """Take an image from the phone and put it where the agent can read it."""
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-        except ValueError:
-            length = -1
-        if length <= 0:
-            self.send_json({"ok": False, "error": "Nothing arrived"}, 400)
-            return
-        if length > MAX_ATTACHMENT:
-            self.send_json({"ok": False, "error": "That image is too big to send"},
-                           HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-            return
-
+        """Take a file from the phone and put it where the agent can read it."""
         cwd = pane_cwd(pane_id)
         if not cwd:
             self.send_json({"ok": False, "error": "No such pane"}, 404)
             return
-
-        data = self.rfile.read(length)
-        if len(data) != length:
-            self.send_json({"ok": False, "error": "The upload was cut short"}, 400)
-            return
         try:
-            rel = save_attachment(cwd, data, self.headers.get("Content-Type", ""))
+            path, rel = attachment_target(cwd, self.headers.get("Content-Type", ""),
+                                          unquote(self.headers.get("X-Filename") or ""))
+            size = chat.receive_body(self, path)
         except ValueError as e:
             self.send_json({"ok": False, "error": str(e)}, 400)
             return
         except OSError as e:
             self.send_json({"ok": False, "error": f"Could not write it: {e}"}, 500)
             return
-        self.send_json({"ok": True, "path": rel, "bytes": len(data)})
+        self.send_json({"ok": True, "path": rel, "bytes": size})
 
     def do_POST(self):
         parsed = urlparse(self.path)

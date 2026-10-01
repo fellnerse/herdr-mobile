@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 import os
 import re
 import shlex
@@ -34,6 +35,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import unquote
 
 STATE_DIR = Path(os.environ.get("SHEEPIT_STATE_DIR") or Path.home() / ".config/sheepit")
 CHAT_DIR = STATE_DIR / "chats"
@@ -46,8 +48,13 @@ MODES = ("auto", "acceptEdits", "plan", "manual", "bypassPermissions")
 # A tool result can be a whole file; the phone needs to see that it happened.
 MAX_RESULT = 4000
 # The API refuses an image over 5 MB; the phone scales them down well below.
+# Anything else - a bigger image, a video, a PDF - is kept just the same and
+# handed over as a path for Claude Code to open itself.
 MAX_IMAGE = 5 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp"}
+# What an upload is called on disk: random, with an extension and nothing else
+# from the phone, so a name read back from a request can be checked by shape.
+UPLOAD_NAME = r"[0-9a-f]{12}\.[a-z0-9]{1,10}"
 # A process with nothing to do is a few hundred MB of node; the next message
 # resumes the session anyway.
 IDLE_REAP = 30 * 60
@@ -169,17 +176,63 @@ def slim(event: dict) -> dict | None:
     return None
 
 
-def read_image(folder: Path, name: str):
-    """An image kept with a chat, and its content type; (None, None) for a
-    name that is not one of ours."""
-    if not re.fullmatch(r"[0-9a-f]{12}\.(jpg|png|gif|webp)", name or ""):
-        return None, None
+def upload_suffix(content_type: str, filename: str = "") -> str:
+    """The extension a file from the phone is saved under, dot included.
+
+    Only the extension is taken from the name the phone sent, and only if it is
+    a plain run of letters and digits; the content type decides when it can.
+    """
+    ctype = (content_type or "").split(";")[0].strip().lower()
+    if ctype in IMAGE_TYPES:
+        return "." + IMAGE_TYPES[ctype]
+    m = re.search(r"\.([A-Za-z0-9]{1,10})$", filename or "")
+    if m:
+        return "." + m.group(1).lower()
+    return mimetypes.guess_extension(ctype) or ".bin" if ctype else ".bin"
+
+
+def receive_body(handler, dest: Path) -> int:
+    """Copy a request body to `dest` a piece at a time - a video does not fit
+    the memory a whole-body read assumes. Raises ValueError (and leaves nothing
+    behind) for a body that is missing or cut short."""
     try:
-        data = (folder / name).read_bytes()
-    except OSError:
+        length = int(handler.headers.get("Content-Length", 0))
+    except ValueError:
+        length = -1
+    if length <= 0:
+        raise ValueError("Nothing arrived")
+    left = length
+    try:
+        with dest.open("wb") as f:
+            while left:
+                chunk = handler.rfile.read(min(left, 1 << 20))
+                if not chunk:
+                    raise ValueError("The upload was cut short")
+                f.write(chunk)
+                left -= len(chunk)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+    return length
+
+
+def upload_path(folder: Path, name: str):
+    """A file kept with a chat, or None for a name that is not one of ours."""
+    if not re.fullmatch(UPLOAD_NAME, name or ""):
+        return None
+    path = folder / name
+    return path if path.is_file() else None
+
+
+def read_image(folder: Path, name: str):
+    """An upload that can go to Claude inline, and its content type; (None,
+    None) for anything else."""
+    path = upload_path(folder, name)
+    ext = name.rsplit(".", 1)[-1] if path else ""
+    ctype = next((t for t, e in IMAGE_TYPES.items() if e == ext), None)
+    if not ctype or path.stat().st_size > MAX_IMAGE:
         return None, None
-    ext = name.rsplit(".", 1)[1]
-    return data, next(t for t, e in IMAGE_TYPES.items() if e == ext)
+    return path.read_bytes(), ctype
 
 
 class Chat:
@@ -270,15 +323,21 @@ class Chat:
                      "request": {"subtype": "initialize"}})
 
     def send(self, text: str, images: list):
-        content = []
+        content, files = [], []
         for name in images:
-            data, ctype = self.image(name)
+            path = upload_path(self.dir, name)
+            if path is None:
+                raise ValueError("That attachment is gone")
+            data, ctype = read_image(self.dir, name)
             if data is None:
-                raise ValueError("That image is gone")
+                files.append(str(path))
+                continue
             content.append({"type": "image", "source": {
                 "type": "base64", "media_type": ctype, "data": base64.b64encode(data).decode()}})
-        if text.strip():
-            content.append({"type": "text", "text": text})
+        # What cannot go inline goes as its path, which Claude Code can open.
+        prompt = "\n".join([text.strip()] + [f"Attached file: {f}" for f in files]).strip()
+        if prompt:
+            content.append({"type": "text", "text": prompt})
         if not self.alive:
             try:
                 self._start()
@@ -427,7 +486,7 @@ class Chat:
             print(f"chat push failed: {e}")
 
     def image(self, name: str):
-        return read_image(self.dir, name)
+        return upload_path(self.dir, name)
 
     def read(self, since: int, epoch: str, wait: float) -> tuple[int, list, int]:
         """(from, events, next): what is past `since`, waiting up to `wait`
@@ -705,42 +764,42 @@ def handle_commands(handler, qs):
 
 def handle_image(handler, qs):
     chat = get((qs.get("id") or [""])[0])
-    data, ctype = chat.image((qs.get("name") or [""])[0]) if chat else (None, None)
-    if data is None:
-        handler.send_json({"ok": False, "error": "No such image"}, 404)
+    path = chat.image((qs.get("name") or [""])[0]) if chat else None
+    if path is None:
+        handler.send_json({"ok": False, "error": "No such attachment"}, 404)
         return
+    ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     handler.send_response(200)
     handler.send_header("Content-Type", ctype)
-    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Content-Length", str(path.stat().st_size))
     handler.send_header("X-Content-Type-Options", "nosniff")
+    # Pictures and video are shown; anything else - HTML, SVG, a script - is
+    # downloaded, never rendered on this origin.
+    inline = ctype.startswith("video/") or (ctype.startswith("image/") and ctype != "image/svg+xml")
+    if not inline:
+        handler.send_header("Content-Disposition", "attachment")
     handler.send_header("Cache-Control", "private, max-age=86400")
     handler.end_headers()
     if not handler.head_only:
-        handler.wfile.write(data)
+        with path.open("rb") as f:
+            shutil.copyfileobj(f, handler.wfile)
 
 
 def handle_upload(handler, qs):
-    """An image arrives as itself rather than as JSON, and is kept with the
-    chat - not in the project, since it goes to Claude inline."""
+    """A file arrives as itself rather than as JSON, and is kept with the
+    chat - not in the project. Images go to Claude inline, the rest as paths."""
     chat = get((qs.get("id") or [""])[0])
-    ext = IMAGE_TYPES.get((handler.headers.get("Content-Type") or "").split(";")[0].strip())
-    try:
-        length = int(handler.headers.get("Content-Length", 0))
-    except ValueError:
-        length = -1
-    if not chat or not ext:
-        handler.send_json({"ok": False, "error": "Need a chat and a JPEG, PNG, GIF or WebP"}, 400)
+    if not chat:
+        handler.send_json({"ok": False, "error": "No such chat"}, 400)
         return
-    if length <= 0 or length > MAX_IMAGE:
-        handler.send_json({"ok": False, "error": "That image is too big to send"}, 413)
-        return
-    data = handler.rfile.read(length)
-    if len(data) != length:
-        handler.send_json({"ok": False, "error": "The upload was cut short"}, 400)
-        return
-    name = f"{uuid.uuid4().hex[:12]}.{ext}"
+    filename = unquote(handler.headers.get("X-Filename") or "")
+    name = uuid.uuid4().hex[:12] + upload_suffix(handler.headers.get("Content-Type"), filename)
     chat.dir.mkdir(parents=True, exist_ok=True)
-    (chat.dir / name).write_bytes(data)
+    try:
+        receive_body(handler, chat.dir / name)
+    except ValueError as e:
+        handler.send_json({"ok": False, "error": str(e)}, 400)
+        return
     handler.send_json({"ok": True, "name": name})
 
 

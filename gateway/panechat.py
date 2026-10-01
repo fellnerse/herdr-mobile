@@ -711,8 +711,8 @@ class PaneChat:
         """
         if not self.is_supported:
             raise ValueError("There is no supported agent in this pane")
-        # An image goes as its path, which Claude Code reads like any file.
-        paths = ["@" + str(self.dir / n) for n in images if chat.read_image(self.dir, n)[0] is not None]
+        # An attachment goes as its path, which Claude Code reads like any file.
+        paths = ["@" + str(p) for p in (chat.upload_path(self.dir, n) for n in images) if p]
         text = "\n".join([text.strip()] + paths).strip()
         if _queue is None:
             raise ValueError("The queue is not running")
@@ -791,7 +791,7 @@ class PaneChat:
         return chat._COMMANDS.get(cwd, [])
 
     def image(self, name: str):
-        return chat.read_image(self.dir, name)
+        return chat.upload_path(self.dir, name)
 
 
 _PANES: dict[str, PaneChat] = {}

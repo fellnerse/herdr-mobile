@@ -2816,7 +2816,8 @@
 
   // Scroll to Bottom
   function historyScroller() {
-    return wide.matches ? elHistoryContainer : document.scrollingElement;
+    return wide.matches || document.documentElement.classList.contains("pinned")
+      ? elHistoryContainer : document.scrollingElement;
   }
 
   function scrollToBottom(smooth = false) {
@@ -3111,9 +3112,10 @@
 
   function autoResizeTextarea() {
     const focused = elPromptInput.classList.contains("expanded");
-    const cap = state.chatVisible
-      ? Math.max(140, Math.round(window.innerHeight * 0.4))
-      : focused ? Math.max(140, Math.round(window.innerHeight * 0.4)) : 120;
+    // What is visible, not innerHeight: on an iPhone that ignores the
+    // keyboard, and 40% of it was nearly all the room left above the keys.
+    const visible = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    const cap = state.chatVisible || focused ? Math.max(120, Math.round(visible * 0.3)) : 120;
     const height = SheepItComposer.resizeTextarea(elPromptInput, cap);
     // Past one line there is room beside the box for a column of buttons.
     elPromptForm.classList.toggle("stacked", height > ONE_LINE);
@@ -3210,10 +3212,10 @@
 
   const attachStrip = SheepItComposer.createAttachStrip(
     elAttachStrip,
-    async (blob, paneId) => {
+    async (blob, paneId, filename) => {
       const res = await fetch(`/api/agents/${encodeURIComponent(paneId)}/attach`, {
         method: "POST",
-        headers: { "Content-Type": blob.type || "image/png" },
+        headers: uploadHeaders(blob, filename),
         body: blob,
       });
       const data = await res.json();
@@ -3223,6 +3225,15 @@
     (message) => showAttachError(message),
     (images) => { elBtnSend.disabled = !elPromptInput.value.trim() && !images.length; }
   );
+
+  /* The name rides along only for its extension - the gateway names the file. */
+  function uploadHeaders(blob, filename) {
+    return {
+      "Content-Type": blob.type || "application/octet-stream",
+      "X-Filename": encodeURIComponent(filename || ""),
+    };
+  }
+  window.SheepItUploadHeaders = uploadHeaders;
 
   async function attachFiles(files, paneId = state.activePaneId) {
     if (!files || !files.length) return;
@@ -3339,10 +3350,10 @@
 
   elPromptInput.addEventListener("drop", (e) => {
     if (state.chatVisible || state.activeChatId) return;
-    const images = imagesIn(e.dataTransfer);
-    if (!images.length || !state.activePaneId) return;
+    const files = [...(e.dataTransfer?.files || [])];
+    if (!files.length || !state.activePaneId) return;
     e.preventDefault();
-    attachFiles(images);
+    attachFiles(files);
   });
 
   elAttachInput.addEventListener("change", async () => {
@@ -5532,8 +5543,8 @@
 
   // Give the composer room while it has focus.
   elPromptInput.addEventListener("focus", () => {
+    syncPinned();
     elPromptInput.classList.add("expanded");
-    if (!wide.matches) document.documentElement.classList.add("keyboard-open");
     autoResizeTextarea();
     if (state.chatVisible || state.activeChatId) return;
     setTimeout(() => {
@@ -5543,8 +5554,8 @@
   });
 
   elPromptInput.addEventListener("blur", () => {
+    syncViewportHeight();
     elPromptInput.classList.remove("expanded");
-    document.documentElement.classList.remove("keyboard-open");
     autoResizeTextarea();
   });
 
@@ -5698,6 +5709,58 @@
     if (!vv) return;
     document.documentElement.style.setProperty("--app-height", `${vv.height}px`);
     document.documentElement.style.setProperty("--app-offset", `${vv.offsetTop}px`);
+    // Safari ignores `interactive-widget`: its keyboard covers the layout
+    // viewport rather than shrinking it, and only the visual one says so.
+    keyboardCovered = window.innerHeight - vv.height * vv.scale > 150;
+    syncPinned();
+  }
+  let keyboardCovered = false;
+
+  /* While the keyboard is up or the console is open, a phone's chat leaves
+     the document and becomes a fixed box the size of what is visible
+     (`.pinned` in style.css), riding the visual viewport the way the
+     `.full-view`s do. In the flow, the sticky header and composer sat in a
+     layout viewport the keyboard was covering, so Safari slid the whole page
+     about to find the caret - the composer climbing out of sight, the page
+     draggable sideways, and above the console the header slid off the top,
+     sometimes for good once the keyboard was gone. The transcript scrolls
+     inside the box meanwhile, so how far from its end you were is carried
+     across the swap by hand. */
+  function syncPinned() {
+    const root = document.documentElement;
+    const on = !wide.matches && (keyboardCovered
+      || document.activeElement === elPromptInput
+      || !elConsoleView.classList.contains("hidden"));
+    if (root.classList.contains("pinned") === on) return;
+    const chatView = document.getElementById("chat-chat-view");
+    const inner = chatView.classList.contains("hidden")
+      ? elHistoryContainer
+      : document.getElementById("chat-messages");
+    const outer = document.scrollingElement;
+    const from = on ? outer : inner;
+    const fromEnd = from.scrollHeight - from.scrollTop - from.clientHeight;
+    root.classList.toggle("pinned", on);
+    const to = on ? inner : outer;
+    to.scrollTop = to.scrollHeight - to.clientHeight - fromEnd;
+    boxHeight.set(to, to.clientHeight);
+  }
+
+  /* The box then shrinks under the transcript twice more - the keyboard
+     finishing its slide, the composer growing a line - so one that was at its
+     end at its old height is kept there, as the document's own scroll would
+     have been. The scroll event would say so a frame too late. */
+  const boxHeight = new WeakMap();
+  if (window.ResizeObserver) {
+    const keepAtEnd = new ResizeObserver((entries) => {
+      for (const { target: el } of entries) {
+        const before = boxHeight.get(el);
+        boxHeight.set(el, el.clientHeight);
+        if (!document.documentElement.classList.contains("pinned") || before == null) continue;
+        if (el.scrollHeight - el.scrollTop - before < 4) el.scrollTop = el.scrollHeight;
+      }
+    });
+    keepAtEnd.observe(elHistoryContainer);
+    keepAtEnd.observe(document.getElementById("chat-messages"));
   }
 
   if (window.visualViewport) {
@@ -6391,14 +6454,13 @@
   async function attachConsoleFiles(files) {
     const paneId = state.activePaneId;
     if (!files?.length || !paneId) return;
-    setConsoleSub("uploading photo…");
+    setConsoleSub("uploading…");
     try {
       const paths = await Promise.all([...files].map(async (file) => {
-        const blob = await SheepItComposer.shrinkImage(file);
-        if (!blob.type.startsWith("image/")) throw new Error("the clipboard did not contain a readable photo");
+        const blob = (file.type || "").startsWith("image/") ? await SheepItComposer.shrinkImage(file) : file;
         const res = await fetch(`/api/agents/${encodeURIComponent(paneId)}/attach`, {
           method: "POST",
-          headers: { "Content-Type": blob.type },
+          headers: uploadHeaders(blob, file.name),
           body: blob,
         });
         const data = await res.json();
@@ -6410,12 +6472,12 @@
         encoder.encode(paths.map((path) => `@${path}`).join(" ") + " "),
       )) {
         if (elConsoleView.classList.contains("hidden") || consoleState.paneId !== paneId) return;
-        setConsoleSub(`photo saved as @${paths.join(" @")}; terminal disconnected`);
+        setConsoleSub(`saved as @${paths.join(" @")}; terminal disconnected`);
         return;
       }
       setConsoleSub(`ready: ${paths.map((path) => `@${path}`).join(" ")}`);
     } catch (err) {
-      setConsoleSub(`could not attach photo: ${err.message}`);
+      setConsoleSub(`could not attach it: ${err.message}`);
     }
   }
 
@@ -6678,6 +6740,7 @@
     const paneId = state.activePaneId;
     triggerHaptic();
     elConsoleView.classList.remove("hidden");
+    syncPinned();
     elAppHeader.classList.add("console-open");
     elConsoleSub.classList.remove("hidden");
     renderAgentBar();
@@ -6788,6 +6851,7 @@
 
   function closeConsole() {
     elConsoleView.classList.add("hidden");
+    syncPinned();
     elAppHeader.classList.remove("console-open");
     elConsoleSub.classList.add("hidden");
     consoleState.fitPending = false;
@@ -6826,7 +6890,7 @@
     if ([...(e.dataTransfer?.types || [])].includes("Files")) e.preventDefault();
   });
   elConsoleTerm.addEventListener("drop", (e) => {
-    const files = imagesIn(e.dataTransfer);
+    const files = [...(e.dataTransfer?.files || [])];
     if (!files.length) return;
     e.preventDefault();
     attachConsoleFiles(files);
@@ -7767,7 +7831,7 @@
       .replace(/`([^`\n]+)`/g, (_, c) => hold(/^https?:\/\/[\w-]+(\.[\w-]+)+(:\d+)?(\/[^\s…]*)?$/.test(c) ? link(c, "<code>" + c + "</code>") : "<code>" + c + "</code>"))
       .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(u, t)))
       .replace(/https?:\/\/[^\s<]+/g, (u) => {
-        const tail = u.match(/[.,;:!?)\]]*$/)[0];
+        const tail = u.match(/[.,;:!?)\]*_]*$/)[0];
         u = u.slice(0, u.length - tail.length);
         return hold(link(u, u)) + tail;
       })
@@ -7929,11 +7993,20 @@
       `<details><summary>details</summary>${detail}</details>${foot}</div>`;
   }
 
+  // A picture is drawn; anything else is a link to the file, named by its kind.
+  function attachmentHtml(name) {
+    const ext = String(name).split(".").pop().toLowerCase();
+    if (["jpg", "jpeg", "png", "gif", "webp", "heic", "avif"].includes(ext)) {
+      return `<img src="${esc(imageUrl(name))}" alt="">`;
+    }
+    return `<a class="file-chip" href="${esc(imageUrl(name))}" target="_blank" rel="noopener">${esc(ext.toUpperCase())} file</a>`;
+  }
+
   function itemHtml(it) {
     switch (it.kind) {
       case "user":
         return `<div class="msg user">` +
-          (it.images.length ? `<div class="imgs">${it.images.map((n) => `<img src="${esc(imageUrl(n))}" alt="">`).join("")}</div>` : "") +
+          (it.images.length ? `<div class="imgs">${it.images.map(attachmentHtml).join("")}</div>` : "") +
           (it.text ? userText(it.text) : "") + `</div>`;
       case "assistant": return `<div class="msg assistant">${markdown(it.text)}</div>`;
       case "error": return `<div class="msg error">${esc(it.text)}</div>`;
@@ -7973,7 +8046,8 @@
   let userScrolledUp = false;
 
   function chatScroller() {
-    return chatWide.matches ? elMessages : document.scrollingElement;
+    return chatWide.matches || document.documentElement.classList.contains("pinned")
+      ? elMessages : document.scrollingElement;
   }
 
   function scrollChatToBottom(smooth = false) {
@@ -8169,9 +8243,9 @@
      the plain view - only how an upload happens is chat's own. */
   const attachStrip = SheepItComposer.createAttachStrip(
     elStrip,
-    async (blob) => {
+    async (blob, scope, filename) => {
       const res = await fetch(`/api/chat/upload?id=${encodeURIComponent(current.id)}`, {
-        method: "POST", headers: { "Content-Type": blob.type || "image/jpeg" }, body: blob,
+        method: "POST", headers: window.SheepItUploadHeaders(blob, filename), body: blob,
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error);
@@ -8381,7 +8455,7 @@
     // Enter sends on a keyboard with a shift key; the phone's return is a newline.
     if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) {
       e.preventDefault();
-      document.getElementById("prompt-form").requestSubmit();
+      SheepItComposer.submit(document.getElementById("prompt-form"));
     }
   });
   let sendingMessage = false;

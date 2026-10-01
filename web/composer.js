@@ -202,11 +202,30 @@
     return { render };
   }
 
+  /* The composer is not a <form> (see index.html), so sending is an event of
+     our own, fired by the send button or by `submit(form)`. Its buttons never
+     take focus from the text box: a tap that blurred it closed the keyboard,
+     shrank the box, and moved the button out from under the finger before the
+     click landed - so the first tap on send only ever put the keyboard away. */
   function bindSubmit(form, send) {
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      send(event);
+    form.addEventListener("sheepit:submit", send);
+    if (form.dataset.wired) return;
+    form.dataset.wired = "1";
+    form.addEventListener("pointerdown", (e) => {
+      if (e.target.closest("button")) e.preventDefault();
     });
+    form.addEventListener("click", (e) => {
+      const btn = e.target.closest("button.btn-send");
+      if (btn && !btn.disabled) submit(form);
+    });
+  }
+
+  function submit(form) {
+    form.dispatchEvent(new Event("sheepit:submit", { cancelable: true }));
+  }
+
+  function escapeText(s) {
+    return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   }
 
   /* One strip, one hidden array behind it. `upload(blob)` does whatever a view
@@ -224,7 +243,8 @@
       el.innerHTML = attached
         .map(
           (a, i) =>
-            `<span class="thumb${a.name ? "" : " loading"}"><img src="${a.url}" alt="">` +
+            `<span class="thumb${a.name ? "" : " loading"}${a.label ? " file" : ""}">` +
+            (a.label ? `<span class="file-label">${escapeText(a.label)}</span>` : `<img src="${a.url}" alt="">`) +
             `<button type="button" data-drop="${i}" aria-label="Remove">×</button></span>`
         )
         .join("");
@@ -235,25 +255,31 @@
       const started = generation;
       for (const file of files || []) {
         if (started !== generation) return;
-        if (file.type && !file.type.startsWith("image/")
-            && file.type !== "application/octet-stream") continue;
-        const blob = await shrinkImage(file);
+        // Anything goes - a video, a PDF, a zip. Only a picture is shrunk, and
+        // only a picture gets a thumbnail; the rest show their name.
+        // A typeless file may be a pasted screenshot iOS forgot to label, so it
+        // is offered to the decoder too.
+        const type = file.type || "";
+        const picture = type.startsWith("image/") || !type || type === "application/octet-stream";
+        const blob = picture ? await shrinkImage(file) : file;
         if (started !== generation) return;
-        if (!blob.type.startsWith("image/")) {
-          if (onError) onError("The clipboard did not contain a readable photo");
-          continue;
-        }
-        const entry = { name: null, url: URL.createObjectURL(blob) };
+        const shown = blob.type.startsWith("image/");
+        const filename = file.name || "";
+        const entry = {
+          name: null,
+          url: shown ? URL.createObjectURL(blob) : "",
+          label: shown ? "" : filename || "file",
+        };
         attached.push(entry);
         draw();
         try {
-          const name = await upload(blob, scope);
+          const name = await upload(blob, scope, filename);
           if (started !== generation) return;
           entry.name = name;
           draw();
         } catch (err) {
           attached = attached.filter((a) => a !== entry);
-          URL.revokeObjectURL(entry.url);
+          if (entry.url) URL.revokeObjectURL(entry.url);
           draw();
           if (onError) onError(err.message);
         }
@@ -262,7 +288,7 @@
 
     function clear() {
       generation++;
-      attached.forEach((a) => URL.revokeObjectURL(a.url));
+      attached.forEach((a) => a.url && URL.revokeObjectURL(a.url));
       attached = [];
       draw();
     }
@@ -271,7 +297,7 @@
       const btn = e.target.closest("button[data-drop]");
       if (!btn) return;
       const [gone] = attached.splice(+btn.dataset.drop, 1);
-      if (gone) URL.revokeObjectURL(gone.url);
+      if (gone && gone.url) URL.revokeObjectURL(gone.url);
       draw();
     });
 
@@ -287,6 +313,6 @@
 
   window.SheepItComposer = {
     MAX_EDGE, KEEP_AS_IS, shrinkImage, imagesIn, clipboardImages, resizeTextarea,
-    createDraftStore, createRecallHistory, createQueueStrip, bindSubmit, createAttachStrip,
+    createDraftStore, createRecallHistory, createQueueStrip, bindSubmit, submit, createAttachStrip,
   };
 })();
