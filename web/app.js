@@ -23,6 +23,8 @@
     diffSplit: false,
     numberKeys: 3,
     badgeCount: -1,
+    // Heartbeat findings nobody has read yet, from the same poll as the rows.
+    alerts: [],
     activity: {},
     drafts: {},
     order: [],
@@ -129,6 +131,7 @@
   const elBtnAddHeartbeat = document.getElementById("btn-add-heartbeat");
   const elHeartbeatsList = document.getElementById("heartbeats-list");
   const elPickerQuota = document.getElementById("picker-quota");
+  const elFlockAlerts = document.getElementById("flock-alerts");
   const elChatQueue = document.getElementById("chat-queue");
   const elViewSwitcher = document.getElementById("view-switcher");
   const elBtnConsole = document.getElementById("btn-console");
@@ -521,6 +524,8 @@
       if (request !== agentsRequest) return;
       state.agents = data.agents || [];
       state.chats = data.chats || [];
+      state.alerts = data.alerts || [];
+      renderAlerts();
       // Deleted from another phone, or reaped: the column cannot keep showing it.
       if (state.activeChatId && !state.chats.some((c) => c.id === state.activeChatId)) {
         state.activeChatId = null;
@@ -560,6 +565,47 @@
     }
   }
 
+  /* A heartbeat that found something leaves its tab open, but an idle tab is
+     the quietest row there is - the first one sat in a project off screen for a
+     day. So until it is opened, or dismissed, or its tab closed, it is a banner
+     above the whole flock and a count on the icon. */
+  let alertsSignature = "";
+
+  function renderAlerts() {
+    const signature = JSON.stringify(state.alerts);
+    if (signature === alertsSignature) return;
+    alertsSignature = signature;
+    elFlockAlerts.classList.toggle("hidden", !state.alerts.length);
+    elFlockAlerts.innerHTML = state.alerts.map((a) => `
+      <div class="flock-alert" data-id="${escapeHtml(a.id)}" data-pane-id="${escapeHtml(a.pane_id)}">
+        <button type="button" class="flock-alert-open">
+          <span class="flock-alert-head">${escapeHtml(a.name)} found something</span>
+          <span class="flock-alert-body">${escapeHtml(a.summary)}</span>
+        </button>
+        <button type="button" class="flock-alert-dismiss" aria-label="Mark as read">×</button>
+      </div>`).join("");
+  }
+
+  function markAlertSeen(id) {
+    state.alerts = state.alerts.filter((a) => a.id !== id);
+    renderAlerts();
+    updateBadge();
+    fetch("/api/heartbeat/seen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).catch(() => {});
+  }
+
+  elFlockAlerts.addEventListener("click", (e) => {
+    const alert = e.target.closest(".flock-alert");
+    if (!alert) return;
+    markAlertSeen(alert.dataset.id);
+    if (e.target.closest(".flock-alert-dismiss")) return;
+    const paneId = alert.dataset.paneId;
+    if (!openAsChat(paneId)) selectAgent(paneId);
+  });
+
   /* iOS freezes the home screen icon at install time, so the badge on it is
      the only thing that can still change - it counts the agents waiting on
      you, and clears itself as you answer them. Needs an installed web app and
@@ -578,7 +624,8 @@
        are waiting is not something a number on a home screen can say. */
     const waiting = state.agents.filter(
       (a) => a.has_agent && WAITING.includes(a.status)
-    ).length + state.chats.filter((c) => c.pending && c.pending.length).length;
+    ).length + state.chats.filter((c) => c.pending && c.pending.length).length
+      + state.alerts.length;
     if (waiting === state.badgeCount) return;
     state.badgeCount = waiting;
     const done = waiting > 0 ? navigator.setAppBadge(waiting) : navigator.clearAppBadge();

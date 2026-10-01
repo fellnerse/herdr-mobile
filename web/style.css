@@ -2095,6 +2095,57 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 /* ---------------------------------------------------------------- Queue --- */
 
 /* Usage windows, above the list */
+/* A heartbeat's unread finding: the loudest thing on the overview on purpose,
+   in the colour a question is drawn in, and gone once it has been opened. */
+.flock-alerts.hidden { display: none; }
+.flock-alerts {
+  flex-shrink: 0;
+  padding: 10px 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.flock-alert {
+  display: flex;
+  align-items: stretch;
+  border-radius: 10px;
+  background: rgba(248, 81, 73, 0.15);
+  box-shadow: inset 4px 0 0 var(--status-blocked);
+}
+.flock-alert-open {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 4px 10px 14px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+}
+.flock-alert-head {
+  color: var(--status-blocked);
+  font-weight: 600;
+}
+.flock-alert-body {
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.flock-alert-dismiss {
+  padding: 0 14px;
+  background: none;
+  border: 0;
+  color: var(--status-blocked);
+  font-size: 20px;
+  cursor: pointer;
+}
+
 .quota-strip {
   flex-shrink: 0;
   padding: 12px;
