@@ -2975,7 +2975,9 @@
     const images = attachStrip.list;
     if (images.some((image) => !image.name)) return; // still uploading
     const attachmentText = images.map((image) => `@${image.name}`).join(" ");
-    const text = [elPromptInput.value.trim(), attachmentText].filter(Boolean).join(" ");
+    // Paths first: an `@` token left at the end opens Claude Code's file
+    // picker, and the Enter meant to send the prompt takes a suggestion.
+    const text = [attachmentText, elPromptInput.value.trim()].filter(Boolean).join(" ");
     if (!text || !state.activePaneId || state.isSending) return;
 
     state.isSending = true;

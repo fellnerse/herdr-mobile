@@ -3602,7 +3602,10 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 #chat-chat-view .msg.user .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
 #chat-chat-view .msg.user .imgs img { max-width: 100%; max-height: 220px; border-radius: 10px; display: block; }
 #chat-chat-view .msg.user .imgs:last-child { margin-bottom: 2px; }
+/* `flex: none`: a scroller's minimum height is 0, so in a column with the
+   keyboard up (or a desktop's) the messages squeezed it to its top edge. */
 #chat-chat-view .attach-strip {
+  flex: none;
   display: flex; gap: 8px; overflow-x: auto; padding: 8px 10px 0;
   background: var(--bg-surface); border-top: 1px solid var(--border);
 }
