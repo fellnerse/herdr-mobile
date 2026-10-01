@@ -713,17 +713,20 @@ with tempfile.TemporaryDirectory() as tmp:
     check("the bytes are what arrived", (repo / rel).read_bytes(), png)
     check("the name says when it came", rel.split("/")[1][:8].isdigit(), True)
 
-    # The content type names the file, because the client's filename is a
-    # string from a phone and belongs to nobody this server trusts.
+    # Anything is taken - a video, a PDF, a file with no type at all - but only
+    # an extension comes from the name the phone sent, and only a plain one.
     check("a jpeg is a .jpg", server.save_attachment(str(repo), b"x", "image/jpeg").endswith(".jpg"), True)
     check("a type with parameters still lands",
           server.save_attachment(str(repo), b"x", "image/png; charset=binary").endswith(".png"), True)
-    for refused in ("text/html", "application/x-sh", "", "image/svg+xml"):
-        try:
-            server.save_attachment(str(repo), b"x", refused)
-            failures.append(f"FAIL {refused!r} should be refused")
-        except ValueError:
-            pass
+    check("a video keeps its extension",
+          server.save_attachment(str(repo), b"x", "video/quicktime", "IMG_0001.MOV").endswith(".mov"), True)
+    check("a type alone names it",
+          server.save_attachment(str(repo), b"x", "application/pdf").endswith(".pdf"), True)
+    check("nothing at all is a .bin", server.save_attachment(str(repo), b"x", "").endswith(".bin"), True)
+    sneaky = server.save_attachment(str(repo), b"x", "", "../../etc/passwd/../x.sh;rm")
+    check("a hostile name only ever lends an extension",
+          (sneaky.startswith(".sheepit/") and "/" not in sneaky[len(".sheepit/"):]
+           and sneaky.endswith(".bin")), True)
 
     # Two in the same second must not be one file.
     pair = {server.save_attachment(str(repo), b"a", "image/png"),
@@ -734,7 +737,7 @@ with tempfile.TemporaryDirectory() as tmp:
     exclude = (repo / ".git/info/exclude").read_text()
     check("the inbox is excluded", ".sheepit/" in exclude.split(), True)
     server.save_attachment(str(repo), b"x", "image/png")
-    check("and excluded once, however many images arrive",
+    check("and excluded once, however many files arrive",
           (repo / ".git/info/exclude").read_text().count(".sheepit/"), 1)
     check("git sees nothing to commit",
           subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
@@ -754,6 +757,20 @@ with tempfile.TemporaryDirectory() as tmp:
         failures.append("FAIL a missing directory should be refused")
     except ValueError:
         pass
+
+# A headless chat keeps what it is sent beside itself. An image small enough
+# goes to Claude inline; anything else - a video, a PDF, a photo over the API's
+# limit - is still one of ours, and goes as a path.
+with tempfile.TemporaryDirectory() as tmp:
+    folder = Path(tmp)
+    (folder / "0123456789ab.png").write_bytes(b"png")
+    (folder / "0123456789ab.mov").write_bytes(b"mov")
+    (folder / "aaaaaaaaaaaa.jpg").write_bytes(b"x" * (chat.MAX_IMAGE + 1))
+    check("a small image goes inline", chat.read_image(folder, "0123456789ab.png"), (b"png", "image/png"))
+    check("a video does not", chat.read_image(folder, "0123456789ab.mov"), (None, None))
+    check("nor does a photo the API would refuse", chat.read_image(folder, "aaaaaaaaaaaa.jpg"), (None, None))
+    check("but the video is still ours", chat.upload_path(folder, "0123456789ab.mov") is not None, True)
+    check("a name of any other shape is not", chat.upload_path(folder, "../0123456789ab.mov"), None)
 
 # A worktree keeps its .git as a file pointing elsewhere, which is exactly
 # where a naive `.git/info/exclude` writes into a directory that is not there.

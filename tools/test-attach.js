@@ -234,25 +234,32 @@ async function main() {
 }
 
 {
-  // A pdf dragged onto the composer is not a screenshot.
+  // A pdf - or a video, or anything - is attached as it is, by name.
   const { composer } = load();
   const el = stripEl();
-  const strip = composer.createAttachStrip(el, async () => "nope", () => {});
-  await strip.add(asFiles("application/pdf").files);
-  check("a file that is not an image is not attached", strip.list.length, 0);
+  const sent = [];
+  const strip = composer.createAttachStrip(el, async (blob, scope, filename) => {
+    sent.push([blob.type, filename]);
+    return ".sheepit/x.pdf";
+  }, () => {});
+  const pdf = { type: "application/pdf", size: 4096, name: "plan.pdf" };
+  await strip.add([pdf]);
+  check("a file that is not an image is attached", strip.list.length, 1);
+  check("as itself, with its name", sent, [["application/pdf", "plan.pdf"]]);
+  check("and labelled rather than drawn", strip.list[0].label, "plan.pdf");
 }
 
 {
-  /* A file with no type reaches the decoder on spec; if what comes back is
-     not an image after all, it is refused with a reason rather than uploaded. */
+  /* A file with no type reaches the decoder on spec; if it is not an image
+     after all, it still goes, as the file it is. */
   const { composer } = load({ decode: () => null });
   const el = stripEl();
   const errors = [];
   const strip = composer.createAttachStrip(
-    el, async () => "nope", (m) => errors.push(m));
-  await strip.add([{ type: "", size: 4096 }]);
-  check("something that only looked like a photo is refused", strip.list.length, 0);
-  check("and says why", errors, ["The clipboard did not contain a readable photo"]);
+    el, async () => ".sheepit/x.bin", (m) => errors.push(m));
+  await strip.add([{ type: "", size: 4096, name: "notes" }]);
+  check("something that only looked like a photo is still attached", strip.list.length, 1);
+  check("with no complaint", errors, []);
 }
 
 if (failures) {
