@@ -54,8 +54,8 @@ python3 tools/make-bleat.py                     # regenerate web/bleat.wav
 
 There is no runner, no lint and no formatter: each suite is a standalone script
 that prints failures and exits non-zero, so "run one test" means run one of the
-seven suites. Restart `server.py` after changing the gateway; changing `web/` only
-needs a reload.
+nine suites — the eight under `tools/test-*.js` plus the gateway's. Restart
+`server.py` after changing the gateway; changing `web/` only needs a reload.
 
 Getting finished work from a worktree onto the phone — suites, commit, PR,
 merge, pull into the production checkout, restart the gateway — is the
@@ -139,15 +139,16 @@ place `penSeed` is deliberately not used, since two animals under one title must
 not read as one agent. A tab's own drawer is what the strip offers it, Rename
 (`tab.rename`) and Close (`tab.close`), which is safe there because a pen only
 draws this way while it has a second tab to keep the workspace alive.
-**Every row carries its drawer's first two as hover icons** on a pointer — a
-worktree's led by a `+` for a new tab in it — a pencil and a bin in the corner the `…` hint used to occupy (`rowToolsHtml`,
+**Every row carries its whole drawer as hover icons** on a pointer
+(`penTools`), led by a `+` for a new tab in it: a plus, a pencil and a bin in
+the corner the `…` hint used to occupy, and — on a linked worktree only, never
+the project's own checkout — the Remove icon after them (`rowToolsHtml`,
 `.row-tools`, and the title's `.pen-head-tools`, all of it hidden wherever there
 is no hover) — since a mouse cannot swipe. They sit above the status badge and
 hide nothing: hovering a row must not take anything off it. A chat's is the bin
 alone. The drawer itself is the swipe's and is hidden wherever there is a
-pointer, so Remove — which deletes a checkout and stays out of the icons on
-purpose — is a touch-only action, and a right-click over a row is the browser's
-own menu again. The title still opens the tab that needs you most
+pointer, so on a phone those same actions are the swipe's, and a right-click
+over a row is the browser's own menu again. The title still opens the tab that needs you most
 (`urgency`: blocked, done, working, idle, shell), and still says `3 tabs`, which
 is what makes Close read as stopping more than one thing. Every tab an opened
 pen draws is in the list signature (`penTabsMark`), or a second tab finishing
@@ -315,21 +316,31 @@ refuses paths that escape the pane's directory.
 
 - **The JS tests slice `web/app.js` between literal anchor strings**, because it
   is one browser IIFE with no exports. Renaming or moving these lines breaks the
-  suites even though the app still works: `const RE_RULE_GLYPH` →
-  `function renderTranscript(text)` (transcript), `function statusLabel(file)` →
+  suites even though the app still works: `const RE_SGR` → `// Fetch Agent List`
+  (transcript), `function statusLabel(file)` →
   `elBtnChanges.addEventListener` (diff), `const DRAFTS_KEY` →
-  `/* Stamp anything whose sequence moved` (drafts), `/* ---- Tokens over time --`
+  `/* Stamp anything whose sequence moved` (drafts), `function queueSignature() {`
+  → `const chatQueueStrip = SheepItComposer.createQueueStrip` (the queue),
+  `function resultText(content) {` → `/* A message that starts with a command`
+  (the chat renderer), and `/* ---- Tokens over time --`
   → `/* The page itself:` (the tokens page, whose half above that anchor
   deliberately touches no DOM). Check the anchors in
-  `tools/test-*.js` after refactoring `app.js`. `test-flock.js` slices four
+  `tools/test-*.js` after refactoring `app.js`. `test-flock.js` slices five
   times: `/* ---- The flock ---` → `// Opening a project is activity too`
   (the order, and the collapse to one row per workspace),
   `function agentListSignature() {` → `async function createWorkspace(cwd) {`
   (a row's markup, which borrows `tabChipLabel` from the strip slice below it),
   `// In the order the laptop's tab bar has them` →
-  `// Render Metadata (lives in the settings sheet)` (the tab strip), and
-  `const POSE = {` → `/* Everything a row draws.` (the sheep and their
-  markings).
+  `// Redrawn from the poll, so it is compared before it is replaced` (the tab
+  strip, which nests a second cut of `function displayedStatus(agent) {` →
+  `function agentRowHtml(`), `const POSE = {` → `/* Everything a row draws.`
+  (the sheep and their markings), and
+  `/* How much subscription is left, per agent` →
+  `// Which chat a prompt is queued for` (the pasture).
+  **`test-attach.js` is the exception**: `web/composer.js` is a standalone
+  global with its own `<script>` tag, so that suite loads the file whole with
+  the browser stubbed and has no anchors to break. Anything moved out of
+  `app.js` into a module of its own should be tested that way instead.
 - **The gateway runs on Python 3.9.** The menubar app launches it with the
   python Xcode ships, so `str | None` outside `from __future__ import
   annotations` is a `TypeError` at import - and the only symptom is the menubar
