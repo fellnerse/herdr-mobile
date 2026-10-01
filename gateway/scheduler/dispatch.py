@@ -306,7 +306,13 @@ class Dispatcher:
                 else:
                     codex_queue.send(prompt.pane_id, prompt.prompt)
             else:
-                self.herdr.agent_prompt(prompt.pane_id, prompt.prompt)
+                # A prompt that is only an attachment still ends on its `@`
+                # token, whose file picker would take the Enter; a space
+                # closes it. Added here, since the queue strips the prompt.
+                text = prompt.prompt
+                if re.search(r"(^|\s)@\S+$", text):
+                    text += " "
+                self.herdr.agent_prompt(prompt.pane_id, text)
         except (HerdrError, codex_queue.CodexQueueError) as e:
             db.update(conn, prompt.id, state="failed", last_error=str(e))
             log.warning("prompt %s could not be delivered: %s", prompt.id, e)

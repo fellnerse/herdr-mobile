@@ -21,6 +21,8 @@ Only the ANSI encoding is used here: the semantic frame encoding would mean
 compositing cells ourselves, and xterm.js in the browser already is a terminal.
 """
 
+from __future__ import annotations
+
 import socket
 import struct
 import threading

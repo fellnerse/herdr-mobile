@@ -711,9 +711,11 @@ class PaneChat:
         """
         if not self.is_supported:
             raise ValueError("There is no supported agent in this pane")
-        # An attachment goes as its path, which Claude Code reads like any file.
+        # An attachment goes as its path, which Claude Code reads like any file -
+        # ahead of the text, since an `@` token under the cursor opens Claude
+        # Code's file picker and the Enter meant to send takes a suggestion.
         paths = ["@" + str(p) for p in (chat.upload_path(self.dir, n) for n in images) if p]
-        text = "\n".join([text.strip()] + paths).strip()
+        text = "\n".join(paths + [text.strip()]).strip()
         if _queue is None:
             raise ValueError("The queue is not running")
         first_prompt = self.is_claude and not self.session and self.first_prompt_at is None
