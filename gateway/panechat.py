@@ -582,6 +582,11 @@ class PaneChat:
         self._adopt(None, None)
         self.clear_at = sent_at
         self.generation += 1
+        # And forget the saved link to it: /clear puts the generic title back,
+        # which is exactly when the saved session is trusted, so the next poll
+        # read the conversation that was just cleared straight back in.
+        self.first_prompt_at = None
+        self._save_session()
 
     def _read_log(self):
         if not self.path:
