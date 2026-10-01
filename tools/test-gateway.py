@@ -2553,6 +2553,19 @@ try:
           (pc.session, [e.get("text") for e in pc.events]),
           (ALPHA, ["what alpha asked"]))
 
+    # /clear puts the generic title back, which is when the pane's saved
+    # session is trusted - so that link has to go with the conversation.
+    for path in (alpha, beta):  # both from well before the clear
+        os.utime(path, (time.time() - 600, time.time() - 600))
+    untitled["terminal_title_stripped"] = "Claude Code"
+    panechat.cleared("wY:p1", dict(untitled), time.time())
+    pc.refresh()
+    check("a cleared pane does not read its old session back in",
+          (pc.session, pc.events), (None, []))
+    pc.clear_at = pc.cleared_path = None  # as a new session's log would
+    untitled["terminal_title_stripped"] = "Alpha work"
+    pc.refresh()
+
     # And the tie it must refuse: a title matching nothing, with two to choose
     # from. An empty chat is better than the wrong conversation.
     untitled["terminal_title_stripped"] = "Claude Code"
