@@ -2068,8 +2068,43 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-resolve-") as hb_dir:
         check("its alert is pushed", pushed, ["Heartbeat Alert: Sentry"])
         check("and recorded", heartbeat.HeartbeatConfig.load().heartbeats[0].last_status, "alert")
         check("and read only once", heartbeat.resolve_stopped_runs(cfg, idle, 2060.0), False)
+        unseen = heartbeat.HeartbeatConfig.load().heartbeats[0].unseen_alert
+        check("an alert is unseen until somebody looks", (unseen or {}).get("pane_id"), "wE:pR")
+        check("the overview is told while its tab is open",
+              [a["pane_id"] for a in heartbeat.unseen_alerts({"wE:pR"})], ["wE:pR"])
+        check("and not once the tab is closed", heartbeat.unseen_alerts({"wE:pX"}), [])
+
+        class Answer:
+            def send_json(self, data, status=200):
+                self.data = data
+        heartbeat.handle_post_heartbeat_seen(Answer(), {"id": "hb_idle_end"})
+        check("opening it marks it seen", heartbeat.unseen_alerts({"wE:pR"}), [])
     finally:
         heartbeat.CONFIG_PATH, heartbeat.Herdr.pane_read, heartbeat._notify = orig
+
+# The alert says what the agent answered, not whatever was last on screen -
+# a run that ends by showing a diff put the diff in the push.
+pane = """  93 +        // the component has unmounted.
+  94 +        if (!this.series) return;
+
+● PR #463 opened. Now saving memory.
+
+  Read 1 file, wrote 3 memories
+
+● Audit complete. Summary:
+
+  - Sentry: found and fixed WHATSANALYZE-11J, opened PR #463.
+  - Analytics: fine.
+
+✻ Cogitated for 2m 14s · done 6:47 AM
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  whatsanalyze   dev  Sonnet 5
+"""
+check("the alert is the agent's last answer", heartbeat.final_answer(pane),
+      "Audit complete. Summary: - Sentry: found and fixed WHATSANALYZE-11J, opened PR #463. - Analytics: fine.")
+check("a pane with no answer on it has none", heartbeat.final_answer("$ ls\nfoo\n"), "")
 
 # A scheduled run that fails to start waits before it is tried again.
 with tempfile.TemporaryDirectory(prefix="sheepit-hb-runner-") as hb_dir:
