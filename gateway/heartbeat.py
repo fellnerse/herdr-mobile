@@ -31,8 +31,9 @@ DEFAULT_PROMPT = (
     "Evaluate the findings:\n"
     "- If all checks pass (no unresolved critical Sentry crashes, GA4 tracking operational, endpoints 200), output ONLY:\n"
     "  HEARTBEAT_OK\n\n"
-    "- If anything anomalous, critical, or broken turns up:\n"
-    "  Provide a concise summary of the issue, affected URL/file, and root cause."
+    "- If anything anomalous, critical, or broken turns up: start with one line saying what you found\n"
+    "  (e.g. \"New crash in WordCloud.vue - fixed in PR #463\"), since that line is what the phone shows,\n"
+    "  then a concise summary of the issue, affected URL/file, and root cause."
 )
 
 DEFAULT_SENTINEL = "HEARTBEAT_OK"
