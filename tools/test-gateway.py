@@ -1405,6 +1405,27 @@ with _mock.patch.object(sched_quota, "current",
     Dispatcher(herdr=busy, events=Silent()).hit_the_wall(fresh_db(), "wA:p1", Config())
 check("a working pane is never interrupted by a banner", busy.keys, [])
 
+# Sending into a parked pane by hand lifts the stall. The phone was stuck here:
+# every message after the wall sat "queued" until the reset, while the agent
+# answered each one tapped through with "Send now" perfectly well.
+pane = FakePane()
+d = Dispatcher(herdr=pane, events=Silent())
+conn = fresh_db()
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    d.hit_the_wall(conn, "wA:p1", Config())
+    sched_db.add(conn, "wA:p1", "the next thing")
+    d.sweep(conn, Config())
+    check("a parked pane is not delivered to", pane.sent, [])
+    d.release(conn, "wA:p1")
+    check("released, its resume is dropped",
+          [p.prompt for p in sched_db.list_prompts(conn, "wA:p1", "waiting")], ["the next thing"])
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(10.0, timedelta(hours=3))], stale=False)):
+    d.sweep(conn, Config())
+check("and what was queued behind it goes out", pane.sent, ["the next thing"])
+
 # End to end, from exactly the state the phone was stuck in: a resume and a
 # typed prompt queued behind a cached, expired, hundred-percent window.
 pane = FakePane()
@@ -1833,7 +1854,7 @@ def tally(cache, path=None):
 
 
 with tempfile.TemporaryDirectory(prefix="sheepit-logs-") as logs:
-    root = Path(logs)
+    root = Path(logs).resolve()  # /var is /private/var on macOS
     projects = root / "claude" / "projects" / "-repo"
     projects.mkdir(parents=True)
     sessions = root / "codex" / "sessions" / "2026" / "09" / "18"
