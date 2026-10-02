@@ -1415,6 +1415,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
                             return
                         sched_db.update(conn, prompt_id, state="sent",
                                         sent_at=sched_db.now(), last_error=None)
+                        # Whatever is behind it goes when the turn ends, not
+                        # at the reset the pane was parked for.
+                        if SCHEDULER is not None:
+                            SCHEDULER.dispatcher.release(conn, queued.pane_id)
+                            SCHEDULER.wake()
                     else:
                         self.send_json({"ok": False, "error": "Unknown action"}, 400)
                         return
