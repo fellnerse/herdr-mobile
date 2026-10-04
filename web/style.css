@@ -1314,7 +1314,9 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 .btn-scroll-bottom {
   position: fixed;
   right: 16px;
-  bottom: calc(56px + var(--safe-bottom));
+  /* Above the composer, measured rather than guessed: the dock is a row of
+     buttons over a box that grows (--dock-height, set in app.js). */
+  bottom: calc(var(--dock-height, 56px) + 12px);
   width: 38px;
   height: 38px;
   border-radius: 50%;
@@ -3713,12 +3715,19 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 #chat-chat-view .msg th { background: var(--bg-card); font-weight: 600; }
 #chat-chat-view .msg a { color: #7fb2ff; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 
-/* The transcript's jump-to-bottom button sits above its own footer; the chat
-   has no separate footer, its composer, so the button floats just above that
-   instead. Still `position: fixed` (inherited from `.btn-scroll-bottom`), so
-   it tracks the viewport rather than the message list scrolling under it. */
+/* What is queued and attached sits at the end of the conversation, so in the
+   flow it was only on screen if you happened to be at the bottom - and picking
+   a file closes the keyboard and moves the page. Stuck above the composer
+   instead, the way the transcript's own strip is inside it. */
+#chat-chat-view .chat-strips {
+  position: sticky;
+  bottom: var(--dock-height, 0px);
+  z-index: 9;
+}
+
+/* The chat's jump-to-bottom button clears those strips as well. */
 #chat-chat-view .btn-scroll-bottom {
-  bottom: calc(72px + var(--safe-bottom));
+  bottom: calc(var(--dock-height, 56px) + var(--strips-height, 0px) + 12px);
 }
 
 /* On a Mac window the document does not scroll (see the note above

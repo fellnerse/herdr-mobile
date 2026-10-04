@@ -85,9 +85,12 @@
           <polyline points="19 12 12 19 5 12"></polyline>
         </svg>
       </button>
-      <!-- What the queue is holding for this pane, above the box it was typed in -->
-      <div id="chat-queue-strip" class="queue-strip hidden"></div>
-      <div id="chat-attach-strip" class="attach-strip hidden"></div>
+      <!-- What the queue is holding for this pane, above the box it was typed in;
+           held above the composer however far up the conversation you are -->
+      <div class="chat-strips">
+        <div id="chat-queue-strip" class="queue-strip hidden"></div>
+        <div id="chat-attach-strip" class="attach-strip hidden"></div>
+      </div>
     </section>
 
     <!-- Bottom Input Dock -->

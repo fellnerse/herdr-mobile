@@ -150,6 +150,22 @@
     window.addEventListener("resize", syncAppHeaderHeight);
   }
   syncAppHeaderHeight();
+  // The same for what is pinned at the bottom: the composer, and the chat's
+  // queue and attachment strips stuck above it - the jump-to-bottom buttons
+  // float over both.
+  const elInputDock = document.querySelector(".input-dock");
+  const elChatStrips = document.querySelector(".chat-strips");
+  const syncDockHeight = () => {
+    const root = document.documentElement.style;
+    root.setProperty("--dock-height", `${elInputDock.offsetHeight}px`);
+    root.setProperty("--strips-height", `${elChatStrips.offsetHeight}px`);
+  };
+  if (window.ResizeObserver) {
+    const dockObserver = new ResizeObserver(syncDockHeight);
+    dockObserver.observe(elInputDock);
+    dockObserver.observe(elChatStrips);
+  }
+  syncDockHeight();
   const elConsoleTerm = document.getElementById("console-term");
   const elConsoleSub = document.getElementById("console-sub");
   const elConsoleKeys = document.getElementById("console-keys");
