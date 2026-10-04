@@ -5631,31 +5631,7 @@
   elBtnRecall.addEventListener("click", recallPrev);
   SheepItComposer.bindSubmit(elPromptForm, submitPrompt);
 
-  /* No button takes focus from a text box. A tap that blurred one first put
-     the keyboard away, the layout grew back, and the button moved out from
-     under the finger before the click landed - so back, send, anything at
-     the bottom of the screen only ever closed the keyboard on the first tap.
-     Focus is kept through the click instead and let go afterwards, unless the
-     button is in the dock around the composer (send, attach, a completion),
-     where typing carries on. The console's own text box is xterm's, and its
-     key bar does its own thing. */
-  const TAP = "button, [role=button], [role=menuitem]";
-  function typingIn() {
-    const field = document.activeElement;
-    return field && field.matches("textarea, input:not([type=checkbox]):not([type=radio]):not([type=file])")
-      && !field.closest(".xterm") ? field : null;
-  }
-  document.addEventListener("pointerdown", (e) => {
-    if (typingIn() && e.target.closest(TAP)) e.preventDefault();
-  }, true);
-  document.addEventListener("click", (e) => {
-    const field = typingIn();
-    const button = e.target.closest(TAP);
-    if (!field || !button) return;
-    const dock = field.closest(".input-dock");
-    if (dock && dock.contains(button)) return;
-    setTimeout(() => { if (document.activeElement === field) field.blur(); });
-  });
+  SheepItComposer.keepFocus(document);
 
   /* ^C arms itself before it fires, rather than asking through confirm():
      iOS stops showing confirm() in a home screen web app after the user has
