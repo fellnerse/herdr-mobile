@@ -688,6 +688,15 @@ def filter_stopped_agents(stopped_panes: list, rows: dict) -> tuple[list, str | 
     return notify_rows, custom_title, custom_body
 
 
+def pane_url(row: dict) -> str | None:
+    """Where tapping a pane's notification lands: its chat, which the page
+    opens from `#pane:<pane id>` - or the flock, for an agent it cannot read
+    as one."""
+    if row.get("agent") in ("claude", "codex") and row.get("pane_id"):
+        return "/#pane:" + row["pane_id"]
+    return None
+
+
 def record_finished(rows: list, title: str | None = None, body: str | None = None,
                     url: str | None = None, kind: str | None = None) -> None:
     with _LAST_FINISHED_LOCK:
@@ -1837,7 +1846,8 @@ class StatusWatcher(threading.Thread):
                 notify_rows, custom_title, custom_body = filter_stopped_agents(stopped, rows)
                 if not notify_rows:
                     continue
-                record_finished(notify_rows, title=custom_title, body=custom_body)
+                record_finished(notify_rows, title=custom_title, body=custom_body,
+                                url=pane_url(notify_rows[0]))
             except Exception as e:
                 print(f"naming finished agents failed: {e}", file=sys.stderr)
                 continue

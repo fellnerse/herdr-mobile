@@ -203,17 +203,12 @@
   }
 
   /* The composer is not a <form> (see index.html), so sending is an event of
-     our own, fired by the send button or by `submit(form)`. Its buttons never
-     take focus from the text box: a tap that blurred it closed the keyboard,
-     shrank the box, and moved the button out from under the finger before the
-     click landed - so the first tap on send only ever put the keyboard away. */
+     our own, fired by the send button or by `submit(form)`. That its buttons
+     never take focus from the text box is app.js's, for every button. */
   function bindSubmit(form, send) {
     form.addEventListener("sheepit:submit", send);
     if (form.dataset.wired) return;
     form.dataset.wired = "1";
-    form.addEventListener("pointerdown", (e) => {
-      if (e.target.closest("button")) e.preventDefault();
-    });
     form.addEventListener("click", (e) => {
       const btn = e.target.closest("button.btn-send");
       if (btn && !btn.disabled) submit(form);
