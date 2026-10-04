@@ -2695,10 +2695,10 @@
       renderChatQueue();
       fetchHistory(true);
     }
-    if (open) {
-      if (!wide.matches) stopPolling();
-      if (wide.matches && !hasChat) openConsole();
-    }
+    // The poll keeps running behind a chat: the header's dot, the tab strip
+    // and the stop button all read the rows it fetches, and a phone that
+    // paused it showed the agent working long after it was done.
+    if (open && wide.matches && !hasChat) openConsole();
   }
 
   /* ------------------------------------------------------------ The tabs ---
@@ -5631,6 +5631,32 @@
   elBtnRecall.addEventListener("click", recallPrev);
   SheepItComposer.bindSubmit(elPromptForm, submitPrompt);
 
+  /* No button takes focus from a text box. A tap that blurred one first put
+     the keyboard away, the layout grew back, and the button moved out from
+     under the finger before the click landed - so back, send, anything at
+     the bottom of the screen only ever closed the keyboard on the first tap.
+     Focus is kept through the click instead and let go afterwards, unless the
+     button is in the dock around the composer (send, attach, a completion),
+     where typing carries on. The console's own text box is xterm's, and its
+     key bar does its own thing. */
+  const TAP = "button, [role=button], [role=menuitem]";
+  function typingIn() {
+    const field = document.activeElement;
+    return field && field.matches("textarea, input:not([type=checkbox]):not([type=radio]):not([type=file])")
+      && !field.closest(".xterm") ? field : null;
+  }
+  document.addEventListener("pointerdown", (e) => {
+    if (typingIn() && e.target.closest(TAP)) e.preventDefault();
+  }, true);
+  document.addEventListener("click", (e) => {
+    const field = typingIn();
+    const button = e.target.closest(TAP);
+    if (!field || !button) return;
+    const dock = field.closest(".input-dock");
+    if (dock && dock.contains(button)) return;
+    setTimeout(() => { if (document.activeElement === field) field.blur(); });
+  });
+
   /* ^C arms itself before it fires, rather than asking through confirm():
      iOS stops showing confirm() in a home screen web app after the user has
      dismissed a few, and a suppressed dialog returns false - so the button
@@ -8309,6 +8335,14 @@
 
   document.addEventListener("sheepit:chat-dismiss", backToFlock);
 
+  /* A push names the chat in the hash; the page may already be open, in
+     which case the service worker says so instead of navigating it. */
+  if (navigator.serviceWorker) navigator.serviceWorker.addEventListener("message", (event) => {
+    const url = event.data && event.data.open;
+    if (!url) return;
+    const hash = new URL(url, location.href).hash;
+    if (hash && hash !== location.hash) location.hash = hash;
+  });
   /* A push names the chat in the hash; the page may already be open. */
   window.addEventListener("hashchange", () => {
     const id = decodeURIComponent(location.hash.slice(1));

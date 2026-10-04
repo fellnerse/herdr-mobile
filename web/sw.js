@@ -157,10 +157,11 @@ self.addEventListener("notificationclick", (event) => {
     (async () => {
       const url = (event.notification.data && event.notification.data.url) || "/";
       const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      /* An app already open is told where to go rather than navigated:
+         `navigate` to the same page with another hash is a reload at best
+         on iOS and nothing at all at worst, which left it on the flock. */
       for (const client of all) {
-        if (url !== "/" && "navigate" in client) {
-          await client.navigate(url).catch(() => null);
-        }
+        if (url !== "/") client.postMessage({ open: url });
         if ("focus" in client) return client.focus();
       }
       return self.clients.openWindow(url);
