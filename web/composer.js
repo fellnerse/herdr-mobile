@@ -204,7 +204,7 @@
 
   /* The composer is not a <form> (see index.html), so sending is an event of
      our own, fired by the send button or by `submit(form)`. That its buttons
-     never take focus from the text box is app.js's, for every button. */
+     never take focus from the text box is `keepFocus`, below. */
   function bindSubmit(form, send) {
     form.addEventListener("sheepit:submit", send);
     if (form.dataset.wired) return;
@@ -212,6 +212,55 @@
     form.addEventListener("click", (e) => {
       const btn = e.target.closest("button.btn-send");
       if (btn && !btn.disabled) submit(form);
+    });
+  }
+
+  /* Nothing on screen takes focus from a text box by being tapped. A tap that
+     blurred one put the keyboard away, the layout grew back, and whatever was
+     under the finger moved before the click landed - so send, back, anything
+     near the bottom only ever closed the keyboard on the first tap. It came
+     back once already, because only a tap whose target was the button itself
+     was held: iOS moves a touch onto whatever is nearest the finger, and a tap
+     on the edge of send that lands in the gap beside it is a tap on the dock.
+
+     So: inside the dock around the composer, anything but a text box keeps
+     focus, and the keyboard stays up. Elsewhere a button keeps it through its
+     click and lets it go afterwards. Both pointerdown and mousedown, since the
+     blur is mousedown's default and iOS has not always let pointerdown's
+     cancel it. xterm's hidden text box is the console's, which does its own. */
+  const TAP = "button, [role=button], [role=menuitem]";
+  const DOCK = ".input-dock";
+
+  function keepFocus(doc, later = (fn) => setTimeout(fn)) {
+    function typingIn() {
+      const field = doc.activeElement;
+      return field && field.matches("textarea, input:not([type=checkbox]):not([type=radio]):not([type=file])")
+        && !field.closest(".xterm") ? field : null;
+    }
+    let held = null; // the text box a tap kept focus in, until its click
+    function hold(e) {
+      const field = typingIn();
+      if (!field || !e.target || !e.target.closest) return;
+      const dock = field.closest(DOCK);
+      if (e.target.closest(TAP)
+          || (dock && dock.contains(e.target) && !e.target.closest("textarea, input"))) {
+        held = field;
+        e.preventDefault();
+      }
+    }
+    doc.addEventListener("pointerdown", hold, true);
+    doc.addEventListener("mousedown", hold, true);
+    /* Let go of the box the tap held, not whatever has focus by now: a click
+       that opened a sheet and focused its field has put the focus where it
+       wants it. */
+    doc.addEventListener("click", (e) => {
+      const field = held;
+      held = null;
+      const button = e.target && e.target.closest && e.target.closest(TAP);
+      if (!field || !button) return;
+      const dock = field.closest(DOCK);
+      if (dock && dock.contains(button)) return;
+      later(() => { if (doc.activeElement === field) field.blur(); });
     });
   }
 
@@ -308,6 +357,6 @@
 
   window.SheepItComposer = {
     MAX_EDGE, KEEP_AS_IS, shrinkImage, imagesIn, clipboardImages, resizeTextarea,
-    createDraftStore, createRecallHistory, createQueueStrip, bindSubmit, submit, createAttachStrip,
+    createDraftStore, createRecallHistory, createQueueStrip, bindSubmit, submit, createAttachStrip, keepFocus,
   };
 })();

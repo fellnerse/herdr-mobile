@@ -42,6 +42,7 @@ node tools/test-drafts.js                       # per-project drafts
 node tools/test-flock.js                        # the overview: grouping, order, rows
 node tools/test-queue.js                        # the queue above the composer
 node tools/test-usage.js                        # the tokens page: buckets, stack, legend
+node tools/test-focus.js                        # a tap never takes focus from the composer
 python3 tools/test-gateway.py                   # bincode, framing, git, notifications, token logs
 
 tools/sheepit-queue list | add | rm | quota     # the prompt queue from a terminal
@@ -54,7 +55,7 @@ python3 tools/make-bleat.py                     # regenerate web/bleat.wav
 
 There is no runner, no lint and no formatter: each suite is a standalone script
 that prints failures and exits non-zero, so "run one test" means run one of the
-nine suites — the eight under `tools/test-*.js` plus the gateway's. Restart
+ten suites — the nine under `tools/test-*.js` plus the gateway's. Restart
 `server.py` after changing the gateway; changing `web/` only needs a reload.
 
 Getting finished work from a worktree onto the phone — suites, commit, PR,
@@ -337,7 +338,7 @@ refuses paths that escape the pane's directory.
   (the sheep and their markings), and
   `/* How much subscription is left, per agent` →
   `// Which chat a prompt is queued for` (the pasture).
-  **`test-attach.js` is the exception**: `web/composer.js` is a standalone
+  **`test-attach.js` and `test-focus.js` are the exception**: `web/composer.js` is a standalone
   global with its own `<script>` tag, so that suite loads the file whole with
   the browser stubbed and has no anchors to break. Anything moved out of
   `app.js` into a module of its own should be tested that way instead.
