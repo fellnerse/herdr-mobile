@@ -322,14 +322,14 @@ def broadcast(ttl: int = 120) -> dict:
     phone get it" used to have no answer anywhere on this side."""
     subs = load_subs()
     if not subs:
-        log.warning("push: nothing sent, no device is subscribed")
+        log.warning("nothing sent, no device is subscribed")
     results = {}
     dead = set()
     for sub in subs:
         endpoint = sub.get("endpoint", "")
         code = send_one(sub, ttl=ttl)
         results[endpoint[-24:]] = code
-        log.info("push: %s -> %s (ttl %ss)", urlparse(endpoint).netloc, code, ttl)
+        log.info("%s -> %s (ttl %ss)", urlparse(endpoint).netloc, code, ttl)
         if code in (404, 410):
             dead.add(endpoint)
     if dead:
@@ -337,5 +337,5 @@ def broadcast(ttl: int = 120) -> dict:
             _write_subs([s for s in _read_subs() if s.get("endpoint") not in dead])
             _ensure_state_dir()
             DEAD_PATH.write_text(json.dumps((_read_dead() + sorted(dead))[-50:]))
-        log.warning("push: dropped %d subscription(s) the service says are gone", len(dead))
+        log.warning("dropped %d subscription(s) the service says are gone", len(dead))
     return results
