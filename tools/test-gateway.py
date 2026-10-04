@@ -1429,6 +1429,27 @@ with _mock.patch.object(sched_quota, "current",
     Dispatcher(herdr=busy, events=Silent()).hit_the_wall(fresh_db(), "wA:p1", Config())
 check("a working pane is never interrupted by a banner", busy.keys, [])
 
+# Sending into a parked pane by hand lifts the stall. The phone was stuck here:
+# every message after the wall sat "queued" until the reset, while the agent
+# answered each one tapped through with "Send now" perfectly well.
+pane = FakePane()
+d = Dispatcher(herdr=pane, events=Silent())
+conn = fresh_db()
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(100.0, timedelta(hours=3))], stale=False)), \
+     _mock.patch("scheduler.dispatch._push"):
+    d.hit_the_wall(conn, "wA:p1", Config())
+    sched_db.add(conn, "wA:p1", "the next thing")
+    d.sweep(conn, Config())
+    check("a parked pane is not delivered to", pane.sent, [])
+    d.release(conn, "wA:p1")
+    check("released, its resume is dropped",
+          [p.prompt for p in sched_db.list_prompts(conn, "wA:p1", "waiting")], ["the next thing"])
+with _mock.patch.object(sched_quota, "current",
+                        return_value=quota_of([bucket(10.0, timedelta(hours=3))], stale=False)):
+    d.sweep(conn, Config())
+check("and what was queued behind it goes out", pane.sent, ["the next thing"])
+
 # End to end, from exactly the state the phone was stuck in: a resume and a
 # typed prompt queued behind a cached, expired, hundred-percent window.
 pane = FakePane()
@@ -1857,7 +1878,7 @@ def tally(cache, path=None):
 
 
 with tempfile.TemporaryDirectory(prefix="sheepit-logs-") as logs:
-    root = Path(logs)
+    root = Path(logs).resolve()  # /var is /private/var on macOS
     projects = root / "claude" / "projects" / "-repo"
     projects.mkdir(parents=True)
     sessions = root / "codex" / "sessions" / "2026" / "09" / "18"
@@ -2109,8 +2130,43 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-resolve-") as hb_dir:
         check("its alert is pushed", pushed, ["Heartbeat Alert: Sentry"])
         check("and recorded", heartbeat.HeartbeatConfig.load().heartbeats[0].last_status, "alert")
         check("and read only once", heartbeat.resolve_stopped_runs(cfg, idle, 2060.0), False)
+        unseen = heartbeat.HeartbeatConfig.load().heartbeats[0].unseen_alert
+        check("an alert is unseen until somebody looks", (unseen or {}).get("pane_id"), "wE:pR")
+        check("the overview is told while its tab is open",
+              [a["pane_id"] for a in heartbeat.unseen_alerts({"wE:pR"})], ["wE:pR"])
+        check("and not once the tab is closed", heartbeat.unseen_alerts({"wE:pX"}), [])
+
+        class Answer:
+            def send_json(self, data, status=200):
+                self.data = data
+        heartbeat.handle_post_heartbeat_seen(Answer(), {"id": "hb_idle_end"})
+        check("opening it marks it seen", heartbeat.unseen_alerts({"wE:pR"}), [])
     finally:
         heartbeat.CONFIG_PATH, heartbeat.Herdr.pane_read, heartbeat._notify = orig
+
+# The alert says what the agent answered, not whatever was last on screen -
+# a run that ends by showing a diff put the diff in the push.
+pane = """  93 +        // the component has unmounted.
+  94 +        if (!this.series) return;
+
+● PR #463 opened. Now saving memory.
+
+  Read 1 file, wrote 3 memories
+
+● Audit complete. Summary:
+
+  - Sentry: found and fixed WHATSANALYZE-11J, opened PR #463.
+  - Analytics: fine.
+
+✻ Cogitated for 2m 14s · done 6:47 AM
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  whatsanalyze   dev  Sonnet 5
+"""
+check("the alert is the agent's last answer", heartbeat.final_answer(pane),
+      "Audit complete. Summary: - Sentry: found and fixed WHATSANALYZE-11J, opened PR #463. - Analytics: fine.")
+check("a pane with no answer on it has none", heartbeat.final_answer("$ ls\nfoo\n"), "")
 
 # A scheduled run that fails to start waits before it is tried again.
 with tempfile.TemporaryDirectory(prefix="sheepit-hb-runner-") as hb_dir:
@@ -2541,6 +2597,19 @@ try:
     check("a retitled pane is looked up again",
           (pc.session, [e.get("text") for e in pc.events]),
           (ALPHA, ["what alpha asked"]))
+
+    # /clear puts the generic title back, which is when the pane's saved
+    # session is trusted - so that link has to go with the conversation.
+    for path in (alpha, beta):  # both from well before the clear
+        os.utime(path, (time.time() - 600, time.time() - 600))
+    untitled["terminal_title_stripped"] = "Claude Code"
+    panechat.cleared("wY:p1", dict(untitled), time.time())
+    pc.refresh()
+    check("a cleared pane does not read its old session back in",
+          (pc.session, pc.events), (None, []))
+    pc.clear_at = pc.cleared_path = None  # as a new session's log would
+    untitled["terminal_title_stripped"] = "Alpha work"
+    pc.refresh()
 
     # And the tie it must refuse: a title matching nothing, with two to choose
     # from. An empty chat is better than the wrong conversation.

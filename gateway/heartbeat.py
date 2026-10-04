@@ -31,8 +31,9 @@ DEFAULT_PROMPT = (
     "Evaluate the findings:\n"
     "- If all checks pass (no unresolved critical Sentry crashes, GA4 tracking operational, endpoints 200), output ONLY:\n"
     "  HEARTBEAT_OK\n\n"
-    "- If anything anomalous, critical, or broken turns up:\n"
-    "  Provide a concise summary of the issue, affected URL/file, and root cause."
+    "- If anything anomalous, critical, or broken turns up: start with one line saying what you found\n"
+    "  (e.g. \"New crash in WordCloud.vue - fixed in PR #463\"), since that line is what the phone shows,\n"
+    "  then a concise summary of the issue, affected URL/file, and root cause."
 )
 
 DEFAULT_SENTINEL = "HEARTBEAT_OK"
@@ -56,6 +57,10 @@ class HeartbeatItem:
     last_run_at: float | None = None
     last_status: str | None = None  # "ok", "alert", "running", "error"
     last_summary: str | None = None
+    # An alert nobody has looked at yet: {"pane_id", "summary", "at"}. It
+    # outlives the runs after it - a clean check the next morning does not
+    # mean anybody read what the one before it found.
+    unseen_alert: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -218,6 +223,32 @@ def extract_summary(text: str, max_length: int = 140) -> str:
     return summary
 
 
+RULE_CHARS = set("─━")
+
+
+def final_answer(text: str, max_length: int = 600) -> str:
+    """The agent's last message on the pane: the last bulleted block above the
+    composer. The lines just above the composer are no use on their own - a
+    run that ends by showing a diff put that diff in the alert."""
+    lines = text.splitlines()
+    rules = [i for i, line in enumerate(lines)
+             if len(line.strip()) >= 10 and set(line.strip()) <= RULE_CHARS]
+    end = rules[-2] if len(rules) >= 2 else len(lines)
+    start = next((i for i in range(end - 1, -1, -1)
+                  if lines[i].lstrip().startswith(("●", "⏺", "•"))), None)
+    if start is None:
+        return ""
+    block = []
+    for line in lines[start:end]:
+        if line.lstrip().startswith(("✻", "❯", "›")):
+            break
+        block.append(line.strip())
+    answer = " ".join(" ".join(block).lstrip("●⏺•").split())
+    if len(answer) > max_length:
+        answer = answer[: max_length - 1].rstrip() + "…"
+    return answer
+
+
 def said_sentinel(output: str, sentinel: str) -> bool:
     """Whether the agent answered with the sentinel, rather than the pane
     merely showing the prompt that mentions it: the answer is a line of its
@@ -279,10 +310,12 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
             cfg.save()
         log.info("heartbeat [%s] on pane %s finished clean (%s); suppressing push", hb_name, pane_id, sentinel)
         return False, None
-    summary = extract_summary(output)
+    answer = final_answer(output) or extract_summary(output)
+    summary = answer if len(answer) <= 140 else answer[:139].rstrip() + "…"
     if target_hb:
         target_hb.last_status = "alert"
         target_hb.last_summary = summary
+        target_hb.unseen_alert = {"pane_id": pane_id, "summary": answer, "at": time.time()}
         cfg.save()
 
     alert_title = f"Heartbeat Alert: {hb_name}"
@@ -440,13 +473,15 @@ def alert_tab(hb: HeartbeatItem) -> str:
     That tab is what the alert is about - the finding, the PR it opened - so
     the next run leaves it for somebody to read rather than clearing it away.
     """
-    if hb.last_status != "alert" or not hb.target_pane:
+    pane_id = (hb.unseen_alert or {}).get("pane_id") or (
+        hb.target_pane if hb.last_status == "alert" else "")
+    if not pane_id:
         return ""
     try:
         panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
     except Exception:
         return ""
-    return next((p.get("tab_id") or "" for p in panes if p.get("pane_id") == hb.target_pane), "")
+    return next((p.get("tab_id") or "" for p in panes if p.get("pane_id") == pane_id), "")
 
 
 def started(cfg: HeartbeatConfig, target_hb: HeartbeatItem, pane_id: str, sentinel: str, prompt: str) -> dict:
@@ -877,6 +912,28 @@ def handle_post_heartbeat_delete(handler, body: dict) -> None:
     handler.send_json({"ok": True, "heartbeats": [hb.to_dict() for hb in cfg.heartbeats]})
 
 
+def unseen_alerts(pane_ids: set) -> list:
+    """What the overview puts above everything else: each check that found
+    something nobody has looked at, while the tab it found it in is still open.
+    Closing that tab is looking at it too."""
+    out = []
+    for hb in HeartbeatConfig.load().heartbeats:
+        alert = hb.unseen_alert or {}
+        if alert.get("pane_id") in pane_ids:
+            out.append({"id": hb.id, "name": hb.name, "pane_id": alert["pane_id"],
+                        "summary": alert.get("summary") or "", "at": alert.get("at")})
+    return out
+
+
+def handle_post_heartbeat_seen(handler, body: dict) -> None:
+    cfg = HeartbeatConfig.load()
+    for hb in cfg.heartbeats:
+        if hb.id == body.get("id"):
+            hb.unseen_alert = None
+    cfg.save()
+    handler.send_json({"ok": True})
+
+
 def handle_post_heartbeat_run(handler, body: dict) -> None:
     hb_id = body.get("id")
     res = trigger_heartbeat(heartbeat_id=hb_id)
@@ -891,6 +948,7 @@ def init_heartbeat_routes(register_route_fn, register_interceptor_fn) -> None:
     register_route_fn("POST", "/api/heartbeat", handle_post_heartbeat)
     register_route_fn("POST", "/api/heartbeat/delete", handle_post_heartbeat_delete)
     register_route_fn("POST", "/api/heartbeat/run", handle_post_heartbeat_run)
+    register_route_fn("POST", "/api/heartbeat/seen", handle_post_heartbeat_seen)
     register_interceptor_fn(heartbeat_notification_interceptor)
 
 

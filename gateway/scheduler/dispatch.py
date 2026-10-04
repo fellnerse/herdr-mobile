@@ -331,8 +331,14 @@ class Dispatcher:
                 else:
                     codex_queue.send(prompt.pane_id, prompt.prompt)
             else:
-                self.herdr.agent_prompt(prompt.pane_id, prompt.prompt)
-                self.make_sure_submitted(prompt.pane_id, prompt.prompt)
+                # A prompt that is only an attachment still ends on its `@`
+                # token, whose file picker would take the Enter; a space
+                # closes it. Added here, since the queue strips the prompt.
+                text = prompt.prompt
+                if re.search(r"(^|\s)@\S+$", text):
+                    text += " "
+                self.herdr.agent_prompt(prompt.pane_id, text)
+                self.make_sure_submitted(prompt.pane_id, text)
         except (HerdrError, codex_queue.CodexQueueError) as e:
             db.update(conn, prompt.id, state="failed", last_error=str(e))
             log.warning("prompt %s could not be delivered: %s", prompt.id, e)
@@ -464,6 +470,25 @@ class Dispatcher:
         self.herdr.notify("usage window exhausted", f"{pane_id} will resume when it resets")
         _push("window exhausted")
         log.info("pane %s hit the wall; resuming at %s", pane_id, resume_at or "next check")
+
+    def release(self, conn: sqlite3.Connection, pane_id: str) -> None:
+        """Somebody sent into a parked pane by hand: stop holding it.
+
+        The stall is a guess about a window, and a person overriding it knows
+        better - extra usage, another account, a limit that was never theirs.
+        Left in place, everything they type afterwards sits queued until the
+        reset while the agent answers each "Send now" perfectly well. If the
+        window really is out, the banner comes back and parks the pane again.
+        The resume goes too: it continues a turn they have just moved on from.
+        """
+        if self.stalls.pop(pane_id, None) is None:
+            return
+        self.pending.discard(pane_id)
+        self.kept.discard(pane_id)
+        for p in db.list_prompts(conn, pane_id, "waiting"):
+            if p.prompt == RESUME_PROMPT:
+                db.delete(conn, p.id)
+        log.info("released %s: a prompt was sent into it by hand", pane_id)
 
     def answer(self, pane_id: str, keys) -> None:
         """Let go of the halted turn, and leave the composer fit to type into.

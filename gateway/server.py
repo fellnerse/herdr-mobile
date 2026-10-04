@@ -874,7 +874,13 @@ class HerdrHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.end_headers()
         if not self.head_only:
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # A long poll the phone gave up on - it slept, or left the
+                # chat. Nobody is there to answer, and a traceback each time
+                # buried everything else in the log.
+                self.close_connection = True
 
     def send_blob(self, data: bytes, content_type: str):
         """Bytes that are not JSON - an image out of the working tree.
@@ -1085,8 +1091,12 @@ class HerdrHandler(BaseHTTPRequestHandler):
             # The headless chats ride along on the same poll: they are rows in
             # the same list, and a second request for them would be a second
             # round trip for a list that is already being drawn.
+            # And what a heartbeat found that nobody has read: it goes above
+            # the whole flock, since an idle tab in a project scrolled off
+            # screen is exactly where the last one went unnoticed.
+            alerts = heartbeat.unseen_alerts({a.get("pane_id") for a in agents})
             self.send_json({"ok": True, "agents": agents,
-                            "chats": flock_chats(agents)})
+                            "chats": flock_chats(agents), "alerts": alerts})
             return
 
         # API: Who stopped working most recently. A push carries no payload, so
@@ -1405,6 +1415,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
                             return
                         sched_db.update(conn, prompt_id, state="sent",
                                         sent_at=sched_db.now(), last_error=None)
+                        # Whatever is behind it goes when the turn ends, not
+                        # at the reset the pane was parked for.
+                        if SCHEDULER is not None:
+                            SCHEDULER.dispatcher.release(conn, queued.pane_id)
+                            SCHEDULER.wake()
                     else:
                         self.send_json({"ok": False, "error": "Unknown action"}, 400)
                         return

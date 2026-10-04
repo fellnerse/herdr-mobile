@@ -582,6 +582,11 @@ class PaneChat:
         self._adopt(None, None)
         self.clear_at = sent_at
         self.generation += 1
+        # And forget the saved link to it: /clear puts the generic title back,
+        # which is exactly when the saved session is trusted, so the next poll
+        # read the conversation that was just cleared straight back in.
+        self.first_prompt_at = None
+        self._save_session()
 
     def _read_log(self):
         if not self.path:
@@ -711,9 +716,11 @@ class PaneChat:
         """
         if not self.is_supported:
             raise ValueError("There is no supported agent in this pane")
-        # An attachment goes as its path, which Claude Code reads like any file.
+        # An attachment goes as its path, which Claude Code reads like any file -
+        # ahead of the text, since an `@` token under the cursor opens Claude
+        # Code's file picker and the Enter meant to send takes a suggestion.
         paths = ["@" + str(p) for p in (chat.upload_path(self.dir, n) for n in images) if p]
-        text = "\n".join([text.strip()] + paths).strip()
+        text = "\n".join(paths + [text.strip()]).strip()
         if _queue is None:
             raise ValueError("The queue is not running")
         first_prompt = self.is_claude and not self.session and self.first_prompt_at is None

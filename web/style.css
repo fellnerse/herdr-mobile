@@ -2146,6 +2146,57 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 /* ---------------------------------------------------------------- Queue --- */
 
 /* Usage windows, above the list */
+/* A heartbeat's unread finding: the loudest thing on the overview on purpose,
+   in the colour a question is drawn in, and gone once it has been opened. */
+.flock-alerts.hidden { display: none; }
+.flock-alerts {
+  flex-shrink: 0;
+  padding: 10px 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.flock-alert {
+  display: flex;
+  align-items: stretch;
+  border-radius: 10px;
+  background: rgba(248, 81, 73, 0.15);
+  box-shadow: inset 4px 0 0 var(--status-blocked);
+}
+.flock-alert-open {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 4px 10px 14px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+}
+.flock-alert-head {
+  color: var(--status-blocked);
+  font-weight: 600;
+}
+.flock-alert-body {
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.flock-alert-dismiss {
+  padding: 0 14px;
+  background: none;
+  border: 0;
+  color: var(--status-blocked);
+  font-size: 20px;
+  cursor: pointer;
+}
+
 .quota-strip {
   flex-shrink: 0;
   padding: 12px;
@@ -3553,7 +3604,10 @@ body:has(.agent-picker:not(.hidden)) .app-container {
 #chat-chat-view .msg.user .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
 #chat-chat-view .msg.user .imgs img { max-width: 100%; max-height: 220px; border-radius: 10px; display: block; }
 #chat-chat-view .msg.user .imgs:last-child { margin-bottom: 2px; }
+/* `flex: none`: a scroller's minimum height is 0, so in a column with the
+   keyboard up (or a desktop's) the messages squeezed it to its top edge. */
 #chat-chat-view .attach-strip {
+  flex: none;
   display: flex; gap: 8px; overflow-x: auto; padding: 8px 10px 0;
   background: var(--bg-surface); border-top: 1px solid var(--border);
 }
