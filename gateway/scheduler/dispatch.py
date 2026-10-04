@@ -55,6 +55,31 @@ READY = ("idle", "done")
 # question whose answer is always the same one.
 #
 # "❯ 1. Stop and wait for limit to reset", the same shape the phone parses.
+# Claude Code's composer line. A prompt handed over in the moment a turn is
+# ending can land in it with its Enter lost - Herdr says `done` a beat before
+# the input will submit - and sit there, typed but never sent, while the phone
+# shows it delivered. So delivery reads the pane back and presses Enter again
+# while the text is still sitting there. Enter on an empty composer is nothing,
+# so a retry can never send twice.
+COMPOSER_RE = re.compile(r"^\s*[>›❯]\s*(.*?)\s*$")
+SUBMIT_SETTLE = 0.8
+SUBMIT_RETRIES = 3
+
+
+def left_in_composer(screen: str, prompt: str) -> bool:
+    """Whether `prompt` is still sitting unsent in the composer at the bottom."""
+    head = " ".join(prompt.split())[:24]
+    for line in reversed((screen or "").splitlines()):
+        match = COMPOSER_RE.match(line)
+        if match:
+            typed = " ".join(match.group(1).split())
+            if not typed or not head:
+                return False
+            # A long paste is folded into a placeholder rather than shown.
+            return typed.startswith("[Pasted text") or typed.startswith(head) or head.startswith(typed)
+    return False
+
+
 MENU_OPTION_RE = re.compile(r"^\s*([❯›>])?\s*(\d{1,2})\.\s+(\S.*?)\s*$")
 # The only option this is ever allowed to press. Waiting is what the stall does
 # anyway, so answering with it changes nothing except that the pane is free
@@ -307,6 +332,7 @@ class Dispatcher:
                     codex_queue.send(prompt.pane_id, prompt.prompt)
             else:
                 self.herdr.agent_prompt(prompt.pane_id, prompt.prompt)
+                self.make_sure_submitted(prompt.pane_id, prompt.prompt)
         except (HerdrError, codex_queue.CodexQueueError) as e:
             db.update(conn, prompt.id, state="failed", last_error=str(e))
             log.warning("prompt %s could not be delivered: %s", prompt.id, e)
@@ -332,6 +358,20 @@ class Dispatcher:
         # record for this, so the service worker fell back to "Agent finished"
         # about an agent that had only just started. What the queue draining
         # is really worth saying comes later anyway, when the agent stops.
+
+    def make_sure_submitted(self, pane_id: str, text: str) -> None:
+        """Press Enter again while the prompt is still in the composer (see
+        COMPOSER_RE). A pane that cannot be read is left as it is: the prompt
+        went over, and that is what the row says."""
+        for _ in range(SUBMIT_RETRIES):
+            time.sleep(SUBMIT_SETTLE)
+            try:
+                if not left_in_composer(self.herdr.pane_read(pane_id, lines=20), text):
+                    return
+                log.info("prompt left unsent in %s's composer, pressing enter again", pane_id)
+                self.herdr.agent_send_keys(pane_id, ["enter"])
+            except HerdrError:
+                return
 
     # --- the wall ------------------------------------------------------
 

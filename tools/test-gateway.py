@@ -1382,6 +1382,30 @@ check("Codex queue failure remains visible instead of disappearing",
        sched_db.get(failure_db, failure_id).last_error),
       ("failed", "session unavailable"))
 
+# The reported bug: a prompt delivered as a turn ends lands in Claude Code's
+# composer with its Enter lost, and sits there while the phone says it went.
+sched_dispatch.SUBMIT_SETTLE = 0
+check("a prompt still in the composer is seen",
+      sched_dispatch.left_in_composer("● done.\n────\n❯ also the scroll down button\n────\n  ? for shortcuts",
+                                      "also the scroll down button is hidden"), True)
+check("a long paste is seen through its placeholder",
+      sched_dispatch.left_in_composer("❯ [Pasted text #1 +12 lines]", "line one\nline two"), True)
+check("an empty composer under the sent prompt is not",
+      sched_dispatch.left_in_composer("❯ also the scroll down button\n● Looking.\n────\n❯ \n────",
+                                      "also the scroll down button"), False)
+check("nor is somebody else's half-typed sentence",
+      sched_dispatch.left_in_composer("❯ something else entirely", "fix the login page"), False)
+stuck = FakePane(screen="────\n❯ fix the login page\n────", after="────\n❯ \n────")
+stuck_db = fresh_db()
+sched_db.add(stuck_db, "wA:p1", "fix the login page")
+Dispatcher(herdr=stuck, events=Silent()).deliver(stuck_db, sched_db.next_for_pane(stuck_db, "wA:p1"))
+check("a lost enter is pressed again, once", stuck.keys, [["enter"]])
+fine = FakePane(screen="────\n❯ \n────")
+fine_db = fresh_db()
+sched_db.add(fine_db, "wA:p1", "fix the login page")
+Dispatcher(herdr=fine, events=Silent()).deliver(fine_db, sched_db.next_for_pane(fine_db, "wA:p1"))
+check("a prompt that went is not pressed again", fine.keys, [])
+
 # Hitting the wall parks the pane and puts a resume in front of the queue, with
 # enough recorded on it to survive the pane it belongs to.
 import unittest.mock as _mock  # noqa: E402
