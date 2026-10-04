@@ -134,6 +134,7 @@ self.addEventListener("push", (event) => {
           // No usable record: say the least that is still true.
           title = agentName(waiting[0]) || "Agent finished";
           body = waiting[0].title || "Tap to open.";
+          if (["claude", "codex"].includes(waiting[0].agent)) url = "/#pane:" + waiting[0].pane_id;
         }
       } catch (err) {
         /* offline or gateway down: the generic text above still fires */
@@ -156,6 +157,14 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     (async () => {
       const url = (event.notification.data && event.notification.data.url) || "/";
+      /* Left where the page can find it as well as said to it: iOS can drop a
+         message to a page frozen in the background, and can open the app on
+         its start URL rather than this one. Whichever the page hears first -
+         this, the message, or the hash - opens the chat; reading it deletes it. */
+      if (url !== "/") {
+        const box = await caches.open("sheepit-open").catch(() => null);
+        if (box) await box.put("/__open", new Response(JSON.stringify({ url, at: Date.now() }))).catch(() => null);
+      }
       const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       /* An app already open is told where to go rather than navigated:
          `navigate` to the same page with another hash is a reload at best
