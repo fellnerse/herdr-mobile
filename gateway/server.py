@@ -215,6 +215,23 @@ def agent_rows() -> list:
 _WORKTREE_BY_WS = {}
 
 
+def allow_direnv(created: dict) -> None:
+    """Allow a new worktree's `.envrc`, typed into its own shell.
+
+    direnv trusts a file by its path, so an `.envrc` allowed in the project's
+    checkout is blocked again in every worktree cut from it. Typed rather than
+    run from here so the shell sitting in it loads the environment straight
+    away instead of at its next prompt.
+    """
+    path = (created.get("worktree") or {}).get("path") or ""
+    pane_id = (created.get("root_pane") or {}).get("pane_id") or ""
+    if not pane_id or not path or not os.path.isfile(os.path.join(path, ".envrc")):
+        return
+    res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": "direnv allow"})
+    if "error" not in res:
+        call_herdr_rpc("pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]})
+
+
 def worktree_record(ws_id: str) -> dict:
     """The `worktree` record for a workspace, asked for outright.
 
@@ -1495,6 +1512,7 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 self.send_json(res, 400)
                 return
             result = res.get("result", {})
+            allow_direnv(result)
             self.send_json({
                 "ok": True,
                 # What the phone opens next, without having to work out which
