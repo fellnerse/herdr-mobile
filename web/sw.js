@@ -157,23 +157,24 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     (async () => {
       const url = (event.notification.data && event.notification.data.url) || "/";
-      /* Left where the page can find it as well as said to it: iOS can drop a
-         message to a page frozen in the background, and can open the app on
-         its start URL rather than this one. Whichever the page hears first -
-         this, the message, or the hash - opens the chat; reading it deletes it. */
-      if (url !== "/") {
-        const box = await caches.open("sheepit-open").catch(() => null);
-        if (box) await box.put("/__open", new Response(JSON.stringify({ url, at: Date.now() }))).catch(() => null);
-      }
+      /* Bringing the app forward comes first and waits on nothing: the tap
+         lends this handler the right to focus or open a window only briefly,
+         and a write to storage ahead of it left iOS showing its snapshot of
+         the app, which never woke up. */
       const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      /* An app already open is told where to go rather than navigated:
-         `navigate` to the same page with another hash is a reload at best
-         on iOS and nothing at all at worst, which left it on the flock. */
-      for (const client of all) {
-        if (url !== "/") client.postMessage({ open: url });
-        if ("focus" in client) return client.focus();
-      }
-      return self.clients.openWindow(url);
+      const client = all.find((c) => "focus" in c);
+      const shown = (client ? client.focus() : self.clients.openWindow(url)).catch(() => null);
+      if (url === "/") return shown;
+      /* Then left where the page can find it as well as said to it: iOS can
+         drop a message to a page frozen in the background, and can open the
+         app on its start URL rather than this one. Whichever the page hears
+         first - this, the message, or the hash - opens the chat; reading it
+         deletes it. An app already open is told rather than navigated, since
+         `navigate` to another hash of the same page is not reliable on iOS. */
+      const box = await caches.open("sheepit-open").catch(() => null);
+      if (box) await box.put("/__open", new Response(JSON.stringify({ url, at: Date.now() }))).catch(() => null);
+      if (client) client.postMessage({ open: url });
+      return shown;
     })()
   );
 });
