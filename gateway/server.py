@@ -626,7 +626,21 @@ def queue_prompt(pane_id: str, prompt: str) -> tuple:
 chat.init_chat_routes(register_api_route, chat_dirs, chat_notify)
 chat.register_kind("pane", panechat.get)
 panechat.init(queue_prompt)
-heartbeat.set_notifier(chat_notify)
+# A day, not two minutes: what a heartbeat found at dawn is still news when the
+# phone comes off the nightstand, and Apple drops a push it cannot deliver
+# inside its TTL. The service worker reads the unseen alerts themselves once the
+# parked text has aged out, so a late delivery still says the right thing.
+HEARTBEAT_PUSH_TTL = 24 * 3600
+
+
+def heartbeat_notify(title: str, body: str, url: str | None) -> None:
+    record_finished([{"name": title, "title": body, "status": "done"}],
+                    title=title, body=body, url=url, kind="heartbeat")
+    threading.Thread(target=push.broadcast, kwargs={"ttl": HEARTBEAT_PUSH_TTL},
+                     daemon=True).start()
+
+
+heartbeat.set_notifier(heartbeat_notify)
 
 
 def filter_stopped_agents(stopped_panes: list, rows: dict) -> tuple[list, str | None, str | None]:
@@ -658,9 +672,10 @@ def filter_stopped_agents(stopped_panes: list, rows: dict) -> tuple[list, str | 
 
 
 def record_finished(rows: list, title: str | None = None, body: str | None = None,
-                    url: str | None = None) -> None:
+                    url: str | None = None, kind: str | None = None) -> None:
     with _LAST_FINISHED_LOCK:
         _LAST_FINISHED["at"] = time.time()
+        _LAST_FINISHED["kind"] = kind
         _LAST_FINISHED["title"] = title
         _LAST_FINISHED["body"] = body
         _LAST_FINISHED["url"] = url
@@ -736,6 +751,8 @@ def last_finished() -> dict:
             res["body"] = _LAST_FINISHED["body"]
         if _LAST_FINISHED.get("url"):
             res["url"] = _LAST_FINISHED["url"]
+        if _LAST_FINISHED.get("kind"):
+            res["kind"] = _LAST_FINISHED["kind"]
         return res
 
 
@@ -1352,6 +1369,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
             sub = body.get("subscription") or body
             try:
                 count = push.add_sub(sub)
+            except push.DeadSubscription as e:
+                # The phone's subscription is one Apple already refused: it
+                # has to make a new one, and only the phone can.
+                self.send_json({"ok": False, "dead": True, "error": str(e)}, 410)
+                return
             except ValueError as e:
                 self.send_json({"ok": False, "error": str(e)}, 400)
                 return

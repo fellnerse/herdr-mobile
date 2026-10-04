@@ -61,6 +61,9 @@ class HeartbeatItem:
     # outlives the runs after it - a clean check the next morning does not
     # mean anybody read what the one before it found.
     unseen_alert: dict | None = None
+    # A run that could not do its job at all - never started, or lost its tab
+    # - is the same kind of news: {"summary", "at"}, until somebody looks.
+    unseen_error: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -318,13 +321,27 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
         target_hb.unseen_alert = {"pane_id": pane_id, "summary": answer, "at": time.time()}
         cfg.save()
 
-    alert_title = f"Heartbeat Alert: {hb_name}"
     log.warning("heartbeat alert [%s] on pane %s: %s", hb_name, pane_id, summary)
+    # Pushed from here rather than handed back to the StatusWatcher: a run
+    # that ends idle never reaches the watcher, and an alert has to go out the
+    # same way whichever of the two noticed it.
+    if _notify:
+        _notify(f"{hb_name} found something", summary, None)
+    return False, None
 
-    return True, {
-        "title": alert_title,
-        "body": summary,
-    }
+
+def report_failure(hb_id: str, message: str) -> None:
+    """A check that could not run is news as much as one that found something:
+    otherwise a broken heartbeat looks exactly like a quiet one."""
+    cfg = HeartbeatConfig.load()
+    hb = next((h for h in cfg.heartbeats if h.id == hb_id), None)
+    if not hb:
+        return
+    hb.unseen_error = {"summary": message, "at": time.time()}
+    cfg.save()
+    log.warning("heartbeat [%s] failed: %s", hb.name, message)
+    if _notify:
+        _notify(f"{hb.name} failed", message, None)
 
 
 def workspace_cwd(workspace_id: str) -> str:
@@ -671,7 +688,10 @@ def drop_lost_runs(cfg: HeartbeatConfig, pane_ids: set[str]) -> bool:
             pop_heartbeat(hb.target_pane)
             hb.last_status = "error"
             hb.last_summary = f"Run lost: {hb.target_pane or 'its pane'} closed before it finished"
+            hb.unseen_error = {"summary": hb.last_summary, "at": time.time()}
             log.warning("heartbeat [%s]: %s", hb.name, hb.last_summary)
+            if _notify:
+                _notify(f"{hb.name} failed", hb.last_summary, None)
             changed = True
     return changed
 
@@ -700,9 +720,7 @@ def resolve_stopped_runs(cfg: HeartbeatConfig, panes: list[dict], now: float) ->
         if status not in ("idle", "done") or now - (hb.last_run_at or 0.0) < SETTLE_SEC:
             continue
         row = {"pane_id": hb.target_pane, "tab_id": pane.get("tab_id"), "status": status, "name": hb.name}
-        should_notify, meta = heartbeat_notification_interceptor(hb.target_pane, row)
-        if should_notify and meta and _notify:
-            _notify(meta["title"], meta["body"], None)
+        heartbeat_notification_interceptor(hb.target_pane, row)
         resolved = True
     return resolved
 
@@ -754,6 +772,9 @@ class HeartbeatRunner(threading.Thread):
                 self.failed_at.pop(hb.id, None)
                 log.info("heartbeat '%s' started in %s", hb.name, res.get("pane_id"))
             else:
+                # Told once, not on every retry a quarter of an hour apart.
+                if hb.id not in self.failed_at:
+                    report_failure(hb.id, f"Did not start: {res.get('error')}")
                 self.failed_at[hb.id] = now
                 log.warning("heartbeat '%s' did not start: %s", hb.name, res.get("error"))
 
@@ -914,14 +935,17 @@ def handle_post_heartbeat_delete(handler, body: dict) -> None:
 
 def unseen_alerts(pane_ids: set) -> list:
     """What the overview puts above everything else: each check that found
-    something nobody has looked at, while the tab it found it in is still open.
-    Closing that tab is looking at it too."""
+    something nobody has looked at, while the tab it found it in is still open
+    - closing that tab is looking at it too - and each that failed outright."""
     out = []
     for hb in HeartbeatConfig.load().heartbeats:
         alert = hb.unseen_alert or {}
         if alert.get("pane_id") in pane_ids:
-            out.append({"id": hb.id, "name": hb.name, "pane_id": alert["pane_id"],
+            out.append({"id": hb.id, "name": hb.name, "kind": "alert", "pane_id": alert["pane_id"],
                         "summary": alert.get("summary") or "", "at": alert.get("at")})
+        if hb.unseen_error:
+            out.append({"id": hb.id, "name": hb.name, "kind": "error", "pane_id": "",
+                        "summary": hb.unseen_error.get("summary") or "", "at": hb.unseen_error.get("at")})
     return out
 
 
@@ -929,7 +953,10 @@ def handle_post_heartbeat_seen(handler, body: dict) -> None:
     cfg = HeartbeatConfig.load()
     for hb in cfg.heartbeats:
         if hb.id == body.get("id"):
-            hb.unseen_alert = None
+            if body.get("kind") == "error":
+                hb.unseen_error = None
+            else:
+                hb.unseen_alert = None
     cfg.save()
     handler.send_json({"ok": True})
 
