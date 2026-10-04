@@ -8335,15 +8335,35 @@
 
   document.addEventListener("sheepit:chat-dismiss", backToFlock);
 
-  /* A push names the chat in the hash; the page may already be open, in
-     which case the service worker says so instead of navigating it. */
+  /* A push names the chat in the hash; the page may already be open. The
+     service worker both tells the page and leaves the address in a cache, and
+     the page looks there whenever it might have been woken by a tap - on the
+     message, on coming back to the front, and on starting - because iOS loses
+     one or the other often enough that either alone was unreliable. */
+  async function takePendingOpen() {
+    let url = "";
+    try {
+      const box = await caches.open("sheepit-open");
+      const res = await box.match("/__open");
+      if (!res) return;
+      await box.delete("/__open");
+      const pending = await res.json();
+      // A tap a minute ago that something else already answered is not one now.
+      if (Date.now() - pending.at < 60000) url = pending.url;
+    } catch (_) { return; }
+    const hash = url && new URL(url, location.href).hash;
+    if (!hash) return;
+    if (hash !== location.hash) location.hash = hash;
+    else window.dispatchEvent(new HashChangeEvent("hashchange"));
+  }
   if (navigator.serviceWorker) navigator.serviceWorker.addEventListener("message", (event) => {
-    const url = event.data && event.data.open;
-    if (!url) return;
-    const hash = new URL(url, location.href).hash;
-    if (hash && hash !== location.hash) location.hash = hash;
+    if (event.data && event.data.open) takePendingOpen();
   });
-  /* A push names the chat in the hash; the page may already be open. */
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) takePendingOpen();
+  });
+  window.addEventListener("focus", takePendingOpen);
+
   window.addEventListener("hashchange", () => {
     const id = decodeURIComponent(location.hash.slice(1));
     if (current && current.id === id) return;
@@ -8651,4 +8671,5 @@
      here, or a hash that pointed at something since deleted. */
   const opening = decodeURIComponent(location.hash.slice(1));
   if (opening) openById(opening);
+  takePendingOpen();
 })();
