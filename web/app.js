@@ -552,29 +552,21 @@
       renderAgentBar();
       updateBadge();
 
-      // If no agent selected or active agent no longer exists, select first available
+      /* Nothing open, or what was open has gone (a worktree removed, a tab
+         closed elsewhere): the flock is where that lands, never some first
+         pane picked for you - attaching to it resizes it on the desktop too. */
       if (
-        !state.activeChatId && (
-          !state.activePaneId ||
-          !state.agents.some((a) => a.pane_id === state.activePaneId)
-        )
+        !state.activeChatId && state.activePaneId &&
+        !state.agents.some((a) => a.pane_id === state.activePaneId)
       ) {
-        // The first agent on screen, or failing that the first row there is:
-        // a project whose tabs are all plain shells is still worth opening.
-        const first = state.agents.find((a) => a.has_agent) || state.agents[0];
-        if (first) {
-          // Reload into the pane's default view: Chat when this pane supports
-          // it, otherwise Normal on mobile or Console on desktop.
-          selectAgent(first.pane_id);
-        } else {
-          state.activePaneId = null;
-          syncPickerChrome();
-          // Nothing open means nothing to switch between: the strip goes with
-          // the chat it belonged to rather than being left standing.
-          renderTabStrip();
-          elHistoryContent.innerHTML = '<div class="history-empty">No active agents in Herdr.</div>';
-        }
-      } else {
+        clearSelection();
+      }
+      if (!state.activeChatId && !state.activePaneId) {
+        syncPickerChrome();
+        renderTabStrip();
+        elHistoryContent.innerHTML = state.agents.length
+          ? '<div class="history-empty">Pick a sheep from the flock.</div>'
+          : '<div class="history-empty">No active agents in Herdr.</div>';
       }
     } catch (err) {
       console.warn("fetchAgents error:", err);
@@ -2459,7 +2451,7 @@
       });
       if (!res.ok) throw new Error("close failed");
       if (state.agents.find((a) => a.pane_id === state.activePaneId)?.workspace_id === workspaceId) {
-        state.activePaneId = null;
+        clearSelection();
       }
       resetSwipe();
       await fetchAgents();
@@ -2500,7 +2492,7 @@
         if (done.refusal) throw new Error(done.refusal);
       }
       if (state.agents.find((a) => a.pane_id === state.activePaneId)?.workspace_id === workspaceId) {
-        state.activePaneId = null;
+        clearSelection();
       }
       resetSwipe();
       await fetchAgents();
@@ -2655,6 +2647,16 @@
   function closePaneViews() {
     if (!elConsoleView.classList.contains("hidden")) closeConsole();
     if (!elChangesView.classList.contains("hidden")) closeChanges();
+  }
+
+  /* The pane that was open is gone: drop it and go back to the flock. */
+  function clearSelection() {
+    state.activePaneId = null;
+    state.chatVisited = false;
+    state.chatVisible = false;
+    closePaneViews();
+    renderAgentBar();
+    if (!state.pickerOpen) showFlock();
   }
 
   /* Select a pane and start at its first available view. */
