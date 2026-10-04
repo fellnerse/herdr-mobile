@@ -1511,8 +1511,10 @@ class HerdrHandler(BaseHTTPRequestHandler):
             else:
                 self.send_json({"ok": False, "error": "No project to cut from"}, 400)
                 return
-            # Blank means Herdr picks, which it does by generating a name.
-            if branch := (body.get("branch") or "").strip():
+            # Blank means Herdr picks, which it does by generating a name. A
+            # branch cannot hold a space, so "fix login bug" is cut as
+            # fix-login-bug rather than refused.
+            if branch := "-".join((body.get("branch") or "").split()):
                 params["branch"] = branch
             # A checkout is a copy of the tree on disk; a big repository takes
             # longer than the five seconds an RPC is normally given.
