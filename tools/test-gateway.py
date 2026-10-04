@@ -1967,6 +1967,11 @@ check("and somewhere that is no repository at all is still somewhere",
 
 import heartbeat
 
+# Importing the server handed the heartbeat its real notifier: a test that
+# reaches it would push to every phone subscribed on this machine.
+told = []
+heartbeat.set_notifier(lambda title, body, url: told.append(title))
+
 # Config defaults and persistence
 with tempfile.TemporaryDirectory(prefix="sheepit-heartbeat-") as hb_dir:
     cfg_path = Path(hb_dir) / "heartbeat.json"
@@ -2006,6 +2011,12 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-interceptor-") as hb_dir:
     cfg_path = Path(hb_dir) / "heartbeat.json"
     cfg = heartbeat.HeartbeatConfig(enabled=True, ok_sentinel="HEARTBEAT_OK")
     cfg.save(cfg_path)
+    # The interceptor loads and saves the config itself: pointed anywhere but
+    # here, it writes this test's alert onto the machine's real heartbeat.
+    orig_config_path, orig_notify = heartbeat.CONFIG_PATH, heartbeat._notify
+    heartbeat.CONFIG_PATH = cfg_path
+    pushed = []
+    heartbeat.set_notifier(lambda title, body, url: pushed.append((title, body)))
 
     # Unregistered pane: let pass
     should_notify, meta = heartbeat.heartbeat_notification_interceptor(
@@ -2040,13 +2051,16 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-interceptor-") as hb_dir:
         should_notify, meta = heartbeat.heartbeat_notification_interceptor(
             "w1:p3", {"pane_id": "w1:p3", "status": "done", "name": "web", "display_name": "web-prod"}
         )
-        check("sentinel missing triggers push notification", should_notify, True)
-        check("alert title names agent", meta and meta.get("title"), "Heartbeat Alert: web-prod")
-        check("alert body contains summary",
-              meta and "3 critical Sentry crashes" in meta.get("body", ""), True)
+        # The alert is pushed by the heartbeat itself, so the watcher's own
+        # "agent finished" is held back rather than sent alongside it.
+        check("an alert is not pushed twice", (should_notify, meta), (False, None))
+        check("alert title names agent", [t for t, _ in pushed], ["web-prod found something"])
+        check("alert body contains summary", "3 critical Sentry crashes" in pushed[0][1], True)
+        check("only a clean run was told nothing", len(pushed), 1)
     finally:
         heartbeat.Herdr.pane_read = orig_pane_read
         heartbeat.call_herdr_rpc = orig_rpc
+        heartbeat.CONFIG_PATH, heartbeat._notify = orig_config_path, orig_notify
 
 # A run outlives the gateway that started it: a restart must still hear it
 # finish, and a run whose pane is gone must stop claiming to be running.
@@ -2060,6 +2074,8 @@ check("a run whose pane is still there is kept",
 check("a run whose pane is gone is dropped",
       heartbeat.drop_lost_runs(heartbeat.HeartbeatConfig(heartbeats=[running]), set()), True)
 check("a lost run says so", (running.last_status, heartbeat.is_heartbeat_active("wJ:p4")), ("error", False))
+check("and tells the phone", told[-1:], ["Run failed"])
+check("and stays news until it is seen", (running.unseen_error or {}).get("summary", "")[:8], "Run lost")
 
 # A check opens its tab in the workspace's checkout, whether or not an agent
 # already runs there: a project whose one pane is a shell must still be a target.
@@ -2103,7 +2119,7 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-resolve-") as hb_dir:
         check("a working run is not judged",
               heartbeat.resolve_stopped_runs(cfg, [dict(idle[0], agent_status="working")], 2000.0), False)
         check("a run that stopped idle is read", heartbeat.resolve_stopped_runs(cfg, idle, 2000.0), True)
-        check("its alert is pushed", pushed, ["Heartbeat Alert: Sentry"])
+        check("its alert is pushed", pushed, ["Sentry found something"])
         check("and recorded", heartbeat.HeartbeatConfig.load().heartbeats[0].last_status, "alert")
         check("and read only once", heartbeat.resolve_stopped_runs(cfg, idle, 2060.0), False)
         unseen = heartbeat.HeartbeatConfig.load().heartbeats[0].unseen_alert
@@ -2156,6 +2172,16 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-runner-") as hb_dir:
         for minute in range(16):
             runner.tick(1_000_000 + minute * 60)
         check("a failed start is retried after 15 minutes, not every minute", len(tries), 2)
+        check("and the phone is told once, not on every retry",
+              [t for t in told if t == "Live Web Stats failed"], ["Live Web Stats failed"])
+        check("the failure is on the overview", [(a["kind"], a["summary"]) for a in heartbeat.unseen_alerts(set())],
+              [("error", "Did not start: no workspace")])
+
+        class Answer:
+            def send_json(self, data, status=200):
+                self.data = data
+        heartbeat.handle_post_heartbeat_seen(Answer(), {"id": "hb_due", "kind": "error"})
+        check("until it is seen", heartbeat.unseen_alerts(set()), [])
     finally:
         heartbeat.CONFIG_PATH, heartbeat.trigger_heartbeat = orig_config_path, orig_trigger
 
@@ -2197,6 +2223,32 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-start-") as hb_dir:
         (heartbeat.CONFIG_PATH, heartbeat.call_herdr_rpc, heartbeat.Herdr.open_pane,
          heartbeat.Herdr.agent_start, heartbeat.workspace_cwd) = orig
         heartbeat.pop_heartbeat("wE:pW")
+
+# A subscription the push service has dropped cannot quietly come back: the
+# phone is told to make a new one instead of believing it is still subscribed.
+import push
+
+with tempfile.TemporaryDirectory(prefix="sheepit-push-") as push_dir:
+    orig = (push.SUBS_PATH, push.DEAD_PATH, push.send_one)
+    try:
+        push.SUBS_PATH = Path(push_dir) / "subscriptions.json"
+        push.DEAD_PATH = Path(push_dir) / "push-dead.json"
+        gone = {"endpoint": "https://web.push.apple.com/QGone", "keys": {}}
+        alive = {"endpoint": "https://fcm.googleapis.com/fcm/send/alive", "keys": {}}
+        push.save_subs([gone, alive])
+        ttls = []
+        push.send_one = lambda sub, ttl=120: ttls.append(ttl) or (410 if "Gone" in sub["endpoint"] else 201)
+        push.broadcast(ttl=86400)
+        check("a push can be told to live longer than two minutes", ttls, [86400, 86400])
+        check("a refused subscription is dropped", [s["endpoint"] for s in push.load_subs()], [alive["endpoint"]])
+        try:
+            push.add_sub(gone)
+            check("and refused when the phone hands it back", "stored", "refused")
+        except push.DeadSubscription:
+            check("and refused when the phone hands it back", "refused", "refused")
+        check("a live one is still taken", push.add_sub(alive), 1)
+    finally:
+        push.SUBS_PATH, push.DEAD_PATH, push.send_one = orig
 
 # Notification policy filtering and _LAST_FINISHED
 rows = {

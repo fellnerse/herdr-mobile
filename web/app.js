@@ -577,32 +577,34 @@
     alertsSignature = signature;
     elFlockAlerts.classList.toggle("hidden", !state.alerts.length);
     elFlockAlerts.innerHTML = state.alerts.map((a) => `
-      <div class="flock-alert" data-id="${escapeHtml(a.id)}" data-pane-id="${escapeHtml(a.pane_id)}">
+      <div class="flock-alert" data-id="${escapeHtml(a.id)}" data-kind="${escapeHtml(a.kind || "alert")}"
+           data-pane-id="${escapeHtml(a.pane_id)}">
         <button type="button" class="flock-alert-open">
-          <span class="flock-alert-head">${escapeHtml(a.name)} found something</span>
+          <span class="flock-alert-head">${escapeHtml(a.name)} ${a.kind === "error" ? "failed" : "found something"}</span>
           <span class="flock-alert-body">${escapeHtml(a.summary)}</span>
         </button>
         <button type="button" class="flock-alert-dismiss" aria-label="Mark as read">×</button>
       </div>`).join("");
   }
 
-  function markAlertSeen(id) {
-    state.alerts = state.alerts.filter((a) => a.id !== id);
+  function markAlertSeen(id, kind) {
+    state.alerts = state.alerts.filter((a) => !(a.id === id && (a.kind || "alert") === kind));
     renderAlerts();
     updateBadge();
     fetch("/api/heartbeat/seen", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id, kind }),
     }).catch(() => {});
   }
 
   elFlockAlerts.addEventListener("click", (e) => {
     const alert = e.target.closest(".flock-alert");
     if (!alert) return;
-    markAlertSeen(alert.dataset.id);
-    if (e.target.closest(".flock-alert-dismiss")) return;
+    markAlertSeen(alert.dataset.id, alert.dataset.kind);
+    // A check that failed has no tab to open: reading the banner was it.
     const paneId = alert.dataset.paneId;
+    if (e.target.closest(".flock-alert-dismiss") || !paneId) return;
     if (!openAsChat(paneId)) selectAgent(paneId);
   });
 
@@ -5864,13 +5866,42 @@
     }
     try {
       const reg = await navigator.serviceWorker.ready;
-      const sub = await reg.pushManager.getSubscription();
+      let sub = await reg.pushManager.getSubscription();
+      if (sub) sub = await resyncSubscription(reg, sub);
       elTogglePush.checked = Boolean(sub);
       elBtnTestPush.disabled = !sub;
       setPushHint(sub ? "on for this device" : "");
     } catch (err) {
       elBtnTestPush.disabled = true;
       setPushHint("unavailable");
+    }
+  }
+
+  /* "On" used to mean the browser holds a subscription, which says nothing
+     about whether the gateway still does: one the push service refused was
+     deleted there and the switch here stayed on, so the phone went quiet with
+     nothing to show for it. Every open hands the subscription back - storing
+     it again is harmless - and one the gateway knows to be dead is replaced. */
+  async function resyncSubscription(reg, sub) {
+    const send = (s) => fetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription: s.toJSON() }),
+    });
+    const res = await send(sub);
+    if (res.status !== 410) return sub;
+    await sub.unsubscribe().catch(() => {});
+    try {
+      const info = await (await fetch("/api/push/info")).json();
+      const fresh = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(info.public_key),
+      });
+      await send(fresh);
+      return fresh;
+    } catch (err) {
+      // Somewhere a fresh one needs a tap: leave the switch off to say so.
+      return null;
     }
   }
 
@@ -6333,7 +6364,10 @@
         const check = () => reg.update().catch(() => {});
         check();
         document.addEventListener("visibilitychange", () => {
-          if (!document.hidden) check();
+          if (!document.hidden) {
+            check();
+            refreshPushState();
+          }
         });
       })
       .catch(() => setPushHint("service worker failed"));

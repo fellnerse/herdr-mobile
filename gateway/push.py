@@ -16,6 +16,7 @@ Two deliberate constraints shape this module:
 
 import os
 import json
+import logging
 import time
 import base64
 import socket
@@ -31,6 +32,11 @@ from urllib.parse import urlparse
 STATE_DIR = Path(os.environ.get("SHEEPIT_STATE_DIR", Path.home() / ".config/sheepit"))
 KEY_PATH = STATE_DIR / "vapid_private.pem"
 SUBS_PATH = STATE_DIR / "subscriptions.json"
+# Endpoints the push service said are gone. A phone keeps handing back the
+# subscription it has, and without this it would be stored again, refused
+# again, and the phone would go on believing it is subscribed.
+DEAD_PATH = STATE_DIR / "push-dead.json"
+log = logging.getLogger("push")
 # RFC 8292 wants a contact for the push service; a URL is as valid as a mailto.
 VAPID_SUB = os.environ.get("SHEEPIT_PUSH_SUB", "https://github.com/mowolf/herdr-mobile")
 
@@ -240,9 +246,23 @@ def save_subs(subs: list) -> None:
         _write_subs(subs)
 
 
+class DeadSubscription(ValueError):
+    """The push service already said this endpoint is gone: subscribe again."""
+
+
+def _read_dead() -> list:
+    try:
+        data = json.loads(DEAD_PATH.read_text())
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
 def add_sub(sub: dict) -> int:
     if not valid_endpoint(sub.get("endpoint", "")):
         raise ValueError("endpoint must be an https URL on the public internet")
+    if sub.get("endpoint") in _read_dead():
+        raise DeadSubscription("the push service dropped this subscription")
     with _LOCK:
         subs = [s for s in _read_subs() if s.get("endpoint") != sub.get("endpoint")]
         subs.append(sub)
@@ -294,19 +314,28 @@ def send_one(sub: dict, ttl: int = 120) -> int:
     return 0
 
 
-def broadcast() -> dict:
+def broadcast(ttl: int = 120) -> dict:
     """Push to every subscription, dropping only the ones the service says are
-    gone. Network failures leave the subscription in place."""
+    gone. Network failures leave the subscription in place.
+
+    Every send is logged with where it went and what came back: "did the
+    phone get it" used to have no answer anywhere on this side."""
     subs = load_subs()
+    if not subs:
+        log.warning("push: nothing sent, no device is subscribed")
     results = {}
     dead = set()
     for sub in subs:
         endpoint = sub.get("endpoint", "")
-        code = send_one(sub)
+        code = send_one(sub, ttl=ttl)
         results[endpoint[-24:]] = code
+        log.info("push: %s -> %s (ttl %ss)", urlparse(endpoint).netloc, code, ttl)
         if code in (404, 410):
             dead.add(endpoint)
     if dead:
         with _LOCK:
             _write_subs([s for s in _read_subs() if s.get("endpoint") not in dead])
+            _ensure_state_dir()
+            DEAD_PATH.write_text(json.dumps((_read_dead() + sorted(dead))[-50:]))
+        log.warning("push: dropped %d subscription(s) the service says are gone", len(dead))
     return results

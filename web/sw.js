@@ -89,6 +89,9 @@ self.addEventListener("push", (event) => {
       let title = "Agent finished";
       let body = "An agent is waiting for you.";
       let url = "/";
+      /* Its own tag, so the next agent finishing does not replace a
+         heartbeat's finding on the lock screen. */
+      let tag = "sheepit-agent";
 
       try {
         const [agentsRes, lastRes] = await Promise.all([
@@ -107,9 +110,20 @@ self.addEventListener("push", (event) => {
         if (data) await setBadge(waiting.length);
 
         const said = describe(last);
+        // What a heartbeat found or why it failed, still unread. A heartbeat
+        // push lives a day, and the text parked for it only two minutes, so a
+        // phone that was off the network all night reads it from here.
+        const unread = (data && data.alerts) || [];
         // A chat names the page it lives on; a pane is found from the flock.
         if (said && last.url) url = last.url;
-        if (said) {
+        if (said && last.kind === "heartbeat") tag = "sheepit-heartbeat";
+        if (!said && unread.length) {
+          const a = unread[unread.length - 1];
+          title = `${a.name} ${a.kind === "error" ? "failed" : "found something"}`;
+          body = a.summary || "Tap to open.";
+          if (unread.length > 1) body += ` · ${unread.length - 1} more`;
+          tag = "sheepit-heartbeat";
+        } else if (said) {
           title = said.title;
           body = said.body;
           // The rest of the herd is context, never the headline.
@@ -127,7 +141,7 @@ self.addEventListener("push", (event) => {
 
       await self.registration.showNotification(title, {
         body,
-        tag: "sheepit-agent",       // collapse repeats into one notification
+        tag,                        // collapse repeats into one notification
         renotify: true,
         icon: "/icon.svg",
         badge: "/icon.svg",
