@@ -3651,22 +3651,29 @@
     return "0";
   }
 
+  /* A window's length is in its name: "five_hour", "seven_day", the "3_hour"
+     Codex makes of a length it was handed, and "seven_day_opus" for a window
+     kept per model. A name with no length in it is not a window anybody can
+     read - the endpoint has started answering with codenames like
+     "iguana_necktie" - so it is left off the strip rather than drawn as one. */
+  const WINDOW_NAME = /^(\d+|five|seven)_(hour|day)(?:_(.+))?$/;
+  const WINDOW_WORDS = { five: 5, seven: 7 };
+
   // "five_hour" is what the endpoint calls it; "5h" is what fits on a phone.
   function windowLabel(name) {
-    if (name === "five_hour") return "5h";
-    if (name === "seven_day") return "week";
-    const m = /^(\d+)_(hour|day)$/.exec(name || "");
-    if (m) return m[2] === "hour" ? `${m[1]}h` : `${m[1]}d`;
-    return String(name || "").replace(/_/g, " ");
+    const m = WINDOW_NAME.exec(name || "");
+    if (!m) return String(name || "").replace(/_/g, " ");
+    const n = WINDOW_WORDS[m[1]] || Number(m[1]);
+    const span = m[2] === "hour" ? `${n}h` : n === 7 ? "week" : `${n}d`;
+    return m[3] ? `${span} ${m[3].replace(/_/g, " ")}` : span;
   }
 
   // How long the window is, in hours, from the same name.
   function windowHours(name) {
-    if (name === "five_hour") return 5;
-    if (name === "seven_day") return 168;
-    const m = /^(\d+)_(hour|day)$/.exec(name || "");
+    const m = WINDOW_NAME.exec(name || "");
     if (!m) return 0;
-    return m[2] === "hour" ? Number(m[1]) : Number(m[1]) * 24;
+    const n = WINDOW_WORDS[m[1]] || Number(m[1]);
+    return m[2] === "hour" ? n : n * 24;
   }
 
   /* How fast a window is going down, in percent an hour.
@@ -3794,9 +3801,10 @@
     }
 
     /* Buckets that are empty and have no window carry no information - they
-       are plan slots this account does not use. */
+       are plan slots this account does not use. Nor does one whose name says
+       nothing about how long it is. */
     const windows = (a.buckets || [])
-      .filter((b) => b.utilization > 0 || b.resets_at)
+      .filter((b) => (b.utilization > 0 || b.resets_at) && windowHours(b.name))
       .map((b) => {
         const pct = Math.max(0, Math.min(100, b.utilization));
         /* Amber from the threshold up, red at the cap. A window that has
@@ -7945,7 +7953,13 @@
     const out = [];
     const parts = String(text).split(/^```[^\n]*\n?/m);
     parts.forEach((part, i) => {
-      if (i % 2) { out.push("<pre><code>" + esc(part.replace(/\n$/, "")) + "</code></pre>"); return; }
+      if (i % 2) {
+        // Selecting a block on a phone means dragging handles across it; a tap is easier.
+        // Top and bottom, so a long block has one in reach from either end.
+        const copy = `<button type="button" class="code-copy" aria-label="Copy code">Copy</button>`;
+        out.push(`<div class="code">${copy}<pre><code>` + esc(part.replace(/\n$/, "")) + `</code></pre>${copy}</div>`);
+        return;
+      }
       let para = [], list = [], rows = [];
       const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
       const flush = () => {
@@ -8211,7 +8225,18 @@
     } catch (err) { alert(err.message); }
   }
 
-  elMessages.addEventListener("click", (e) => {
+  elMessages.addEventListener("click", async (e) => {
+    const copy = e.target.closest("button.code-copy");
+    if (copy) {
+      try {
+        await navigator.clipboard.writeText(copy.parentElement.querySelector("pre").textContent);
+        copy.textContent = "Copied";
+      } catch (err) {
+        copy.textContent = "Failed";
+      }
+      setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+      return;
+    }
     const btn = e.target.closest("button[data-ask]");
     if (!btn || btn.disabled) return;
     const id = btn.dataset.ask;

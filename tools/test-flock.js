@@ -1476,6 +1476,22 @@ function order(agents, busy = false, held = [], custom = []) {
   check("five hours is 5h", u.windowLabel("five_hour"), "5h");
   check("seven days is a week", u.windowLabel("seven_day"), "week");
   check("and a window Codex invents later still reads", u.windowLabel("3_hour"), "3h");
+  check("a window kept per model says which",
+        [u.windowLabel("seven_day_opus"), u.windowHours("seven_day_opus")], ["week opus", 168]);
+
+  // A codename says nothing about how long the window is, so it is not drawn.
+  const coded = loadUsage({
+    threshold: 85,
+    agents: [{
+      agent: "claude", ok: true, blocked: false, buckets: [
+        { name: "five_hour", utilization: 3, resets_at: soon, spent: false, warning: false, expired: false },
+        { name: "iguana_necktie", utilization: 0, resets_at: week, spent: false, warning: false, expired: false },
+        { name: "seven_day_opus", utilization: 12, resets_at: week, spent: false, warning: false, expired: false },
+      ],
+    }],
+  }).quotaHtml();
+  check("a window with no length in its name is not drawn", /iguana/.test(coded), false);
+  check("but one kept per model still is", /class="usage-label">week opus</.test(coded), true);
 
   /* A reset you could sit and wait for is a time - the small hours of tomorrow
      included, which is where a five hour window started in the evening lands.

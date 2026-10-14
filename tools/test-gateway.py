@@ -772,6 +772,23 @@ with tempfile.TemporaryDirectory() as tmp:
     check("but the video is still ours", chat.upload_path(folder, "0123456789ab.mov") is not None, True)
     check("a name of any other shape is not", chat.upload_path(folder, "../0123456789ab.mov"), None)
 
+# A chat home asks before a file tool reads outside it, rather than refusing,
+# and settings an earlier SheepIt wrote are moved on to that - but only if
+# nobody has edited them since.
+with tempfile.TemporaryDirectory() as tmp:
+    fence = json.loads(chat._guard_settings(tmp))["permissions"]
+    check("a read outside the home is asked, not refused", "blockReadsOutsideWorkingDirectories" in fence, False)
+    check("the credentials stay refused", "Read(~/.ssh/**)" in fence["deny"], True)
+    settings = Path(tmp) / "settings.json"
+    settings.write_text(chat._guard_settings(tmp, 1))
+    chat._upgrade_guard(settings, tmp)
+    check("old settings are upgraded", settings.read_text(), chat._guard_settings(tmp))
+    tuned = json.loads(chat._guard_settings(tmp, 1))
+    tuned["model"] = "opus"
+    settings.write_text(json.dumps(tuned))
+    chat._upgrade_guard(settings, tmp)
+    check("tuned settings are left alone", json.loads(settings.read_text()), tuned)
+
 # A worktree keeps its .git as a file pointing elsewhere, which is exactly
 # where a naive `.git/info/exclude` writes into a directory that is not there.
 with tempfile.TemporaryDirectory() as tmp:
@@ -2495,6 +2512,7 @@ log.write_text(
     + entry("user", [{"type": "text", "text": "Base directory for this skill"}], isMeta=True)
     + entry("user", "<command-name>/review</command-name>\n<command-args>42</command-args>")
     + entry("user", "<local-command-stdout>ok</local-command-stdout>")
+    + entry("user", '\n\n<pasted_content id="f146">\nit works:\n\n$ make\n</pasted_content id="f146">\n')
     + json.dumps({"type": "file-history-snapshot"}) + "\n"
     + entry("assistant", [{"type": "thinking", "thinking": "hm"}])
     + entry("assistant", [{"type": "text", "text": "On it."}])
@@ -2525,7 +2543,8 @@ try:
     pc = panechat.get("wX:p1")
     check("pane chat: what the log says, in order",
           [(e["type"], e.get("text")) for e in pc.events],
-          [("prompt", "fix the login page"), ("prompt", "/review 42"), ("assistant", None),
+          [("prompt", "fix the login page"), ("prompt", "/review 42"),
+           ("prompt", "it works:\n\n$ make"), ("assistant", None),
            ("assistant", None), ("tool_results", None), ("assistant", None), ("result", None)])
     check("pane chat: the summary names the project, not Claude Code",
           (pc.summary()["title"], pc.summary()["model"], pc.summary()["running"]),
@@ -2662,6 +2681,24 @@ try:
     pc.clear_at = pc.cleared_path = None  # as a new session's log would
     untitled["terminal_title_stripped"] = "Alpha work"
     pc.refresh()
+
+    # A /clear sent into a composer that already held text goes in as part of
+    # a prompt, and the session it was meant to end carries on - so once that
+    # log keeps growing with nothing new beside it, it is the pane's again.
+    untitled["terminal_title_stripped"] = "Alpha work"
+    sent_at = time.time() - 60
+    panechat.cleared("wY:p1", dict(untitled), sent_at)
+    os.utime(alpha, (sent_at + 1, sent_at + 1))  # closed off as /clear lands
+    pc.refresh()
+    check("a cleared pane waits for its next session",
+          (pc.session, pc.events), (None, []))
+    os.utime(alpha, None)  # and then the old one carries on
+    pc.refresh()
+    check("a /clear that never took gives the conversation back",
+          (pc.session, [e.get("text") for e in pc.events]),
+          (ALPHA, ["what alpha asked"]))
+    for path in (alpha, beta):
+        os.utime(path, (time.time() - 600, time.time() - 600))
 
     # And the tie it must refuse: a title matching nothing, with two to choose
     # from. An empty chat is better than the wrong conversation.

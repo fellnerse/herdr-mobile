@@ -52,9 +52,18 @@ QUIET_AFTER = 20.0
 # /clear can therefore carry an mtime just before it, and without this the
 # comparison throws away the very session it was meant to find.
 MTIME_SLACK = 2.0
+# How long after a /clear the session it ended may still be written to. Claude
+# Code starts the next log at once and only closes the old one off; a log that
+# is still growing past this, with nothing new beside it, never was cleared -
+# the /clear went in as text, into a composer that already had some.
+CLEAR_TAKES = 10.0
 
 COMMAND_NAME = re.compile(r"<command-name>([^<]*)</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>([^<]*)</command-args>")
+# Claude Code wraps a multi-line paste in these, opening and closing tag alike
+# carrying the paste's id. Left in, a message that is all paste starts with `<`
+# and is taken for a command's output - sent, answered, and never drawn.
+PASTED = re.compile(r'</?pasted_content(?:\s+id="[^"]*")?>')
 AI_TITLE = re.compile(r'"(?:aiTitle|agentName)"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
 
@@ -71,7 +80,7 @@ def slim_log(entry: dict) -> dict | None:
     if event or kind == "assistant":
         return event
     # The user's own message, which the headless stream never echoes back.
-    text = chat._text_of(entry["message"].get("content")).strip()
+    text = PASTED.sub("", chat._text_of(entry["message"].get("content"))).strip()
     name = COMMAND_NAME.search(text)
     if name:
         args = COMMAND_ARGS.search(text)
@@ -385,6 +394,8 @@ class PaneChat:
         worse than an empty screen, and the title arrives within a turn or two.
         """
         logs = tokens.session_logs(self.cwd)
+        if self.clear_at is not None and self._clear_not_taken(logs):
+            self.clear_at = self.cleared_path = None
         if self.clear_at is not None:
             logs = [p for p in logs if p != self.cleared_path
                     and self._mtime_at_least(p, self.clear_at)]
@@ -405,6 +416,23 @@ class PaneChat:
             if len(updated) == 1:
                 return updated[0]
         return logs[0] if len(logs) == 1 else None
+
+    def _clear_not_taken(self, logs) -> bool:
+        """The /clear this pane was sent never started a session: the log it
+        was meant to end carried on, and no other has been written since.
+
+        Without this the conversation it failed to clear is refused for good,
+        and the chat stays empty while the console fills up beside it.
+        """
+        if self.cleared_path is None:
+            return False
+        if any(p != self.cleared_path and self._mtime_at_least(p, self.clear_at)
+               for p in logs):
+            return False
+        try:
+            return self.cleared_path.stat().st_mtime >= self.clear_at + CLEAR_TAKES
+        except OSError:
+            return False
 
     @staticmethod
     def _mtime_at_least(path: Path, when: float) -> bool:
