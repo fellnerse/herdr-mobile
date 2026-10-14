@@ -3572,6 +3572,15 @@ body:has(.agent-picker:not(.hidden)) .app-container {
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 10px; overflow-x: auto; margin: 0 0 8px; white-space: pre;
 }
+#chat-chat-view .msg .code { position: relative; }
+#chat-chat-view .code-copy {
+  position: absolute; top: 4px; right: 4px; padding: 3px 8px;
+  font: 11px var(--font-sans); color: var(--text-2);
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; opacity: 0.85;
+}
+#chat-chat-view .code-copy:last-child { top: auto; bottom: 12px; }
+#chat-chat-view .code-copy:hover { opacity: 1; color: var(--text); }
 #chat-chat-view .msg pre code { background: none; padding: 0; }
 #chat-chat-view .msg.error { color: var(--err); font-size: 13px; white-space: pre-wrap; font-family: var(--font-mono); }
 #chat-chat-view .msg.meta { color: var(--text-3); font-size: 12px; text-align: center; }

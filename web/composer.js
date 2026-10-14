@@ -83,10 +83,44 @@
   /* Shared textarea sizing. Each view chooses its own height limit and owns
      the layout changes that follow the measured height. */
   function resizeTextarea(el, maxHeight = Infinity) {
-    el.style.height = "auto";
-    const height = Math.min(el.scrollHeight, maxHeight);
+    const height = Math.min(contentHeight(el), maxHeight);
     el.style.height = `${height}px`;
     return height;
+  }
+
+  /* How tall the box wants to be, measured on a hidden twin rather than by
+     collapsing the box itself. Collapsed, even for the length of one call, it
+     shortens the composer, the chat above it gets the room, and the browser
+     clamps the chat's scroll position to fit - so reading the end of a
+     conversation was thrown back up by every keystroke, by as much as the box
+     was tall, and the jump then read as having scrolled away from the end. */
+  const MIRRORED = ["boxSizing", "width", "minHeight", "fontFamily", "fontSize",
+    "fontWeight", "fontStyle", "letterSpacing", "wordSpacing", "lineHeight",
+    "textIndent", "textTransform", "whiteSpace", "wordBreak", "overflowWrap", "tabSize",
+    "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+    "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "borderStyle"];
+  let twin = null;
+  function contentHeight(el) {
+    // Hidden, the box moves nothing by collapsing - and has no width to copy.
+    if (!el.getClientRects().length) {
+      el.style.height = "auto";
+      return el.scrollHeight;
+    }
+    if (!twin) {
+      twin = document.createElement("textarea");
+      twin.setAttribute("aria-hidden", "true");
+      twin.tabIndex = -1;
+      Object.assign(twin.style, {
+        position: "absolute", top: "0", left: "-10000px", visibility: "hidden",
+        height: "auto", maxHeight: "none", overflow: "hidden", pointerEvents: "none",
+      });
+      document.body.appendChild(twin);
+    }
+    const style = getComputedStyle(el);
+    for (const name of MIRRORED) twin.style[name] = style[name];
+    twin.rows = el.rows;
+    twin.value = el.value;
+    return twin.scrollHeight;
   }
 
   /* Persistence mechanics for text kept against a scope (a pane or a chat).

@@ -574,8 +574,9 @@ def chat_home() -> str:
 # What keeps a chat in its home: Claude Code's sandbox for anything run through
 # Bash, and a hook refusing Edit/Write/NotebookEdit outside the directory,
 # since those tools do not go through the sandbox. Reads are fenced too - the
-# file tools to the home, Bash away from the credentials below - because a chat
-# that reads the web can be talked into sending on whatever it can read.
+# file tools ask before reading outside the home, and neither they nor Bash may
+# read the credentials below - because a chat that reads the web can be talked
+# into sending on whatever it can read.
 # Written into whatever directory becomes the chat home and then made immutable
 # (`chflags uchg`), files and folders both, so neither the chat nor a script it
 # runs can loosen, move or delete them. Claude only, for now.
@@ -632,11 +633,19 @@ _SECRETS = ("~/.ssh", "~/.gnupg", "~/.aws", "~/.azure", "~/.config/gcloud",
             "~/.claude.json", "~/.codex", "~/Library/Keychains")
 
 
-def _guard_settings(root: str) -> str:
+def _guard_settings(root: str, version: int = 2) -> str:
+    """The settings a chat home is fenced with. Version 1 refused every read
+    outside the home outright, where a chat should have asked; it is kept only
+    so `guard_home` can recognise a file it wrote and replace it."""
     hook = os.path.join(root, _GUARD_HOOK)
+    if version == 1:
+        permissions = {"ask": [f"Edit(/{root}/.claude/**)"],
+                       "blockReadsOutsideWorkingDirectories": True}
+    else:
+        permissions = {"ask": [f"Edit(/{root}/.claude/**)"],
+                       "deny": [f"Read({p}/**)" for p in _SECRETS] + [f"Read({p})" for p in _SECRETS]}
     return json.dumps({
-        "permissions": {"ask": [f"Edit(/{root}/.claude/**)"],
-                        "blockReadsOutsideWorkingDirectories": True},
+        "permissions": permissions,
         "sandbox": {"enabled": True, "failIfUnavailable": True,
                     "allowUnsandboxedCommands": False,
                     "filesystem": {"denyRead": list(_SECRETS)}},
@@ -645,6 +654,19 @@ def _guard_settings(root: str) -> str:
             "hooks": [{"type": "command", "command": shlex.quote(hook), "timeout": 10}],
         }]},
     }, indent=2) + "\n"
+
+
+def _upgrade_guard(path: Path, root: str) -> None:
+    """Rewrite settings an earlier SheepIt wrote, untouched since, with the
+    current ones. Anybody's own edits are left alone."""
+    try:
+        if json.loads(path.read_text()) != json.loads(_guard_settings(root, 1)):
+            return
+    except (OSError, ValueError):
+        return
+    if hasattr(os, "chflags"):
+        os.chflags(path, os.stat(path).st_flags & ~stat.UF_IMMUTABLE)
+    path.write_text(_guard_settings(root))
 
 
 def guard_home(root: str) -> None:
@@ -658,6 +680,7 @@ def guard_home(root: str) -> None:
     guide = Path(root) / _GUIDE
     if not guide.exists():
         guide.write_text(_GUIDE_TEXT)
+    _upgrade_guard(Path(root) / _GUARD_SETTINGS, root)
     for rel, text, mode in files:
         path = Path(root) / rel
         if not path.exists():

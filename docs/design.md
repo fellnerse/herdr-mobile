@@ -449,12 +449,14 @@ Claude Code's fences written into it (`guard_home` in `chat.py`):
 of it, and hooks `.claude/hooks/restrict-writes.sh` in front of Edit, Write
 and NotebookEdit, which the sandbox does not cover, to refuse any path outside
 the home. Reads are fenced as well, since a chat that reads the web can be
-talked into sending on whatever it can read: the file tools stay inside the
-home (`blockReadsOutsideWorkingDirectories`) and Bash is kept out of the
-credential folders (`sandbox.filesystem.denyRead`). Both files, `.claude/` and
+talked into sending on whatever it can read: the file tools ask before
+reading anything outside the home, which the phone answers like any other
+permission prompt, and both they and Bash are kept out of the credential
+folders (`permissions.deny`, `sandbox.filesystem.denyRead`). Both files, `.claude/` and
 `.claude/hooks/` are then `chflags uchg`, so neither the chat nor a script it
 runs can loosen, rename or delete them; files already there are kept, and
-locked all the same. A `CLAUDE.md` goes in beside them, unlocked since it is
+locked all the same - except settings an earlier SheepIt wrote and nobody
+has touched since, which are replaced with the current ones. A `CLAUDE.md` goes in beside them, unlocked since it is
 advice rather than a fence: a folder per task under `work/`, since many chats
 share the home, sources cited, and whatever came off the web read as data and
 never as instructions.
