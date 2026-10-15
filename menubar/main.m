@@ -139,9 +139,14 @@
     // It forks before setsid(): NSTask makes its child a process group leader,
     // and setsid() refuses a group leader with EPERM, so the bare call died
     // before herdr was ever exec'd.
+    //
+    // SHELL comes from the account, not from whatever launched this app: every
+    // pane Herdr opens runs $SHELL, and an app opened from another shell's
+    // terminal hands that one down - the wrong prompt, PATH and config.
     NSTask *task = [NSTask new];
     task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/python3"];
-    task.arguments = @[ @"-c", @"import os,sys; os.fork() and os._exit(0); os.setsid(); os.execv(sys.argv[1], sys.argv[1:])",
+    task.arguments = @[ @"-c", @"import os,sys,pwd; os.environ['SHELL'] = pwd.getpwuid(os.getuid()).pw_shell; "
+                                "os.fork() and os._exit(0); os.setsid(); os.execv(sys.argv[1], sys.argv[1:])",
                         self.herdrPath, @"server" ];
     // Into the gateway's log rather than /dev/null: a server that dies at
     // startup otherwise leaves nothing behind but a phone with no agents on it.
