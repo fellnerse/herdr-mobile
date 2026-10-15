@@ -124,7 +124,9 @@
 
 /// Off the main thread: the socket does not appear the instant the process does.
 - (void)startHerdr {
-    if (!self.herdrPath) return;
+    // Resolved again on every Turn On, so installing herdr needs no relaunch.
+    self.herdrPath = [self resolveHerdrPath];
+    if (!self.herdrPath) { [self logEvent:@"herdr not found; not starting a Herdr server"]; return; }
     if ([self checkHerdr]) { self.herdrUp = YES; [self render]; return; }
 
     // Detached from this app on purpose. The headless server holds every pane
@@ -134,14 +136,35 @@
     // setsid() first, via a python3 that immediately execs herdr: a plain child
     // stays in this app's process group, and launchd kills the whole group when
     // the LaunchAgent is booted out, which would take every open pane with it.
+    // It forks before setsid(): NSTask makes its child a process group leader,
+    // and setsid() refuses a group leader with EPERM, so the bare call died
+    // before herdr was ever exec'd.
+    //
+    // SHELL comes from the account, not from whatever launched this app: every
+    // pane Herdr opens runs $SHELL, and an app opened from another shell's
+    // terminal hands that one down - the wrong prompt, PATH and config.
     NSTask *task = [NSTask new];
     task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/python3"];
-    task.arguments = @[ @"-c", @"import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])",
+    task.arguments = @[ @"-c", @"import os,sys,pwd; os.environ['SHELL'] = pwd.getpwuid(os.getuid()).pw_shell; "
+                                "os.fork() and os._exit(0); os.setsid(); os.execv(sys.argv[1], sys.argv[1:])",
                         self.herdrPath, @"server" ];
-    task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
-    task.standardError = NSFileHandle.fileHandleWithNullDevice;
-    if (![task launchAndReturnError:nil]) return;
+    // Into the gateway's log rather than /dev/null: a server that dies at
+    // startup otherwise leaves nothing behind but a phone with no agents on it.
+    int logFD = open(self.logPath.fileSystemRepresentation, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    NSFileHandle *output = logFD >= 0
+        ? [[NSFileHandle alloc] initWithFileDescriptor:logFD closeOnDealloc:YES]
+        : NSFileHandle.fileHandleWithNullDevice;
+    task.standardInput = NSFileHandle.fileHandleWithNullDevice;
+    task.standardOutput = output;
+    task.standardError = output;
+    NSError *launchError = nil;
+    if (![task launchAndReturnError:&launchError]) {
+        [self logEvent:[NSString stringWithFormat:@"Cannot launch Herdr server: %@", launchError]];
+        return;
+    }
     self.herdr = task;
+    [self logEvent:[NSString stringWithFormat:@"Starting Herdr server pid %d using %@",
+                    task.processIdentifier, self.herdrPath]];
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
@@ -151,6 +174,7 @@
             up = [weakSelf checkHerdr];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (!up) [weakSelf logEvent:@"Herdr server did not answer within 5 seconds"];
             weakSelf.herdrUp = up;
             [weakSelf render];
         });
