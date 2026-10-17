@@ -660,6 +660,40 @@ def heartbeat_notify(title: str, body: str, url: str | None) -> None:
 heartbeat.set_notifier(heartbeat_notify)
 
 
+# A notice is the menu bar app saying it had to bring something back - Herdr,
+# the gateway, the tailnet - so the phone hears about a restart it would
+# otherwise only notice as agents missing. An hour, not a day: by then the
+# flock itself says whether it worked.
+NOTICE_PUSH_TTL = 3600
+MAX_NOTICE = 300
+
+
+def system_notify(title: str, body: str) -> None:
+    record_finished([{"name": title, "title": body, "status": "done"}],
+                    title=title, body=body, kind="system")
+    if push.load_subs():
+        threading.Thread(target=push.broadcast, kwargs={"ttl": NOTICE_PUSH_TTL},
+                         daemon=True).start()
+
+
+STARTED_AT = time.time()
+# The threads that do the gateway's work without being asked: if one of them
+# has died, the process still answers HTTP while pushes or the queue have
+# quietly stopped, and only a restart brings them back.
+WORKERS: dict = {}
+
+
+def health() -> tuple:
+    """What the menu bar's watchdog reads: alive and answering, and every
+    worker thread still running. Herdr being down is reported but is not the
+    gateway's ill health - restarting the gateway would not bring it back."""
+    threads = {name: thread.is_alive() for name, thread in WORKERS.items()}
+    herdr = "error" not in call_herdr_rpc("ping", timeout=2.0)
+    ok = all(threads.values())
+    return {"ok": ok, "uptime": round(time.time() - STARTED_AT),
+            "herdr": herdr, "threads": threads}, (200 if ok else 503)
+
+
 def filter_stopped_agents(stopped_panes: list, rows: dict) -> tuple[list, str | None, str | None]:
     """Pass stopped panes through registered interceptors.
     Returns (notify_rows, custom_title, custom_body).
@@ -1142,6 +1176,11 @@ class HerdrHandler(BaseHTTPRequestHandler):
                             "chats": flock_chats(agents), "alerts": alerts})
             return
 
+        if path == "/api/health":
+            payload, code = health()
+            self.send_json(payload, code)
+            return
+
         # API: Who stopped working most recently. A push carries no payload, so
         # the service worker asks this to name the agent in the notification.
         if path == "/api/push/last":
@@ -1404,6 +1443,17 @@ class HerdrHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(e)}, 400)
                 return
             self.send_json({"ok": True, "count": count})
+            return
+
+        # API: Something on this machine had to be restarted; tell the phone.
+        if path == "/api/push/notice":
+            title = clean_label(body.get("title"))
+            text = " ".join(str(body.get("body") or "").split())[:MAX_NOTICE]
+            if not title:
+                self.send_json({"ok": False, "error": "No title"}, 400)
+                return
+            system_notify(title, text or "Tap to open.")
+            self.send_json({"ok": True})
             return
 
         if path == "/api/push/unsubscribe":
@@ -1830,7 +1880,13 @@ class StatusWatcher(threading.Thread):
     def run(self):
         # The first sweep only seeds: a restart must not fire for agents that
         # were already finished before we started watching.
-        self.observe(self.snapshot(), tell=False)
+        try:
+            self.observe(self.snapshot(), tell=False)
+        except Exception as e:
+            # A watcher that died here would leave the gateway answering and
+            # never pushing again; /api/health would catch it, but not dying
+            # is better.
+            print(f"status watcher could not seed: {e}", file=sys.stderr)
         while True:
             time.sleep(self.INTERVAL)
             try:
@@ -2184,12 +2240,14 @@ def run():
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     server_address = (HOST, PORT)
     httpd = ThreadingHTTPServer(server_address, HerdrHandler)
-    StatusWatcher().start()
+    WORKERS["watcher"] = StatusWatcher()
+    WORKERS["watcher"].start()
     # Config is re-read every pass, so editing scheduler.json takes effect
     # without a restart.
     SCHEDULER = Scheduler(sched_config.load)
-    heartbeat.start_runner()
+    WORKERS["heartbeat"] = heartbeat.start_runner()
     SCHEDULER.start()
+    WORKERS["scheduler"] = SCHEDULER
     print(f"SheepIt gateway listening on http://{HOST}:{PORT}")
     print(f"Herdr socket target: {HERDR_SOCKET_PATH}")
     try:

@@ -33,10 +33,33 @@ make login    # install and start at login
 make unlogin  # stop starting at login
 ```
 
-`make login` installs a small LaunchAgent that runs `open -a SheepIt`
-rather than adding a Login Item: scripting System Events to add one requires
-Automation permission that a script cannot prompt for. `open` re-uses a running
-instance, so logging in never starts a second copy.
+`make login` installs a small LaunchAgent that runs the app's binary rather
+than adding a Login Item: scripting System Events to add one requires
+Automation permission that a script cannot prompt for. The agent keeps it
+alive - a crash, `kill -9` or `killall` is undone in about ten seconds - while
+**Quit** exits cleanly and is left alone. A second copy opened from Finder
+sees the first and exits. `make install` boots the agent out while it swaps
+the app, so it does not restart the old binary mid-copy.
+
+## The watchdog
+
+While the switch is on, every 20 seconds the app checks that:
+
+- **Herdr** answers on its socket, and starts it if not (at most once a minute);
+- **the gateway** answers `GET /api/health` with 200. Three failures in a row
+  (a hang, or a 503 for a worker thread that died inside it) and it is
+  SIGKILLed, which the retry below restarts;
+- **`caffeinate`** is still running;
+- once a minute, **Tailscale** is up and `tailscale serve status` still has a
+  route to the gateway's port. If not, it runs `tailscale up`, or
+  `tailscale serve --bg --https=8443 http://127.0.0.1:3009`. The serve port is
+  the `tailscaleServePort` default; `off` leaves serve to you.
+
+Each recovery, and a start after a reboot or a crash of the app itself, is
+pushed to the phone through `POST /api/push/notice` once the gateway answers.
+The log is rotated past 10 MiB while running, by copy-and-truncate, since the
+gateway and Herdr keep it open. [docs/hardening.md](../docs/hardening.md)
+has the rest: what has to be set on the machine by hand.
 
 No Xcode project and no dependencies — a single `clang` invocation against
 AppKit. It is written in Objective-C rather than Swift deliberately: Command

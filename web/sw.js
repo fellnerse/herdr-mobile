@@ -117,6 +117,8 @@ self.addEventListener("push", (event) => {
         // A chat names the page it lives on; a pane is found from the flock.
         if (said && last.url) url = last.url;
         if (said && last.kind === "heartbeat") tag = "sheepit-heartbeat";
+        // A restart on the Mac must not replace an agent's question either.
+        if (said && last.kind === "system") tag = "sheepit-system";
         if (!said && unread.length) {
           const a = unread[unread.length - 1];
           title = `${a.name} ${a.kind === "error" ? "failed" : "found something"}`;

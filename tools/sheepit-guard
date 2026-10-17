@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""A Claude Code PreToolUse hook that keeps agents off the machinery they run in.
+
+Every agent the phone talks to runs as the same user as Herdr, the gateway and
+Tailscale, so `herdr server stop`, `pkill -f python` or `tailscale down` - typed
+by an agent tidying up after itself - takes the whole herd off the phone, and
+nobody is at the desk to bring it back. This refuses those commands before they
+run and says why, so the agent can find another way.
+
+Wire it into ~/.claude/settings.json and ~/.codex/hooks.json, which take the
+same shape (docs/hardening.md has the snippet):
+
+    "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+        {"type": "command", "command": "/path/to/tools/sheepit-guard"}]}]}
+
+It reads the hook's JSON on stdin and exits 2 to refuse, 0 to allow. A guard
+that cannot read its input allows: it is a seatbelt against accidents, not a
+sandbox, and a broken guard must not stop every agent on the machine.
+
+    tools/sheepit-guard check 'herdr server stop'    # what it would say
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+
+# What the phone needs alive. A process whose command line names one of these
+# is not killed by pid either.
+PROTECTED = re.compile(
+    r"herdr|gateway/server\.py|SheepIt|caffeinate|tailscale|Tailscale|headroom",
+)
+
+# A segment is one simple command: the rules are matched against each, so
+# `cd x && herdr server stop` is caught and `echo kill; ls herdr` is not.
+SEGMENT = re.compile(r"\s*(?:&&|\|\||[;|&\n])\s*")
+
+# Each rule is anchored to the start of a command, so that a commit message
+# saying "shutdown" or a grep for "herdr server stop" is not refused.
+BIN = r"^(?:\S*/)?"
+RULES = [
+    (re.compile(BIN + r"herdr\s+(?:server\s+)?(?:stop|kill|shutdown|restart)\b"),
+     "stops the Herdr server, and every pane and agent in it with it"),
+    (re.compile(BIN + r"(?:pkill|killall)\b.*\b(?:herdr|SheepIt|server\.py|caffeinate|headroom|"
+                r"[Tt]ailscaled?|[Pp]ython[0-9.]*)\b"),
+     "kills by name, which reaches Herdr, the gateway, Tailscale or the API proxy"),
+    (re.compile(BIN + r"tailscale\b.*\b(?:down|logout|funnel|switch)\b", re.I),
+     "takes the Mac off the tailnet the phone reaches it over"),
+    (re.compile(BIN + r"tailscale\b.*\bserve\b.*\b(?:reset|off)\b", re.I),
+     "removes the tailscale serve route the phone uses"),
+    (re.compile(BIN + r"launchctl\b.*\b(?:bootout|unload|remove|kill|disable)\b.*sheepit", re.I),
+     "unloads the SheepIt menu bar agent"),
+    (re.compile(BIN + r"(?:shutdown|reboot|halt)\b"),
+     "restarts the Mac, ending every agent session on it"),
+    (re.compile(BIN + r"pmset\b.*\b(?:sleepnow|sleep\s+[1-9]|disablesleep\s+0)\b"),
+     "lets the Mac sleep, after which no notification reaches the phone"),
+    (re.compile(BIN + r"rm\b.*\.config/(?:herdr|sheepit)\b"),
+     "deletes Herdr's or SheepIt's state"),
+]
+
+# What runs the command after it rather than being it.
+PREFIX = re.compile(r"^(?:sudo(?:\s+-\S+)*|env|nohup|exec|command|time|\w+=\S*|"
+                    r"(?:\S*/)?(?:ba|z|da|fi)?sh(?:\s+-\w+)*?\s+-\w*c\w*)\s+")
+
+
+def command_of(pid: str) -> str:
+    try:
+        out = subprocess.run(["/bin/ps", "-o", "command=", "-p", pid],
+                             capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip()
+
+
+def kills_protected_pid(segment: str) -> str | None:
+    """`kill 4242` names no process, so look the pid up: it is fine unless it
+    is one of the processes the phone depends on."""
+    words = segment.split()
+    if not words or words[0] not in ("kill", "/bin/kill"):
+        return None
+    for word in words[1:]:
+        if word.lstrip("-").isdigit() and not word.startswith("-"):
+            command = command_of(word)
+            if command and PROTECTED.search(command):
+                return f"pid {word} is `{command[:80]}`"
+    return None
+
+
+def verdict(command: str) -> str | None:
+    """Why this command must not run, or None when it may."""
+    command = command or ""
+    # A port is found and killed in one breath - `lsof -ti:3009 | xargs
+    # kill`, `kill $(lsof -t -i:3009)` - so that is judged on the whole line:
+    # the gateway's, and the API proxy's every Claude Code agent talks through.
+    if re.search(r"\b(?:3009|8787)\b", command) and re.search(r"\bkill\b", command):
+        return f"`{command[:120]}` kills whatever holds the gateway's or the API proxy's port"
+    for segment in SEGMENT.split(command):
+        segment = segment.strip().lstrip("'\"(`$ ")
+        while PREFIX.match(segment):
+            segment = PREFIX.sub("", segment, count=1).lstrip("'\"(`$ ")
+        if not segment:
+            continue
+        for rule, why in RULES:
+            if rule.search(segment):
+                return f"`{segment[:120]}` {why}"
+        hit = kills_protected_pid(segment)
+        if hit:
+            return f"{hit}, which the phone depends on"
+    return None
+
+
+REFUSAL = (
+    "Blocked by sheepit-guard: {why}. This Mac runs Herdr, the SheepIt gateway "
+    "and Tailscale for a phone nobody may be sitting next to, so these stay up. "
+    "If you meant to stop your own process, kill it by pid; if this really has "
+    "to happen, ask the user to do it themselves."
+)
+
+
+def main(argv: list) -> int:
+    if len(argv) > 2 and argv[1] == "check":
+        why = verdict(argv[2])
+        print(REFUSAL.format(why=why) if why else "allowed")
+        return 2 if why else 0
+    try:
+        event = json.load(sys.stdin)
+    except (ValueError, OSError):
+        return 0
+    if not isinstance(event, dict):
+        return 0
+    # Claude Code and Codex both hand over the shell command as
+    # tool_input.command; Codex may hand it over as argv.
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if isinstance(command, list):
+        command = " ".join(str(word) for word in command)
+    if not isinstance(command, str):
+        return 0
+    why = verdict(command)
+    if why:
+        print(REFUSAL.format(why=why), file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
