@@ -75,6 +75,10 @@ def call_herdr_rpc(method: str, params: dict = None, timeout: float = 5.0) -> di
         s.close()
 
 
+# How long agent_start waits for a new pane's shell to reach its prompt.
+SHELL_WAIT_SEC = 20.0
+
+
 class HerdrError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(f"{code}: {message}")
@@ -104,11 +108,20 @@ class Herdr:
         params = {"name": name, "kind": kind, "pane_id": pane_id, "timeout_ms": 120_000}
         if args:
             params["args"] = args
-        try:
-            self.call("agent.start", params, timeout=140.0)
-        except HerdrError as e:
-            if e.code not in ("agent_not_ready", "agent_blocked"):
-                raise
+        # A pane fresh from tab.create is not at its prompt until the shell has
+        # read its config, and Herdr refuses one that is not (`agent_pane_busy`).
+        deadline = time.monotonic() + SHELL_WAIT_SEC
+        while True:
+            try:
+                self.call("agent.start", params, timeout=140.0)
+                break
+            except HerdrError as e:
+                if e.code == "agent_pane_busy" and time.monotonic() < deadline:
+                    time.sleep(0.5)
+                    continue
+                if e.code not in ("agent_not_ready", "agent_blocked"):
+                    raise
+                break
         return self.await_agent(pane_id)
 
     def agent_prompt(self, target: str, text: str) -> dict:

@@ -2265,6 +2265,35 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-start-") as hb_dir:
          heartbeat.Herdr.agent_start, heartbeat.workspace_cwd) = orig
         heartbeat.pop_heartbeat("wE:pW")
 
+# A pane fresh from tab.create refuses agent.start until its shell is at the
+# prompt: that is waited out, not reported as a failed run.
+import herdr_rpc
+
+orig = (herdr_rpc.Herdr.call, herdr_rpc.Herdr.await_agent, herdr_rpc.SHELL_WAIT_SEC, herdr_rpc.time.sleep)
+try:
+    tries = []
+
+    def busy_twice(self, method, params=None, timeout=15.0):
+        tries.append(method)
+        if len(tries) <= 2:
+            raise herdr_rpc.HerdrError("agent_pane_busy", "not an available shell")
+        return {}
+
+    herdr_rpc.Herdr.call = busy_twice
+    herdr_rpc.Herdr.await_agent = lambda self, pane_id: "idle"
+    herdr_rpc.time.sleep = lambda s: None
+    check("a shell still starting is waited for", herdr_rpc.Herdr().agent_start("hb", "wE:p1G"), "idle")
+    check("by asking again", len(tries), 3)
+    herdr_rpc.SHELL_WAIT_SEC = 0
+    tries.clear()
+    try:
+        herdr_rpc.Herdr().agent_start("hb", "wE:p1G")
+        check("a pane that stays busy still fails", False, True)
+    except herdr_rpc.HerdrError as e:
+        check("a pane that stays busy still fails", e.code, "agent_pane_busy")
+finally:
+    (herdr_rpc.Herdr.call, herdr_rpc.Herdr.await_agent, herdr_rpc.SHELL_WAIT_SEC, herdr_rpc.time.sleep) = orig
+
 # A subscription the push service has dropped cannot quietly come back: the
 # phone is told to make a new one instead of believing it is still subscribed.
 import push
