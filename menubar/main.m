@@ -11,6 +11,11 @@
 //
 // One switch drives all of it, and the bar icon shows the state at a glance.
 //
+// While the switch is on, a watchdog keeps all of it up for as long as the Mac
+// is left alone: a Herdr, a tailnet or a `tailscale serve` route that went
+// away is brought back, a gateway that stops answering is killed and
+// restarted, and the phone gets a push saying what had to be done.
+//
 // Written in Objective-C rather than Swift on purpose: this machine's Command
 // Line Tools ship a duplicate SwiftBridging modulemap that breaks every Swift
 // AppKit build, and clang is unaffected.
@@ -39,6 +44,19 @@
 @property(assign) NSUInteger retryGeneration;
 @property(assign) NSTimeInterval retryDelay;
 @property(copy) NSString *logPath;
+@property(strong) NSTimer *watchdog;
+@property(assign) BOOL watchdogBusy;
+@property(assign) NSUInteger watchdogTicks;
+@property(assign) NSUInteger healthFailures;
+@property(assign) BOOL killedForHang;
+@property(assign) BOOL herdrRecovering;
+@property(assign) BOOL tailscaleRecovering;
+@property(strong) NSDate *serverStartedAt;
+@property(strong) NSDate *herdrStartedAt;
+@property(strong) NSMutableArray<NSDictionary *> *notices;
+@property(strong) NSURLSession *http;
+@property(copy) NSString *servePort;
+@property(strong) dispatch_source_t sigterm;
 @end
 
 @implementation Controller
@@ -128,6 +146,7 @@
     self.herdrPath = [self resolveHerdrPath];
     if (!self.herdrPath) { [self logEvent:@"herdr not found; not starting a Herdr server"]; return; }
     if ([self checkHerdr]) { self.herdrUp = YES; [self render]; return; }
+    self.herdrStartedAt = NSDate.date;
 
     // Detached from this app on purpose. The headless server holds every pane
     // and agent the user has open, so it outlives the switch being turned off
@@ -197,17 +216,29 @@
     return nil;
 }
 
-/// `tailscale status` exits non-zero when the tailnet is not connected.
+/// `tailscale status` exits non-zero when the tailnet is not connected. With a
+/// timeout, because a wedged tailscaled would otherwise hang the watchdog.
 - (BOOL)checkTailscale {
     if (!self.tailscalePath) return NO;
-    NSTask *task = [NSTask new];
-    task.executableURL = [NSURL fileURLWithPath:self.tailscalePath];
-    task.arguments = @[ @"status" ];
-    task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
-    task.standardError = NSFileHandle.fileHandleWithNullDevice;
-    if (![task launchAndReturnError:nil]) return NO;
-    [task waitUntilExit];
-    return task.terminationStatus == 0;
+    return [self runTool:self.tailscalePath arguments:@[ @"status" ] timeout:10 output:nil] == 0;
+}
+
+/// `tailscale serve` survives a reboot, but nothing else checks that the route
+/// the phone uses is still there - a `serve reset` from anyone removes it.
+/// `defaults write dev.sheepit.menubar tailscaleServePort off` leaves serve
+/// to you.
+- (BOOL)checkServe {
+    NSString *out = nil;
+    if ([self runTool:self.tailscalePath arguments:@[ @"serve", @"status" ] timeout:10 output:&out] != 0)
+        return YES;   // cannot tell; leave it alone rather than fight it
+    return [out containsString:[NSString stringWithFormat:@"127.0.0.1:%@", self.port]] ||
+           [out containsString:[NSString stringWithFormat:@"localhost:%@", self.port]];
+}
+
+- (BOOL)applyServe {
+    NSArray *args = @[ @"serve", @"--bg", [NSString stringWithFormat:@"--https=%@", self.servePort],
+                       [NSString stringWithFormat:@"http://127.0.0.1:%@", self.port] ];
+    return [self runTool:self.tailscalePath arguments:args timeout:20 output:nil] == 0;
 }
 
 /// Off the main thread: `tailscale up` can block while it reconnects.
@@ -266,7 +297,57 @@
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
+    // launchd keeps one copy alive; one opened from Finder on top of it would
+    // fight it for the port. exit() rather than -terminate:, which would run
+    // -stop and kill the gateway the other copy owns.
+    for (NSRunningApplication *app in [NSRunningApplication
+             runningApplicationsWithBundleIdentifier:NSBundle.mainBundle.bundleIdentifier]) {
+        if (app.processIdentifier != getpid()) {
+            NSLog(@"SheepIt is already running as pid %d", app.processIdentifier);
+            exit(0);
+        }
+    }
     [self prepareLog];
+    self.notices = [NSMutableArray new];
+    NSString *serve = [NSUserDefaults.standardUserDefaults stringForKey:@"tailscaleServePort"];
+    self.servePort = serve.length ? serve : @"8443";
+    NSURLSessionConfiguration *config = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    config.timeoutIntervalForRequest = 5;
+    config.timeoutIntervalForResource = 8;
+    self.http = [NSURLSession sessionWithConfiguration:config];
+
+    // A reboot - an update installing itself, a power cut - ends every agent
+    // that was running, so the phone should hear that the Mac is back. Short
+    // of one, the flag is set while running and cleared on any orderly exit:
+    // finding it still set means the last copy crashed or was SIGKILLed.
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if (NSProcessInfo.processInfo.systemUptime < 15 * 60) {
+        [self logEvent:@"Started after the Mac restarted"];
+        [self notice:@"Mac restarted"
+                body:@"The Mac rebooted and SheepIt is back up. Agents that were running are gone."];
+    } else if ([defaults boolForKey:@"running"]) {
+        [self logEvent:@"Started after an unclean stop"];
+        [self notice:@"SheepIt restarted"
+                body:@"The menu bar app had crashed or been killed and was started again."];
+    }
+    [defaults setBool:YES forKey:@"running"];
+    [defaults synchronize];
+
+    // `killall SheepIt` is SIGTERM, which skips -applicationWillTerminate:.
+    // Stop the gateway like a quit would, but exit non-zero so the login agent
+    // starts the app again: a SIGTERM is somebody killing it, not a Quit.
+    signal(SIGTERM, SIG_IGN);
+    self.sigterm = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0,
+                                          dispatch_get_main_queue());
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(self.sigterm, ^{
+        [weakSelf logEvent:@"SIGTERM; stopping the gateway"];
+        [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"running"];
+        [NSUserDefaults.standardUserDefaults synchronize];
+        [weakSelf stop];
+        exit(1);
+    });
+    dispatch_resume(self.sigterm);
     self.wantGateway = YES;
     self.retryDelay = 5;
     NSString *envPort = NSProcessInfo.processInfo.environment[@"SHEEPIT_PORT"];
@@ -282,9 +363,16 @@
     // -start reclaims an orphaned gateway of ours from a previous run, and says
     // so when the port belongs to somebody else - a launchd copy, say.
     [self start];
+
+    self.watchdog = [NSTimer scheduledTimerWithTimeInterval:20 target:self
+                                                   selector:@selector(watchdogTick:)
+                                                   userInfo:nil repeats:YES];
+    self.watchdog.tolerance = 5;
 }
 
 - (void)applicationWillTerminate:(NSNotification *)note {
+    [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"running"];
+    [NSUserDefaults.standardUserDefaults synchronize];
     [self stop];
 }
 
@@ -354,6 +442,15 @@
             if (!strongSelf || strongSelf.server != t) return;
             [strongSelf logEvent:[NSString stringWithFormat:@"Gateway exited: status %d, reason %ld",
                                   t.terminationStatus, (long)t.terminationReason]];
+            // Said once it is back, since the push goes out through it.
+            if (strongSelf.wantGateway) {
+                [strongSelf notice:@"Gateway restarted"
+                              body:strongSelf.killedForHang
+                                  ? @"The SheepIt gateway had stopped answering, so it was killed and started again."
+                                  : [NSString stringWithFormat:@"The SheepIt gateway exited (status %d) and was started again.",
+                                     t.terminationStatus]];
+            }
+            strongSelf.killedForHang = NO;
             strongSelf.server = nil;
             if (strongSelf.caffeinate.isRunning) [strongSelf.caffeinate terminate];
             strongSelf.caffeinate = nil;
@@ -368,6 +465,8 @@
         return;
     }
     self.server = py;
+    self.serverStartedAt = NSDate.date;
+    self.healthFailures = 0;
     [self logEvent:[NSString stringWithFormat:@"Started gateway pid %d using %@", py.processIdentifier,
                     self.serverPath]];
     NSUInteger generation = self.retryGeneration;
@@ -377,20 +476,25 @@
             self.retryDelay = 5;
     });
 
-    // -s prevents system sleep but lets the display sleep, so the screen still
-    // dims and locks normally. -w ties it to our own pid, so even a crash or
-    // SIGKILL releases the assertion instead of holding the Mac awake forever.
-    NSTask *caf = [NSTask new];
-    caf.executableURL = [NSURL fileURLWithPath:@"/usr/bin/caffeinate"];
-    caf.arguments = @[ @"-s", @"-w",
-                       [NSString stringWithFormat:@"%d", NSProcessInfo.processInfo.processIdentifier] ];
-    [caf launchAndReturnError:nil];
-    self.caffeinate = caf;
+    [self startCaffeinate];
 
     // The phone reaches the gateway over the tailnet, so bring it up too.
     [self startTailscale];
 
     [self render];
+}
+
+/// -s prevents system sleep but lets the display sleep, so the screen still
+/// dims and locks normally; -s only holds on AC power, so -i keeps idle sleep
+/// away on battery too. -w ties it to our own pid, so even a crash or SIGKILL
+/// releases the assertion instead of holding the Mac awake forever.
+- (void)startCaffeinate {
+    NSTask *caf = [NSTask new];
+    caf.executableURL = [NSURL fileURLWithPath:@"/usr/bin/caffeinate"];
+    caf.arguments = @[ @"-i", @"-s", @"-w",
+                       [NSString stringWithFormat:@"%d", NSProcessInfo.processInfo.processIdentifier] ];
+    [caf launchAndReturnError:nil];
+    self.caffeinate = caf;
 }
 
 /// A terminate() only asks, and the port stays bound until the kernel has
@@ -434,6 +538,173 @@
 - (void)toggle:(id)sender {
     if (self.wantGateway) [self stop];
     else { self.wantGateway = YES; [self start]; }
+}
+
+#pragma mark - Watchdog
+
+/// Every 20 seconds while the switch is on. The checks that can block - a
+/// socket, an HTTP request, the tailscale CLI - run off the main thread, and
+/// what they find is acted on back on it, where every process is owned.
+- (void)watchdogTick:(NSTimer *)timer {
+    [self rotateLogIfLarge];
+    if (!self.wantGateway || self.watchdogBusy) return;
+    self.watchdogBusy = YES;
+    NSUInteger tick = ++self.watchdogTicks;
+    BOOL serverRunning = self.isRunning;
+    // A gateway still starting is not a hung one.
+    BOOL checkHealth = serverRunning && -[self.serverStartedAt timeIntervalSinceNow] > 20;
+    // The CLI costs a process or two: once a minute is plenty.
+    BOOL checkTailnet = self.tailscalePath && tick % 3 == 1;
+    BOOL manageServe = ![self.servePort isEqualToString:@"off"];
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        BOOL herdr = [strongSelf checkHerdr];
+        NSInteger health = checkHealth ? [strongSelf gatewayHealth] : -1;
+        BOOL tailnet = YES, serve = YES, served = NO;
+        if (checkTailnet) {
+            tailnet = [strongSelf checkTailscale];
+            if (tailnet && manageServe) {
+                serve = [strongSelf checkServe];
+                if (!serve) served = [strongSelf applyServe];
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf watchdogSawHerdr:herdr health:health
+                               tailnet:tailnet serve:serve served:served checked:checkTailnet];
+            weakSelf.watchdogBusy = NO;
+        });
+    });
+}
+
+- (void)watchdogSawHerdr:(BOOL)herdr health:(NSInteger)health tailnet:(BOOL)tailnet
+                   serve:(BOOL)serve served:(BOOL)served checked:(BOOL)checked {
+    if (!self.wantGateway) return;
+    BOOL changed = NO;
+
+    // Herdr: nothing else brings it back, and without it the phone is empty.
+    if (herdr != self.herdrUp) { self.herdrUp = herdr; changed = YES; }
+    if (!herdr && self.herdrPath &&
+        (!self.herdrStartedAt || -[self.herdrStartedAt timeIntervalSinceNow] > 60)) {
+        [self logEvent:@"Watchdog: Herdr server not answering; starting it"];
+        self.herdrRecovering = YES;
+        [self startHerdr];
+    } else if (herdr && self.herdrRecovering) {
+        self.herdrRecovering = NO;
+        [self logEvent:@"Watchdog: Herdr server is back"];
+        [self notice:@"Herdr restarted"
+                body:@"The Herdr server had stopped and was started again. Agents that were running in it are gone."];
+    }
+
+    // The gateway: an exit is caught by its termination handler; a process
+    // that is alive but no longer answering is caught here, and killed so the
+    // handler restarts it. 503 is a worker thread that died inside it.
+    if (health == 200) {
+        self.healthFailures = 0;
+        [self flushNotices];
+    } else if (health >= 0 && self.isRunning) {
+        self.healthFailures++;
+        [self logEvent:[NSString stringWithFormat:@"Watchdog: gateway health check failed (%ld), %lu in a row",
+                        (long)health, (unsigned long)self.healthFailures]];
+        if (self.healthFailures >= 3) {
+            [self logEvent:@"Watchdog: killing the unresponsive gateway"];
+            self.healthFailures = 0;
+            self.killedForHang = YES;
+            kill(self.server.processIdentifier, SIGKILL);
+        }
+    }
+
+    // caffeinate can be killed like anything else, and then the Mac sleeps.
+    if (self.isRunning && !self.caffeinate.isRunning) {
+        [self logEvent:@"Watchdog: caffeinate had exited; starting it again"];
+        [self startCaffeinate];
+    }
+
+    if (checked) {
+        if (tailnet != self.tailscaleUp) { self.tailscaleUp = tailnet; changed = YES; }
+        if (!tailnet) {
+            [self logEvent:@"Watchdog: Tailscale disconnected; bringing it up"];
+            self.tailscaleRecovering = YES;
+            [self startTailscale];
+        } else if (self.tailscaleRecovering) {
+            self.tailscaleRecovering = NO;
+            [self logEvent:@"Watchdog: Tailscale is connected again"];
+            [self notice:@"Tailscale reconnected"
+                    body:@"The Mac had dropped off the tailnet and was brought back."];
+        }
+        if (!serve) {
+            [self logEvent:served ? @"Watchdog: tailscale serve route was missing; restored it"
+                                  : @"Watchdog: tailscale serve route is missing and could not be restored"];
+            if (served)
+                [self notice:@"Tailscale serve restored"
+                        body:[NSString stringWithFormat:@"The route on :%@ to the gateway had gone and was set up again.",
+                              self.servePort]];
+        }
+    }
+    if (changed) [self render];
+}
+
+/// HTTP status of /api/health, or 0 when it did not answer at all.
+- (NSInteger)gatewayHealth {
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%@/api/health", self.port]];
+    __block NSInteger status = 0;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    [[self.http dataTaskWithURL:url completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        if (!e && [r isKindOfClass:NSHTTPURLResponse.class]) status = ((NSHTTPURLResponse *)r).statusCode;
+        dispatch_semaphore_signal(done);
+    }] resume];
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+    return status;
+}
+
+/// Queued, because the push goes out through the gateway, which may be the
+/// thing being restarted; sent on the next healthy check.
+- (void)notice:(NSString *)title body:(NSString *)body {
+    if (self.notices.count >= 10) [self.notices removeObjectAtIndex:0];
+    [self.notices addObject:@{ @"title": title, @"body": body }];
+}
+
+- (void)flushNotices {
+    if (!self.notices.count) return;
+    NSArray *pending = [self.notices copy];
+    [self.notices removeAllObjects];
+    // One push, not a burst: a reboot brings several of these back at once.
+    NSDictionary *notice = pending.lastObject;
+    NSString *body = notice[@"body"];
+    if (pending.count > 1)
+        body = [body stringByAppendingFormat:@" (%lu other restarts too.)", (unsigned long)pending.count - 1];
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%@/api/push/notice", self.port]];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{ @"title": notice[@"title"], @"body": body }
+                                                   options:0 error:nil];
+    __weak typeof(self) weakSelf = self;
+    [[self.http dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        NSInteger status = [r isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)r).statusCode : 0;
+        if (status == 200) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf logEvent:[NSString stringWithFormat:@"Could not send restart notice (%ld)", (long)status]];
+            [weakSelf.notices insertObjects:pending atIndexes:
+                [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, pending.count)]];
+        });
+    }] resume];
+}
+
+/// The gateway and Herdr write into this log for as long as they run, so the
+/// rotation at launch is not enough for a month. Copy then truncate: both hold
+/// it open with O_APPEND, so their next write lands at the start of the
+/// emptied file rather than in a renamed one.
+- (void)rotateLogIfLarge {
+    NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:self.logPath error:nil];
+    if ([attrs fileSize] < 10 * 1024 * 1024) return;
+    NSString *old = [self.logPath stringByAppendingString:@".old"];
+    [NSFileManager.defaultManager removeItemAtPath:old error:nil];
+    [NSFileManager.defaultManager copyItemAtPath:self.logPath toPath:old error:nil];
+    truncate(self.logPath.fileSystemRepresentation, 0);
+    [self logEvent:@"Log rotated"];
 }
 
 #pragma mark - Menu
@@ -582,6 +853,36 @@
 }
 
 #pragma mark - Helpers
+
+/// Exit status, or -1 when it could not start or had to be killed at the
+/// deadline. Output is read on the side so a full pipe cannot stall it.
+- (int)runTool:(NSString *)tool arguments:(NSArray<NSString *> *)args
+       timeout:(NSTimeInterval)seconds output:(NSString **)output {
+    NSTask *task = [NSTask new];
+    task.executableURL = [NSURL fileURLWithPath:tool];
+    task.arguments = args;
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = NSFileHandle.fileHandleWithNullDevice;
+    dispatch_semaphore_t exited = dispatch_semaphore_create(0);
+    task.terminationHandler = ^(NSTask *t) { dispatch_semaphore_signal(exited); };
+    if (![task launchAndReturnError:nil]) return -1;
+    __block NSData *data = nil;
+    dispatch_semaphore_t read = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        data = [pipe.fileHandleForReading readDataToEndOfFile];
+        dispatch_semaphore_signal(read);
+    });
+    if (dispatch_semaphore_wait(exited, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)))) {
+        kill(task.processIdentifier, SIGKILL);
+        dispatch_semaphore_wait(exited, DISPATCH_TIME_FOREVER);
+        dispatch_semaphore_wait(read, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC));
+        return -1;
+    }
+    dispatch_semaphore_wait(read, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+    if (output) *output = [[NSString alloc] initWithData:data ?: [NSData data] encoding:NSUTF8StringEncoding] ?: @"";
+    return task.terminationStatus;
+}
 
 - (NSString *)runCapturing:(NSString *)tool arguments:(NSArray<NSString *> *)args {
     NSTask *task = [NSTask new];

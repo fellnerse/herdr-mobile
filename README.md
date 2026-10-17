@@ -355,6 +355,9 @@ plain view already shows it, and greys the switch out while it is on.
   standard-library push implementation can and cannot do.
 - **[docs/design.md](docs/design.md)** — the sheep, the postures, the bleat,
   the icons, and the iOS limits that shaped them.
+- **[docs/hardening.md](docs/hardening.md)** — leaving the Mac unattended for
+  weeks: what restarts itself, the guard that keeps agents off Herdr and the
+  gateway, and the Tailscale, power and update settings to change by hand.
 - **[menubar/README.md](menubar/README.md)** — the macOS app.
 
 ## Naming

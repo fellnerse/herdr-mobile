@@ -12,7 +12,8 @@ carries the detail (`gateway.md` — running and routes, `push.md` — iOS
 notifications, `design.md` — the sheep, the parsing, the console,
 `scheduler.md` — the prompt queue and the usage windows it waits for,
 `views.md` — the console, the transcript and the chat, and the plan folding
-them into one).
+them into one, `hardening.md` — unattended for a month: the watchdog, the
+agent guard, and the machine settings no code can change).
 
 ## Hard constraints
 
@@ -47,6 +48,7 @@ python3 tools/test-gateway.py                   # bincode, framing, git, notific
 
 tools/sheepit-queue list | add | rm | quota     # the prompt queue from a terminal
 tools/sheepit-queue wall --pane wM:p1           # what the wall would do, without doing it
+tools/sheepit-guard check 'herdr server stop'   # the agent guard (a PreToolUse hook)
 
 make -C menubar all                             # build SheepIt.app (clang, no Xcode)
 make -C menubar run | install | login | unlogin

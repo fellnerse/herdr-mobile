@@ -2960,6 +2960,92 @@ finally:
     chat.summaries = orig_summaries
 
 # ---------------------------------------------------------------------------
+# Health: what the menu bar's watchdog reads to decide the gateway is hung.
+# A worker thread that died leaves a process that still answers HTTP while
+# pushes or the queue have stopped, and only a 503 gets that restarted.
+
+orig_rpc, orig_workers = server.call_herdr_rpc, dict(server.WORKERS)
+try:
+    server.call_herdr_rpc = lambda method, params=None, timeout=5.0: {"result": {}}
+    alive = SimpleNamespace(is_alive=lambda: True)
+    dead = SimpleNamespace(is_alive=lambda: False)
+    server.WORKERS.clear()
+    server.WORKERS.update(watcher=alive, scheduler=alive)
+    payload, code = server.health()
+    check("every worker alive is healthy", (code, payload["ok"], payload["herdr"]), (200, True, True))
+    server.WORKERS["scheduler"] = dead
+    payload, code = server.health()
+    check("a dead worker is a 503 the watchdog restarts on", (code, payload["threads"]["scheduler"]),
+          (503, False))
+    server.WORKERS["scheduler"] = alive
+    server.call_herdr_rpc = lambda method, params=None, timeout=5.0: {"error": {"code": "x"}}
+    payload, code = server.health()
+    # Restarting the gateway would not bring Herdr back, so it is not a 503.
+    check("Herdr down is reported, not held against the gateway", (code, payload["herdr"]), (200, False))
+finally:
+    server.call_herdr_rpc = orig_rpc
+    server.WORKERS.clear()
+    server.WORKERS.update(orig_workers)
+
+# A restart notice is parked like any other push, so the service worker names
+# it rather than falling back to "Agent finished".
+orig_subs = server.push.load_subs
+try:
+    server.push.load_subs = lambda: []
+    server.system_notify("Herdr restarted", "It had stopped.")
+    last = server.last_finished()
+    check("a notice is parked with its own kind",
+          (last.get("title"), last.get("body"), last.get("kind")),
+          ("Herdr restarted", "It had stopped.", "system"))
+    check("and with an agent row, which is what the service worker needs to describe it",
+          len(last["agents"]), 1)
+finally:
+    server.push.load_subs = orig_subs
+
+# ---------------------------------------------------------------------------
+# The guard: an agent must not be able to take the herd off the phone, and
+# must still be able to talk about doing so.
+
+from importlib.machinery import SourceFileLoader  # noqa: E402
+
+guard = SourceFileLoader(
+    "sheepit_guard", str(Path(__file__).resolve().parent / "sheepit-guard")).load_module()
+for refused in [
+    "herdr server stop",
+    "cd /repo && herdr server stop",
+    "FOO=1 sudo herdr server stop",
+    "sh -lc \"herdr server stop\"",
+    "bash -c 'killall herdr'",
+    "pkill -f python",
+    "killall SheepIt",
+    "lsof -ti:3009 | xargs kill -9",
+    "lsof -ti:8787 | xargs kill",
+    "pkill -f headroom",
+    "kill $(lsof -t -i:3009)",
+    "tailscale down",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale serve reset",
+    "tailscale serve --https=8443 off",
+    "launchctl bootout gui/501/com.sheepit.menubar",
+    "sudo shutdown -r now",
+    "pmset sleepnow",
+    "rm -rf ~/.config/herdr",
+]:
+    check(f"guard refuses {refused!r}", bool(guard.verdict(refused)), True)
+for allowed in [
+    "herdr pane list",
+    "grep -rn 'herdr server stop' docs",
+    "git commit -m 'fix: graceful shutdown'",
+    "lsof -nP -iTCP:3009 -sTCP:LISTEN",
+    "tailscale status",
+    "tailscale serve status",
+    "pkill -f vite",
+    "kill 999999",
+    "npm test",
+    "",
+]:
+    check(f"guard allows {allowed!r}", guard.verdict(allowed), None)
+
+# ---------------------------------------------------------------------------
 
 if failures:
     print("\n".join(failures))

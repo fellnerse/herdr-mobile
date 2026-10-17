@@ -32,7 +32,12 @@ run: $(BUNDLE)
 # Copy to /Applications so it can be added to Login Items. The running copy is
 # quit first: the menu bar icon lives in the binary, so an old instance left
 # running keeps drawing the old one however many times the app is replaced.
+#
+# The login agent is booted out first: it restarts the app when it is killed,
+# and would otherwise start the old binary again in the middle of the copy. It
+# is put back afterwards if it was installed.
 install: $(BUNDLE)
+	-launchctl bootout gui/$$(id -u)/$(AGENT) 2>/dev/null
 	-killall $(APP) $(OLDAPP) 2>/dev/null
 	-launchctl bootout gui/$$(id -u)/$(OLDAGENT) 2>/dev/null
 	rm -rf /Applications/$(APP).app /Applications/$(OLDAPP).app
@@ -40,15 +45,19 @@ install: $(BUNDLE)
 	cp -R $(BUNDLE) /Applications/
 	@touch /Applications/$(APP).app
 	@echo "installed to /Applications/$(APP).app"
+	@if [ -f ~/Library/LaunchAgents/$(AGENT).plist ]; then \
+	    launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(AGENT).plist && \
+	    echo "restarted by its login agent"; fi
 	@echo "(if Finder still shows the old icon: killall Finder)"
 
 # Start at login. A LaunchAgent rather than a Login Item because scripting
 # System Events needs Automation permission that cannot be prompted for here.
 login: install
-	cp ../deploy/$(AGENT).plist ~/Library/LaunchAgents/
 	-launchctl bootout gui/$$(id -u)/$(AGENT) 2>/dev/null
+	-killall $(APP) 2>/dev/null
+	cp ../deploy/$(AGENT).plist ~/Library/LaunchAgents/
 	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/$(AGENT).plist
-	@echo "will start at login"
+	@echo "will start at login, and again whenever it is killed"
 
 unlogin:
 	-launchctl bootout gui/$$(id -u)/$(AGENT)

@@ -5,17 +5,34 @@
     <key>Label</key>
     <string>com.sheepit.menubar</string>
 
-    <!-- Launches the menu bar app at login. Scripting System Events to add a
-         Login Item needs Automation permission this cannot prompt for, and
-         `open` re-uses the running instance rather than starting a second. -->
+    <!-- The binary itself, not `open -a`: `open` exits at once, which left
+         launchd nothing to watch, and the app that keeps Herdr, the gateway
+         and the tailnet up had nothing keeping it up. Scripting System Events
+         to add a Login Item needs Automation permission this cannot prompt
+         for, which is why this is a LaunchAgent at all. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/open</string>
-        <string>-a</string>
-        <string>/Applications/SheepIt.app</string>
+        <string>/Applications/SheepIt.app/Contents/MacOS/SheepIt</string>
     </array>
 
     <key>RunAtLoad</key>
     <true/>
+
+    <!-- Started again if it crashes or is killed; Quit in its menu exits 0
+         and is left alone, so quitting it on purpose still works. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- A menu bar app: only in a logged-in GUI session, and not throttled
+         like a background daemon. -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
 </dict>
 </plist>
