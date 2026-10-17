@@ -59,6 +59,8 @@
 @property(strong) dispatch_source_t sigterm;
 @end
 
+static NSString *const LaunchAgentLabel = @"com.sheepit.menubar";
+
 @implementation Controller
 
 - (BOOL)isRunning {
@@ -296,17 +298,42 @@
     [self logEvent:@"SheepIt launched"];
 }
 
+/// A copy opened from Finder or Spotlight after a Quit is nobody's child:
+/// killed, it stays dead, and so does everything it was keeping up. When the
+/// login agent is loaded, let launchd start the copy instead and leave; the
+/// copy launchd starts waits for this one to go (see the check above).
+- (void)handOffToLaunchd {
+    if (self.underLaunchd) return;
+    NSString *target = [NSString stringWithFormat:@"gui/%d/%@", getuid(), LaunchAgentLabel];
+    if ([self runTool:@"/bin/launchctl" arguments:@[ @"print", target ] timeout:5 output:nil] != 0) return;
+    if ([self runTool:@"/bin/launchctl" arguments:@[ @"kickstart", target ] timeout:5 output:nil] != 0) return;
+    NSLog(@"SheepIt handed over to its login agent");
+    exit(0);
+}
+
+- (BOOL)underLaunchd {
+    return [NSProcessInfo.processInfo.environment[@"XPC_SERVICE_NAME"] isEqualToString:LaunchAgentLabel];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     // launchd keeps one copy alive; one opened from Finder on top of it would
     // fight it for the port. exit() rather than -terminate:, which would run
     // -stop and kill the gateway the other copy owns.
     for (NSRunningApplication *app in [NSRunningApplication
              runningApplicationsWithBundleIdentifier:NSBundle.mainBundle.bundleIdentifier]) {
+        // launchd's copy outranks one opened by hand, which is either handing
+        // over to it right now or should have: give it a moment to leave.
+        if (app.processIdentifier != getpid() && self.underLaunchd) {
+            pid_t other = app.processIdentifier;
+            for (int i = 0; i < 50 && kill(other, 0) == 0; i++) usleep(100000);
+            if (kill(other, 0) != 0) continue;
+        }
         if (app.processIdentifier != getpid()) {
             NSLog(@"SheepIt is already running as pid %d", app.processIdentifier);
             exit(0);
         }
     }
+    [self handOffToLaunchd];
     [self prepareLog];
     self.notices = [NSMutableArray new];
     NSString *serve = [NSUserDefaults.standardUserDefaults stringForKey:@"tailscaleServePort"];
@@ -551,8 +578,9 @@
     self.watchdogBusy = YES;
     NSUInteger tick = ++self.watchdogTicks;
     BOOL serverRunning = self.isRunning;
-    // A gateway still starting is not a hung one.
-    BOOL checkHealth = serverRunning && -[self.serverStartedAt timeIntervalSinceNow] > 20;
+    // A gateway still starting is not a hung one. It binds in about a second,
+    // and the restart notice waits on the first healthy answer.
+    BOOL checkHealth = serverRunning && -[self.serverStartedAt timeIntervalSinceNow] > 5;
     // The CLI costs a process or two: once a minute is plenty.
     BOOL checkTailnet = self.tailscalePath && tick % 3 == 1;
     BOOL manageServe = ![self.servePort isEqualToString:@"off"];

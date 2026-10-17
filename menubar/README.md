@@ -57,6 +57,11 @@ While the switch is on, every 20 seconds the app checks that:
 
 Each recovery, and a start after a reboot or a crash of the app itself, is
 pushed to the phone through `POST /api/push/notice` once the gateway answers.
+A copy opened by hand while the login agent is loaded does not stay: it
+kickstarts the agent and exits, and the copy launchd starts waits for it to go.
+Otherwise a Quit followed by a double-click leaves a copy that nothing restarts
+when it is killed.
+
 The log is rotated past 10 MiB while running, by copy-and-truncate, since the
 gateway and Herdr keep it open. [docs/hardening.md](../docs/hardening.md)
 has the rest: what has to be set on the machine by hand.

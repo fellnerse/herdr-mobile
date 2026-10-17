@@ -20,6 +20,7 @@ every 20 seconds, and launchd runs the app itself so that it too comes back.
 | The `tailscale serve` route to `:3009` disappears | Re-applied on `:8443` | ≤ 1 min |
 | `caffeinate` is killed | Started again | ≤ 20 s |
 | The menu bar app crashes, or is killed (`kill -9`, `killall`) | launchd starts it again; it reclaims its own gateway | ~10 s |
+| You Quit it and open it again from Finder or Spotlight | That copy hands over to the login agent, so it is supervised again | — |
 | The log grows | Copied to `gateway.log.old` and emptied past 10 MiB | — |
 
 Every one of these, and a reboot, sends a push to the phone once the gateway
@@ -51,7 +52,8 @@ make -C menubar login
 This replaces the old login agent, which only ran `open -a SheepIt` once, with
 one that runs the app and starts it again whenever it dies. **Quit** in the
 menu still quits it for good; anything else that stops it is undone in
-about ten seconds.
+about ten seconds. Opening it again by hand after a Quit gives the job back to
+launchd rather than running a copy nothing would restart.
 
 If `~/Library/LaunchAgents/com.sheepit.gateway.plist` exists, remove it. Two
 supervisors fighting over port 3009 is worse than one:
