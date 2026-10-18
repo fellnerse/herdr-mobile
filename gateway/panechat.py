@@ -22,6 +22,7 @@ again from the log when the pane moves to another session (`/clear`).
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -65,6 +66,68 @@ COMMAND_ARGS = re.compile(r"<command-args>([^<]*)</command-args>")
 # and is taken for a command's output - sent, answered, and never drawn.
 PASTED = re.compile(r'</?pasted_content(?:\s+id="[^"]*")?>')
 AI_TITLE = re.compile(r'"(?:aiTitle|agentName)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+OMP_SESSIONS_DIR = Path(os.environ.get("PI_CODING_AGENT_DIR") or (Path.home() / ".omp" / "agent")) / "sessions"
+OMP_TITLE_RE = re.compile(r'"(?:title)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def clean_omp_title(title: str) -> str:
+    return re.sub(r"^[π\s>⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+", "", title or "").strip()
+
+
+def omp_session_folder_for_cwd(cwd: str, home: Path | None = None) -> str:
+    if home is None:
+        home = Path.home()
+    p = Path(cwd).resolve()
+    try:
+        rel = p.relative_to(home.resolve())
+        if str(rel) == ".":
+            return "-"
+        return "-" + str(rel).replace(os.sep, "-")
+    except ValueError:
+        return str(p).replace(os.sep, "-")
+
+
+def omp_log_title(path: Path) -> str:
+    """The title OMP wrote into a session log."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    seen = _TITLES.get(path)
+    if seen and seen[0] == size:
+        return seen[1]
+    title = ""
+    try:
+        with open(path, "rb") as f:
+            if size > 65536:
+                f.seek(size - 65536)
+            tail = f.read().decode("utf-8", "replace")
+        matches = re.findall(r'\{"type"\s*:\s*"title_change"[^}\n]*?"title"\s*:\s*"((?:[^"\\]|\\.)*)"', tail)
+        if matches:
+            try:
+                title = json.loads('"' + matches[-1] + '"')
+            except ValueError:
+                title = matches[-1]
+    except OSError:
+        pass
+    if not title:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for _ in range(10):
+                    line = f.readline()
+                    if not line:
+                        break
+                    try:
+                        d = json.loads(line)
+                        if d.get("type") in ("title", "title_change", "session") and d.get("title"):
+                            title = d.get("title")
+                            break
+                    except ValueError:
+                        pass
+        except OSError:
+            pass
+    _TITLES[path] = (size, title)
+    return title
 
 
 def slim_log(entry: dict) -> dict | None:
@@ -142,6 +205,76 @@ def slim_codex(entry: dict) -> dict | None:
             }]}
     if kind == "event_msg" and payload.get("type") in ("turn_aborted", "turn_failed"):
         return {"type": "interrupted"}
+    return None
+
+def slim_omp(entry: dict) -> dict | None:
+    """Translate one OMP session line into the shared pane-chat events."""
+    if not isinstance(entry, dict):
+        return None
+    kind = entry.get("type")
+    if kind == "reset_boundary":
+        return {"type": "interrupted"}
+    if kind != "message":
+        return None
+    msg = entry.get("message")
+    if not isinstance(msg, dict):
+        return None
+    role = msg.get("role")
+    if role == "user":
+        content = msg.get("content")
+        if isinstance(content, list):
+            text = "".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ).strip()
+        elif isinstance(content, str):
+            text = content.strip()
+        else:
+            text = ""
+        if not text:
+            return None
+        if text.startswith("<system-reminder>") or text.startswith("<system-notice>") \
+                or text.startswith("<environment_context>"):
+            return None
+        return {"type": "prompt", "text": text, "images": []}
+    if role == "assistant":
+        content = msg.get("content") or []
+        blocks = []
+        if isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                btype = b.get("type")
+                if btype == "text":
+                    t = b.get("text", "")
+                    if t:
+                        blocks.append({"type": "text", "text": t})
+                elif btype == "toolCall":
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": b.get("id"),
+                        "name": b.get("name") or "tool",
+                        "input": b.get("arguments") or {},
+                    })
+        return {"type": "assistant", "content": blocks} if blocks else None
+    if role == "toolResult":
+        call_id = msg.get("toolCallId")
+        content = msg.get("content") or []
+        if isinstance(content, list):
+            output = "\n".join(
+                b.get("text", "") if isinstance(b, dict) else str(b)
+                for b in content
+            )
+        elif isinstance(content, str):
+            output = content
+        else:
+            output = str(content)
+        is_error = bool(msg.get("isError") or msg.get("is_error"))
+        return {"type": "tool_results", "content": [{
+            "tool_use_id": call_id,
+            "is_error": is_error,
+            "content": chat._clip(output),
+        }]}
     return None
 
 
@@ -238,10 +371,14 @@ class PaneChat:
     @property
     def is_codex(self) -> bool:
         return self.pane.get("agent") == "codex"
+    @property
+    def is_omp(self) -> bool:
+        return self.pane.get("agent") == "omp"
+
 
     @property
     def is_supported(self) -> bool:
-        return self.is_claude or self.is_codex
+        return self.is_claude or self.is_codex or self.is_omp
 
     @property
     def title(self) -> str:
@@ -269,7 +406,7 @@ class PaneChat:
         if path:
             self.clear_at = self.cleared_path = None
             self.session = session or path.stem
-        if self.is_claude and self.session:
+        if (self.is_claude or self.is_omp) and self.session:
             self._save_session()
 
     def _save_session(self):
@@ -332,6 +469,32 @@ class PaneChat:
             if self.session or self.path:
                 self._adopt(None, None)
             return
+        if self.is_omp:
+            session = self.pane.get("agent_session") or {}
+            val = session.get("value")
+            expected_folder = omp_session_folder_for_cwd(self.cwd)
+            if val and session.get("kind") == "path":
+                p = Path(val)
+                if p.is_file() and p.parent.name == expected_folder:
+                    sid = self._omp_session_id(p)
+                    if self.path != p or self.session != sid:
+                        self._adopt(sid, p)
+                    else:
+                        self.title_seen = self.title
+                        self.grew_at = time.time()
+                    return
+            sid = val if session.get("kind") == "id" else None
+            if self.path and self.title == self.title_seen and not self._gone_quiet() \
+                    and not self.expect_new_session and (not sid or sid == self.session):
+                return
+            path = self._find_omp_log(sid)
+            if path != self.path:
+                self._adopt(sid or self._omp_session_id(path), path)
+            elif path:
+                self.title_seen = self.title
+                self.grew_at = time.time()
+            return
+
 
         if self.is_codex:
             session = self.pane.get("agent_session") or {}
@@ -440,6 +603,42 @@ class PaneChat:
             return path.stat().st_mtime >= when - MTIME_SLACK
         except OSError:
             return False
+
+    @staticmethod
+    def _omp_session_id(path: Path | None) -> str | None:
+        if not path:
+            return None
+        name = path.stem
+        return name.split("_", 1)[-1] if "_" in name else name
+
+    def _find_omp_log(self, session_id=None) -> Path | None:
+        """Find an OMP session log for this pane's working directory."""
+        folder = OMP_SESSIONS_DIR / omp_session_folder_for_cwd(self.cwd)
+        if not folder.is_dir():
+            return None
+        logs = sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if session_id:
+            for p in logs:
+                if session_id in p.name:
+                    return p
+        if self.clear_at is not None and self._clear_not_taken(logs):
+            self.clear_at = self.cleared_path = None
+        if self.clear_at is not None:
+            logs = [p for p in logs if p != self.cleared_path
+                    and self._mtime_at_least(p, self.clear_at)]
+        if not logs:
+            return None
+        title = clean_omp_title(self.title)
+        if title:
+            for path in logs:
+                if omp_log_title(path) == title:
+                    return path
+        if self.first_prompt_at is not None:
+            updated = [p for p in logs
+                       if self._mtime_at_least(p, self.first_prompt_at)]
+            if len(updated) == 1:
+                return updated[0]
+        return logs[0] if len(logs) == 1 else None
 
     def _find_codex_log(self, session_id=None):
         """Find a rollout for this pane, refusing ambiguous same-cwd matches."""
@@ -645,12 +844,18 @@ class PaneChat:
                 if isinstance(model, str) and model:
                     self.model = model
                 event = slim_codex(entry)
+            elif self.is_omp:
+                if entry.get("type") == "model_change":
+                    m = entry.get("model")
+                    if isinstance(m, str) and m:
+                        self.model = m
+                event = slim_omp(entry)
             else:
                 event = slim_log(entry)
             if not event:
                 continue
             if event["type"] == "assistant":
-                if not self.is_codex:
+                if not self.is_codex and not self.is_omp:
                     self.model = (entry.get("message") or {}).get("model") or self.model
                 for b in event["content"]:
                     if b.get("type") == "tool_use" and b.get("id"):
@@ -660,7 +865,7 @@ class PaneChat:
                     self.unresolved.pop(r.get("tool_use_id"), None)
             elif event["type"] == "interrupted":
                 self.unresolved.clear()  # nothing from before is still running
-            elif event["type"] == "prompt" and event["text"] == "/clear":
+            elif event["type"] == "prompt" and event["text"] in ("/clear", "/new"):
                 # The next session's log has not been written yet, but this one
                 # is done - don't wait for it to go quiet before looking again.
                 self.expect_new_session = True
@@ -684,8 +889,8 @@ class PaneChat:
                    "input": block.get("input") or {}, "description": "",
                    # Claude exposes its second option as "always". Codex's
                    # confirmation is a plain yes/no prompt.
-                   "suggestions": [] if self.is_codex or tool in
-                   ("AskUserQuestion", "ExitPlanMode") else ["2"]}
+                   "suggestions": [] if self.is_codex or self.is_omp or tool in
+                   ("AskUserQuestion", "ask", "ExitPlanMode") else ["2"]}
             self.asks[tid] = ask
             self.events.append(ask)
         self.pending = {tid: self.asks[tid]}
@@ -694,7 +899,7 @@ class PaneChat:
 
     def summary(self) -> dict:
         title = self.title
-        if not title or title == "Claude Code":
+        if not title or title in ("Claude Code", "omp"):
             title = self.cwd.rsplit("/", 1)[-1] or self.pane_id
         # Two different nothings: a pane running no Claude Code, and one whose
         # session has not been found. They read identically to somebody looking
@@ -751,7 +956,7 @@ class PaneChat:
         text = "\n".join(paths + [text.strip()]).strip()
         if _queue is None:
             raise ValueError("The queue is not running")
-        first_prompt = self.is_claude and not self.session and self.first_prompt_at is None
+        first_prompt = (self.is_claude or self.is_omp) and not self.session and self.first_prompt_at is None
         if first_prompt:
             self.first_prompt_at = time.time()
             self._save_session()
@@ -773,6 +978,20 @@ class PaneChat:
             raise ValueError("That question is no longer open")
         if self.is_codex:
             keys = ["n" if behavior == "deny" else "y"]
+        elif self.is_omp:
+            if behavior == "deny":
+                keys = ["esc"]
+            elif ask["tool"] == "ask":
+                qs = ask["input"].get("questions") or []
+                if len(qs) != 1 or qs[0].get("multi"):
+                    raise ValueError("Answer this one in the terminal")
+                labels = [o.get("label") for o in qs[0].get("options") or []]
+                picked = (answers or {}).get(qs[0].get("question"))
+                if picked not in labels:
+                    raise ValueError("Pick one of the options")
+                keys = [str(labels.index(picked) + 1)]
+            else:
+                keys = ["1" if behavior == "allow" else "esc"]
         elif behavior == "deny":
             keys = ["esc"]
         elif ask["tool"] == "AskUserQuestion":
@@ -804,6 +1023,12 @@ class PaneChat:
         pass  # the pane is not ours to stop
 
     def commands(self, wait: float) -> list:
+        if self.is_omp:
+            return [
+                {"name": "new", "description": "Start a fresh session", "hint": ""},
+                {"name": "clear", "description": "Reset session context", "hint": ""},
+                {"name": "models", "description": "List and switch models", "hint": ""},
+            ]
         """Same answer a headless chat on this project would give - discovered
         the same way, since a pane's own Claude Code has no route to ask it
         directly. Unlike a headless chat's own first ask, there is no chat
@@ -842,7 +1067,7 @@ def cleared(pane_id: str, pane: dict, sent_at: float) -> None:
     send path, the moment /clear is accepted - Claude included, since its
     log-identity heuristics alone re-adopt the old session until a new log
     exists to tell them apart."""
-    if pane.get("agent") not in ("codex", "claude"):
+    if pane.get("agent") not in ("codex", "claude", "omp"):
         return
     with _LOCK:
         pc = _PANES.setdefault(pane_id, PaneChat(pane_id))

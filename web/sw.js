@@ -134,7 +134,7 @@ self.addEventListener("push", (event) => {
           // No usable record: say the least that is still true.
           title = agentName(waiting[0]) || "Agent finished";
           body = waiting[0].title || "Tap to open.";
-          if (["claude", "codex"].includes(waiting[0].agent)) url = "/#pane:" + waiting[0].pane_id;
+          if (["claude", "codex", "omp"].includes(waiting[0].agent)) url = "/#pane:" + waiting[0].pane_id;
         }
       } catch (err) {
         /* offline or gateway down: the generic text above still fires */

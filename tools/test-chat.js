@@ -44,5 +44,14 @@ check("pending permission remains actionable", [pending[0].kind, pending[0].open
 const blocked = build([], { kind: "pane", status: "blocked", running: false, pending: [] });
 check("unlogged pane prompt is called out", blocked[0], { kind: "meta", text: "waiting on something in the terminal" });
 
+const ompItems = build([
+  { type: "prompt", text: "Choose option" },
+  { type: "assistant", content: [
+    { type: "tool_use", id: "tool-ask", name: "ask", input: { questions: [{ question: "Which?", options: [{ label: "A" }] }] } },
+  ] },
+  { type: "ask", request_id: "ask-omp", tool: "ask", input: { questions: [{ question: "Which?", options: [{ label: "A" }] }] } },
+], { kind: "pane", status: "blocked", running: false, pending: ["ask-omp"] });
+check("omp ask tool is treated as question rather than tool_use", ompItems.map((it) => it.kind), ["user", "ask"]);
+
 if (failures) process.exit(1);
 console.log("all chat event tests passed");

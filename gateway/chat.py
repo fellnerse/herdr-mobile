@@ -28,6 +28,7 @@ import mimetypes
 import os
 import re
 import shlex
+import heartbeat
 import shutil
 import stat
 import subprocess
@@ -45,6 +46,7 @@ CHAT_DIR = STATE_DIR / "chats"
 HOME_FILE = STATE_DIR / "chat-home.json"
 
 MODES = ("auto", "acceptEdits", "plan", "manual", "bypassPermissions")
+OMP_MODES = ("auto", "write", "always-ask")
 # A tool result can be a whole file; the phone needs to see that it happened.
 MAX_RESULT = 4000
 # The API refuses an image over 5 MB; the phone scales them down well below.
@@ -90,7 +92,7 @@ def child_env() -> dict:
     """The chat's environment: the user's, not whichever project shell the
     gateway happened to be started from."""
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("DIRENV_", "IN_NIX_SHELL", "NIX_BUILD"))}
+           if not k.startswith(("DIRENV_", "IN_NIX_SHELL", "NIX_BUILD", "HERDR_"))}
     env["PATH"] = child_path()
     return env
 
@@ -302,6 +304,27 @@ class Chat:
 
     def _start(self):
         meta = self.meta
+        if meta.get("agent") == "omp":
+            omp_bin = shutil.which("omp") or (Path.home() / ".local" / "bin" / "omp")
+            cmd = [str(omp_bin), "--mode", "rpc-ui", "--cwd", meta["cwd"]]
+            if meta.get("model"):
+                cmd += ["--model", meta["model"]]
+            mode = meta.get("mode") or "auto"
+            if mode in ("auto", "yolo", "auto-approve"):
+                cmd += ["--auto-approve"]
+            elif mode in ("write", "always-ask"):
+                cmd += ["--approval-mode", mode]
+            if meta.get("started") and meta.get("session_id"):
+                cmd += ["--resume", meta["session_id"]]
+            self.proc = subprocess.Popen(
+                cmd, cwd=meta["cwd"], env=child_env(), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            )
+            self.reaping = False
+            self.last_used = time.time()
+            threading.Thread(target=self._pump_omp, args=(self.proc,), daemon=True).start()
+            self._write({"id": f"init-{uuid.uuid4().hex[:8]}", "type": "get_state"})
+            return
         cmd = [claude_bin(), "-p", "--input-format", "stream-json",
                "--output-format", "stream-json", "--verbose", "--include-partial-messages",
                "--permission-prompt-tool", "stdio", "--permission-mode", meta["mode"]]
@@ -356,6 +379,15 @@ class Chat:
         self.busy = True
         # Before the write, so the phone that wakes on it already reads busy.
         self.push({"type": "prompt", "text": text, "images": images})
+        if meta.get("agent") == "omp":
+            prompt_text = text.strip()
+            if files:
+                prompt_text = "\n".join([prompt_text] + [f"@{f}" for f in files]).strip()
+            try:
+                self._write({"id": str(uuid.uuid4()), "type": "prompt", "message": prompt_text})
+            except OSError as e:
+                self.push({"type": "error", "text": f"OMP went away: {e}"})
+            return
         try:
             self._write({"type": "user", "message": {"role": "user", "content": content}})
         except OSError as e:
@@ -365,6 +397,22 @@ class Chat:
         ask = self.pending.pop(request_id, None)
         if not ask:
             raise ValueError("That question is no longer open")
+        if self.meta.get("agent") == "omp":
+            self.last_used = time.time()
+            self.push({"type": "answered", "request_id": request_id, "behavior": behavior,
+                       "answers": answers})
+            method = ask.get("method") or (ask.get("input") or {}).get("method")
+            if behavior == "deny":
+                resp = {"type": "extension_ui_response", "id": request_id, "cancelled": True}
+            elif method == "select":
+                picked = ""
+                if answers and isinstance(answers, dict):
+                    picked = next(iter(answers.values()), "")
+                resp = {"type": "extension_ui_response", "id": request_id, "value": picked}
+            else:
+                resp = {"type": "extension_ui_response", "id": request_id, "confirmed": behavior == "allow"}
+            self._write(resp)
+            return
         if behavior == "deny":
             response = {"behavior": "deny", "message": "The user declined this from their phone."}
         else:
@@ -383,9 +431,11 @@ class Chat:
     def stop(self):
         """Interrupt the turn, the way Esc does; the process stays."""
         if self.alive and self.busy:
-            self._write({"type": "control_request", "request_id": uuid.uuid4().hex,
-                         "request": {"subtype": "interrupt"}})
-
+            if self.meta.get("agent") == "omp":
+                self._write({"type": "abort"})
+            else:
+                self._write({"type": "control_request", "request_id": uuid.uuid4().hex,
+                             "request": {"subtype": "interrupt"}})
     def kill(self):
         if self.alive:
             self.reaping = True
@@ -431,6 +481,119 @@ class Chat:
         elif was_busy:
             self.push({"type": "exit", "code": code, "text": "Stopped."})
 
+    def _pump_omp(self, proc: subprocess.Popen):
+        noise = []
+        for line in proc.stdout:
+            try:
+                raw = json.loads(line)
+            except ValueError:
+                noise = (noise + [line.rstrip()])[-20:]
+                continue
+            if not isinstance(raw, dict):
+                continue
+            t = raw.get("type")
+            if raw.get("command") == "get_state" and raw.get("data"):
+                sid = raw["data"].get("sessionId")
+                if sid:
+                    self.meta["session_id"] = sid
+                    self.save_meta()
+            elif t == "available_commands_update":
+                cmds = [
+                    {"name": c.get("name"), "description": c.get("description") or "",
+                     "hint": (c.get("input") or {}).get("hint") or ""}
+                    for c in raw.get("commands") or []
+                    if c.get("name") and not c["name"].startswith("__")
+                ]
+                _COMMANDS[self.meta["cwd"]] = sorted(cmds, key=lambda c: c["name"])
+                with self.cond:
+                    self.cond.notify_all()
+            elif t == "message_update":
+                delta = (raw.get("assistantMessageEvent") or {}).get("delta")
+                if delta:
+                    self.push({"type": "delta", "text": delta})
+            elif t == "turn_end":
+                msg = raw.get("message") or {}
+                if msg.get("role") == "assistant":
+                    blocks = []
+                    for b in msg.get("content") or []:
+                        if not isinstance(b, dict):
+                            continue
+                        if b.get("type") == "text":
+                            blocks.append({"type": "text", "text": b.get("text", "")})
+                        elif b.get("type") == "toolCall":
+                            blocks.append({
+                                "type": "tool_use",
+                                "id": b.get("id"),
+                                "name": b.get("name") or "tool",
+                                "input": b.get("arguments") or {},
+                            })
+                    if blocks:
+                        self.push({"type": "assistant", "content": blocks})
+            elif t == "tool_execution_end":
+                call_id = raw.get("toolCallId")
+                res = raw.get("result") or {}
+                content = res.get("content") or []
+                output = "\n".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content) if isinstance(content, list) else str(content)
+                self.push({"type": "tool_results", "content": [{
+                    "tool_use_id": call_id,
+                    "is_error": bool(res.get("isError") or raw.get("isError")),
+                    "content": _clip(output),
+                }]})
+            elif t == "agent_end" and raw.get("isTerminal") is not False:
+                self.busy = False
+                self.last_used = time.time()
+                self.push({"type": "result", "duration_ms": None, "cost": None})
+                self.notify("done")
+            elif t == "extension_ui_request":
+                req_id = raw.get("id")
+                method = raw.get("method")
+                if method == "select":
+                    opts = raw.get("options") or []
+                    title = raw.get("title") or "Question"
+                    ask = {
+                        "type": "ask",
+                        "request_id": req_id,
+                        "tool": "ask",
+                        "description": "",
+                        "input": {
+                            "questions": [{
+                                "question": title,
+                                "options": [{"label": str(o)} for o in opts if str(o) != "Other (type your own)"]
+                            }]
+                        },
+                        "method": "select",
+                        "suggestions": [],
+                    }
+                    self.pending[req_id] = ask
+                    self.push(ask)
+                    self.notify("ask", ask)
+                elif method == "confirm":
+                    ask = {
+                        "type": "ask",
+                        "request_id": req_id,
+                        "tool": raw.get("title") or "approval",
+                        "description": raw.get("message") or "",
+                        "input": raw,
+                        "method": "confirm",
+                        "suggestions": [],
+                    }
+                    self.pending[req_id] = ask
+                    self.push(ask)
+                    self.notify("ask", ask)
+        code = proc.wait()
+        if proc is not self.proc:
+            return
+        was_busy, self.busy = self.busy, False
+        self.pending.clear()
+        if not self.reaping:
+            text = "\n".join(noise).strip()
+            self.push({"type": "exit", "code": code,
+                       "text": text or f"OMP exited ({code})"})
+            if was_busy:
+                self.notify("done")
+        elif was_busy:
+            self.push({"type": "exit", "code": code, "text": "Stopped."})
+
     def _took_commands(self, response: dict):
         if not str(response.get("request_id", "")).startswith("init-"):
             return
@@ -451,6 +614,12 @@ class Chat:
         """The slash commands and skills for this chat's project. The first
         ask for a project starts the chat's process to find out; after that
         the answer is remembered per project."""
+        if self.meta.get("agent") == "omp":
+            return _COMMANDS.get(self.meta["cwd"], [
+                {"name": "new", "description": "Start a fresh session", "hint": ""},
+                {"name": "clear", "description": "Reset session context", "hint": ""},
+                {"name": "models", "description": "List and switch models", "hint": ""},
+            ])
         cwd = self.meta["cwd"]
         if cwd not in _COMMANDS:
             if not self.alive:
@@ -700,13 +869,22 @@ def _real_dir(path: str) -> str:
 
 
 def handle_list(handler, qs):
+    omp_models = [{"value": "", "label": "default"}]
+    try:
+        models = heartbeat.get_harness_models("omp")
+        if models:
+            omp_models = models
+    except Exception:
+        pass
     handler.send_json({"ok": True, "chats": summaries(), "home": chat_home(),
-                       "dirs": _known_dirs(), "modes": list(MODES)})
+                       "dirs": _known_dirs(), "modes": list(MODES),
+                       "omp_modes": list(OMP_MODES),
+                       "omp_models": omp_models})
 
 
 def handle_home(handler, body):
-    path = _real_dir(body.get("path"))
-    if not path or path == "/":
+    path = _real_dir(body.get("path") if isinstance(body, dict) else "")
+    if not path:
         handler.send_json({"ok": False, "error": "Not a directory"}, 400)
         return
     try:
@@ -843,11 +1021,14 @@ def handle_new(handler, body):
         except OSError as e:
             handler.send_json({"ok": False, "error": f"Could not lock the chat home: {e.strerror}"}, 403)
             return
-    mode =body.get("mode") if body.get("mode") in MODES else "auto"
+    agent = str(body.get("agent") or "claude").strip().lower()
+    if agent not in ("claude", "omp"):
+        agent = "claude"
+    mode = body.get("mode") if (agent == "omp" and body.get("mode") in OMP_MODES) or (agent != "omp" and body.get("mode") in MODES) else "auto"
     model = str(body.get("model") or "").strip()[:60]
     now = time.time()
     meta = {"id": uuid.uuid4().hex[:12], "session_id": str(uuid.uuid4()), "cwd": cwd,
-            "mode": mode, "model": model, "title": "", "created": now, "updated": now,
+            "agent": agent, "mode": mode, "model": model, "title": "", "created": now, "updated": now,
             "started": False}
     chat = Chat(meta)
     chat.save_meta()

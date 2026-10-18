@@ -606,16 +606,28 @@ def queue_prompt(pane_id: str, prompt: str) -> tuple:
                     codex_queue.send(pane_id, prompt)
                 except codex_queue.CodexQueueError as error:
                     return {"ok": False, "error": str(error)}, 409
+        elif pane.get("agent") == "omp":
+            res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
+            if "error" not in res:
+                res = call_herdr_rpc("pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]})
+            if "error" in res:
+                return res, 400
         else:
             res = call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
             if "error" in res:
                 return res, 400
         return {"ok": True, "delivered": "agent"}, 200
 
-    if prompt == "/clear":
+    if prompt in ("/clear", "/new"):
         sent_at = time.time()
-        res = send_codex_prompt(pane_id, prompt) if pane.get("agent") == "codex" else \
-            call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
+        if pane.get("agent") == "codex":
+            res = send_codex_prompt(pane_id, prompt)
+        elif pane.get("agent") == "omp":
+            res = call_herdr_rpc("pane.send_text", {"pane_id": pane_id, "text": prompt})
+            if "error" not in res:
+                res = call_herdr_rpc("pane.send_keys", {"pane_id": pane_id, "keys": ["enter"]})
+        else:
+            res = call_herdr_rpc("agent.prompt", {"target": pane_id, "text": prompt})
         if "error" in res:
             return res, 400
         panechat.cleared(pane_id, pane, sent_at)
@@ -692,7 +704,7 @@ def pane_url(row: dict) -> str | None:
     """Where tapping a pane's notification lands: its chat, which the page
     opens from `#pane:<pane id>` - or the flock, for an agent it cannot read
     as one."""
-    if row.get("agent") in ("claude", "codex") and row.get("pane_id"):
+    if row.get("agent") in ("claude", "codex", "omp") and row.get("pane_id"):
         return "/#pane:" + row["pane_id"]
     return None
 

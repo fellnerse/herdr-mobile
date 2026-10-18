@@ -247,7 +247,13 @@ class Herdr:
         so names are not reliably unique while pane IDs always are.
         """
         session = (self.agents_by_pane().get(pane_id) or {}).get("agent_session") or {}
-        return session.get("value") if session.get("kind") == "id" else None
+        if session.get("kind") == "id":
+            return session.get("value")
+        if session.get("kind") == "path":
+            val = session.get("value") or ""
+            stem = val.rsplit("/", 1)[-1].replace(".jsonl", "")
+            return stem.split("_", 1)[-1] if "_" in stem else (stem or None)
+        return None
 
     def agent_kind(self, pane_id: str) -> str | None:
         """Which agent is in a pane - "claude", "codex" - or None for a shell.
