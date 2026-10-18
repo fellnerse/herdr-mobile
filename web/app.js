@@ -651,7 +651,7 @@
   }
 
   function paneHasChat(agent) {
-    return !!agent && ["claude", "codex"].includes(agent.agent);
+    return !!agent && ["claude", "codex", "omp"].includes(agent.agent);
   }
 
   // Header button showing the current project
@@ -2153,33 +2153,62 @@
      what it may do without asking, and which model. Remembered between chats,
      because the answer is nearly always the last answer. Where it runs is not
      asked: every chat from here starts in the one directory the settings name. */
+  const CLAUDE_MODELS = [
+    { value: "", label: "default" },
+    { value: "opus", label: "opus" },
+    { value: "sonnet", label: "sonnet" },
+    { value: "haiku", label: "haiku" },
+  ];
+
   function chatFormHtml() {
     if (!chatOptions) return '<p class="new-choice-hint">Reading…</p>';
-    const modes = chatOptions.modes
+    const agent = readPref("chat.agent") || "claude";
+    const modesList = agent === "omp" ? (chatOptions.omp_modes || ["auto", "write", "always-ask"]) : chatOptions.modes;
+    const modes = modesList
       .map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`)
+      .join("");
+    const modelsList = agent === "omp" ? (chatOptions.omp_models || [{ value: "", label: "default" }]) : CLAUDE_MODELS;
+    const models = modelsList
+      .map((m) => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
       .join("");
     return `
       <p class="new-chat-home">in <span>${escapeHtml(chatOptions.home)}</span>
         <button type="button" class="new-link" data-choose="home">change</button></p>
       <div class="new-row">
+        <label class="new-field">Agent
+          <select id="new-chat-agent">
+            <option value="claude"${agent === "claude" ? " selected" : ""}>Claude Code</option>
+            <option value="omp"${agent === "omp" ? " selected" : ""}>OMP (Oh My Pi)</option>
+          </select>
+        </label>
         <label class="new-field">Permissions
           <select id="new-chat-mode">${modes}</select>
         </label>
-        <label class="new-field">Model
-          <select id="new-chat-model">
-            <option value="">default</option>
-            <option value="opus">opus</option>
-            <option value="sonnet">sonnet</option>
-            <option value="haiku">haiku</option>
-          </select>
+      </div>
+      <div class="new-row">
+        <label class="new-field" style="width: 100%">Model
+          <select id="new-chat-model">${models}</select>
         </label>
       </div>
       <button type="button" class="new-go" data-go="chat">Start chat</button>`;
   }
 
+  function onChatAgentChange(agent) {
+    savePref("sheepit.chat.agent", agent);
+    const modeEl = document.getElementById("new-chat-mode");
+    const modelEl = document.getElementById("new-chat-model");
+    if (!modeEl || !modelEl) return;
+    const modesList = agent === "omp" ? (chatOptions?.omp_modes || ["auto", "write", "always-ask"]) : (chatOptions?.modes || ["auto"]);
+    modeEl.innerHTML = modesList.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+    const modelsList = agent === "omp" ? (chatOptions?.omp_models || [{ value: "", label: "default" }]) : CLAUDE_MODELS;
+    modelEl.innerHTML = modelsList.map((m) => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join("");
+  }
+
   function restoreChatPrefs() {
+    const agent = document.getElementById("new-chat-agent");
     const mode = document.getElementById("new-chat-mode");
     const model = document.getElementById("new-chat-model");
+    if (agent) agent.value = readPref("chat.agent") || "claude";
     if (mode) mode.value = readPref("chat.mode") || "auto";
     if (model) model.value = readPref("chat.model") || "";
   }
@@ -2188,7 +2217,12 @@
     try {
       const res = await fetch("/api/chat");
       const data = await res.json();
-      chatOptions = { home: data.home || "", modes: data.modes || ["auto"] };
+      chatOptions = {
+        home: data.home || "",
+        modes: data.modes || ["auto"],
+        omp_modes: data.omp_modes || ["auto", "write", "always-ask"],
+        omp_models: data.omp_models || [{ value: "", label: "default" }],
+      };
     } catch (err) {
       chatOptions = null;
       throw err;
@@ -2219,15 +2253,17 @@
   }
 
   async function startChat() {
+    const agent = document.getElementById("new-chat-agent");
     const mode = document.getElementById("new-chat-mode");
     const model = document.getElementById("new-chat-model");
     const body = {
+      agent: (agent && agent.value) || "claude",
       mode: (mode && mode.value) || "auto",
       model: (model && model.value) || "",
     };
+    savePref("sheepit.chat.agent", body.agent);
     savePref("sheepit.chat.mode", body.mode);
     savePref("sheepit.chat.model", body.model);
-    triggerHaptic();
     try {
       const res = await fetch("/api/chat/new", {
         method: "POST",
@@ -2393,6 +2429,11 @@
     } else if (e.key === "Enter" && e.target.id === "new-dir-name") {
       e.preventDefault();
       makeDir();
+    }
+  });
+  elNewSheet.addEventListener("change", (e) => {
+    if (e.target && e.target.id === "new-chat-agent") {
+      onChatAgentChange(e.target.value);
     }
   });
 
@@ -8022,7 +8063,7 @@
           for (const b of ev.content || []) {
             if (b.type === "text") { items.push({ kind: "assistant", text: b.text }); live = ""; }
             // A question is drawn as the ask below, not as a tool call.
-            else if (b.type === "tool_use" && b.name !== "AskUserQuestion") {
+            else if (b.type === "tool_use" && !["AskUserQuestion", "ask"].includes(b.name)) {
               const t = { kind: "tool", id: b.id, name: b.name, input: b.input };
               tools[b.id] = t; items.push(t);
             }
@@ -8077,7 +8118,7 @@
   }
 
   function askHtml(it) {
-    if (it.tool === "AskUserQuestion") {
+    if (it.tool === "AskUserQuestion" || it.tool === "ask") {
       const chosen = picks.get(it.id) || {};
       const qs = it.input.questions || [];
       const body = qs.map((q, qi) => {
@@ -8631,8 +8672,8 @@
       elInput.value = ""; typed();
       hideMenu();
       attachStrip.clear();
-      if (current.kind === "pane" && (current.agent === "codex" || current.agent === "claude")
-          && text.trim() === "/clear") {
+      if (current.kind === "pane" && (current.agent === "codex" || current.agent === "claude" || current.agent === "omp")
+          && (text.trim() === "/clear" || text.trim() === "/new")) {
         if (poll) poll.abort();
         events = []; epoch = ""; drawn = [];
         openTools.clear(); picks.clear();

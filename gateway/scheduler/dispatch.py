@@ -330,6 +330,8 @@ class Dispatcher:
                     self.herdr.agent_send_keys(prompt.pane_id, ["ctrl+m"])
                 else:
                     codex_queue.send(prompt.pane_id, prompt.prompt)
+            elif self.herdr.agent_kind(prompt.pane_id) == "omp":
+                self.herdr.send_line(prompt.pane_id, prompt.prompt)
             else:
                 # A prompt that is only an attachment still ends on its `@`
                 # token, whose file picker would take the Enter; a space

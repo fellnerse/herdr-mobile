@@ -2900,6 +2900,85 @@ try:
 finally:
     codex_queue.panechat.get, codex_queue.shutil.which, codex_queue.subprocess.run = (
         original_get, original_which, original_run)
+# ---- OMP panes -------------------------------------------------------------
+omp_home = Path(tempfile.mkdtemp(prefix="sheepit-omp-"))
+orig_omp_home = panechat.OMP_SESSIONS_DIR
+panechat.OMP_SESSIONS_DIR = omp_home
+
+omp_cwd = "/tmp/omp-project"
+omp_folder = omp_home / panechat.omp_session_folder_for_cwd(omp_cwd)
+omp_folder.mkdir(parents=True, exist_ok=True)
+
+omp_sid = "01a14de0-91da-74d8-b5b9-340de3d9d3de"
+omp_log = omp_folder / f"2026-10-18T07-18-45-466Z_{omp_sid}.jsonl"
+omp_log.write_text("\n".join(json.dumps(row) for row in (
+    {"type": "title", "title": "Add OMP Chat Support"},
+    {"type": "session", "id": omp_sid, "cwd": omp_cwd},
+    {"type": "model_change", "model": "google-antigravity/gemini-3.8-flash"},
+    {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "work on omp chat"}]}},
+    {"type": "message", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "inspecting the repo"},
+        {"type": "toolCall", "id": "call_omp_1", "name": "read", "arguments": {"path": "gateway/server.py"}}
+    ]}},
+    {"type": "message", "message": {"role": "toolResult", "toolCallId": "call_omp_1",
+                                    "content": [{"type": "text", "text": "server content"}]}},
+)) + "\n")
+
+omp_pane = {
+    "pane_id": "wO:p1",
+    "agent": "omp",
+    "agent_status": "idle",
+    "cwd": omp_cwd,
+    "terminal_title_stripped": "π ⠋ Add OMP Chat Support",
+    "agent_session": {"kind": "path", "value": str(omp_log)},
+}
+
+panechat.call_herdr_rpc = lambda m, p=None, timeout=5.0: {"result": {"pane": dict(omp_pane)}}
+try:
+    check("OMP: session folder name replaces slashes with dashes",
+          panechat.omp_session_folder_for_cwd("/tmp/my-proj"), "-tmp-my-proj")
+    check("OMP: clean title strips spinner and symbols",
+          panechat.clean_omp_title("π ⠋ Add OMP Chat Support"), "Add OMP Chat Support")
+    pc_omp = panechat.get("wO:p1")
+    check("OMP: pane is recognized as omp", pc_omp.is_omp, True)
+    check("OMP: pane is supported as chat", pc_omp.is_supported, True)
+    check("OMP: session ID extracted from file", pc_omp.session, omp_sid)
+    check("OMP: model read from model_change", pc_omp.model, "google-antigravity/gemini-3.8-flash")
+    check("OMP: conversation parsed into chat events",
+          [(e["type"], e.get("text")) for e in pc_omp.events],
+          [("prompt", "work on omp chat"), ("assistant", None), ("tool_results", None)])
+    check("OMP: tool calls resolved by toolResult", pc_omp.unresolved, {})
+    check("OMP: notification URL lands on pane chat", server.pane_url(omp_pane), "/#pane:wO:p1")
+
+    # Fallback when Herdr has no agent_session
+    omp_pane["agent_session"] = {}
+    pc_omp.refresh()
+    check("OMP: title matches session file when agent_session is missing", pc_omp.path, omp_log)
+
+    # /clear and /new
+    panechat.cleared("wO:p1", dict(omp_pane), time.time())
+    check("OMP: /clear invalidates session immediately", (pc_omp.path, pc_omp.events), (None, []))
+    # Headless chat creation with OMP
+    fake_handler = SimpleNamespace(sent=[])
+    fake_handler.send_json = lambda data, status=200: fake_handler.sent.append((data, status))
+    chat.handle_list(fake_handler, {})
+    check("OMP: handle_list reports omp_modes", "omp_modes" in fake_handler.sent[-1][0], True)
+
+    with tempfile.TemporaryDirectory() as home_tmp:
+        orig_home = chat.chat_home
+        chat.chat_home = lambda: home_tmp
+        try:
+            fake_handler.sent.clear()
+            chat.handle_new(fake_handler, {"agent": "omp", "cwd": home_tmp, "mode": "auto", "model": ""})
+            res_data, res_status = fake_handler.sent[-1]
+            check("OMP: handle_new creates an omp chat", res_status, 200)
+            check("OMP: created chat carries agent omp", res_data.get("chat", {}).get("agent"), "omp")
+        finally:
+            chat.chat_home = orig_home
+finally:
+    panechat.OMP_SESSIONS_DIR = orig_omp_home
+    panechat.call_herdr_rpc = orig[0]
+
 
 # ---- What a turn cost, and only when somebody is billed for it -------------
 # `claude` prices every turn whether or not the tokens are invoiced, so the
