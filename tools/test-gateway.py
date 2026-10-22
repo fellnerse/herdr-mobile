@@ -2265,6 +2265,49 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-start-") as hb_dir:
          heartbeat.Herdr.agent_start, heartbeat.workspace_cwd) = orig
         heartbeat.pop_heartbeat("wE:pW")
 
+# A run uses a unique agent name per pane to prevent agent_name_taken if an alert tab is open
+check("agent name includes pane suffix", heartbeat._agent_name("hb_1789984182331", "wE:p1P"), "hb-hb_17899-p1P")
+
+# When agent_start fails, the newly created tab is cleaned up and error is saved to config
+with tempfile.TemporaryDirectory(prefix="sheepit-hb-fail-cleanup-") as hb_dir:
+    orig = (heartbeat.CONFIG_PATH, heartbeat.call_herdr_rpc, heartbeat.Herdr.open_pane,
+            heartbeat.Herdr.agent_start, heartbeat.workspace_cwd)
+    closed = []
+    renamed = []
+
+    def fail_rpc(method, params=None):
+        if method == "tab.close":
+            closed.append(params["tab_id"])
+        elif method == "tab.rename":
+            renamed.append(params)
+        return {"result": {
+            "tabs": [{"tab_id": "wE:tV", "label": "hb-whatsanaly", "agent_status": "done"}],
+            "panes": [{"pane_id": "wE:pV", "tab_id": "wE:tV"},
+                      {"pane_id": "wE:pNew", "tab_id": "wE:tNew"}]}}
+
+    def start_fails(self, name, pane_id, kind="claude", args=None):
+        raise heartbeat.HerdrError("agent_name_taken", f"agent name {name} is already used")
+
+    try:
+        heartbeat.CONFIG_PATH = Path(hb_dir) / "heartbeat.json"
+        heartbeat.call_herdr_rpc = fail_rpc
+        heartbeat.Herdr.open_pane = lambda self, cwd, workspace_id=None, label=None: "wE:pNew"
+        heartbeat.Herdr.agent_start = start_fails
+        heartbeat.workspace_cwd = lambda ws: "/src/whatsanalyze"
+        hb = heartbeat.HeartbeatItem(id="hb_fail", name="Whatsanalyze Sentry check", target_workspace="wE",
+                                     last_status="alert", target_pane="wE:pV")
+        heartbeat.HeartbeatConfig(heartbeats=[hb]).save()
+        res = heartbeat.trigger_heartbeat(hb)
+        check("failed start returns error", res.get("ok"), False)
+        check("failed start closes the opened tab", "wE:tNew" in closed, True)
+        saved = heartbeat.HeartbeatConfig.load().heartbeats[0]
+        check("failed start syncs error status to config", saved.last_status, "error")
+        check("kept alert tab was renamed to avoid duplicate labels",
+              any(r.get("tab_id") == "wE:tV" and r.get("label") == "hb-whatsanaly-alert" for r in renamed), True)
+    finally:
+        (heartbeat.CONFIG_PATH, heartbeat.call_herdr_rpc, heartbeat.Herdr.open_pane,
+         heartbeat.Herdr.agent_start, heartbeat.workspace_cwd) = orig
+
 # A pane fresh from tab.create refuses agent.start until its shell is at the
 # prompt: that is waited out, not reported as a failed run.
 import herdr_rpc

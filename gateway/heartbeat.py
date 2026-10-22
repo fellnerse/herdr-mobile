@@ -293,16 +293,7 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
             target_hb.last_status = "ok"
             target_hb.last_summary = f"All checks passed ({sentinel})"
             if target_hb.auto_close:
-                tab_id = row.get("tab_id")
-                if not tab_id:
-                    try:
-                        panes = call_herdr_rpc("pane.list").get("result", {}).get("panes", [])
-                        for p in panes:
-                            if p.get("pane_id") == pane_id:
-                                tab_id = p.get("tab_id")
-                                break
-                    except Exception:
-                        pass
+                tab_id = row.get("tab_id") or _tab_for_pane(pane_id)
                 if tab_id:
                     try:
                         call_herdr_rpc("tab.close", {"tab_id": tab_id})
@@ -320,7 +311,13 @@ def heartbeat_notification_interceptor(pane_id: str, row: dict) -> tuple[bool, d
         target_hb.last_summary = summary
         target_hb.unseen_alert = {"pane_id": pane_id, "summary": answer, "at": time.time()}
         cfg.save()
-
+        tab_id = row.get("tab_id") or _tab_for_pane(pane_id)
+        if tab_id:
+            try:
+                base_label = f"hb-{target_hb.name[:10].lower().replace(' ', '-')}"
+                call_herdr_rpc("tab.rename", {"tab_id": tab_id, "label": f"{base_label}-alert"})
+            except Exception as e:
+                log.warning("could not rename alert tab %s: %s", tab_id, e)
     log.warning("heartbeat alert [%s] on pane %s: %s", hb_name, pane_id, summary)
     # Pushed from here rather than handed back to the StatusWatcher: a run
     # that ends idle never reaches the watcher, and an alert has to go out the
@@ -413,7 +410,7 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
                     if not current_agent or current_agent == "unknown":
                         args = _launch_args(hb.agent_kind or "claude", hb.model)
                         try:
-                            herdr.agent_start(f"hb-{hb.id[:8]}", p_id, kind=hb.agent_kind or "claude", args=args)
+                            herdr.agent_start(_agent_name(hb.id, p_id), p_id, kind=hb.agent_kind or "claude", args=args)
                         except Exception as e:
                             log.warning("failed to start agent in existing shell pane %s: %s", p_id, e)
                         hb.target_pane = p_id
@@ -436,7 +433,17 @@ def find_target_pane(hb: HeartbeatItem) -> str | None:
                 new_pane = herdr.open_pane(cwd, workspace_id=hb.target_workspace, label=target_tab_label)
                 if new_pane:
                     args = _launch_args(hb.agent_kind or "claude", hb.model)
-                    herdr.agent_start(f"hb-{hb.id[:8]}", new_pane, kind=hb.agent_kind or "claude", args=args)
+                    try:
+                        herdr.agent_start(_agent_name(hb.id, new_pane), new_pane, kind=hb.agent_kind or "claude", args=args)
+                    except Exception as e:
+                        log.warning("failed to start agent in %s: %s", new_pane, e)
+                        tab_id = _tab_for_pane(new_pane)
+                        if tab_id:
+                            try:
+                                call_herdr_rpc("tab.close", {"tab_id": tab_id})
+                            except Exception:
+                                pass
+                        return None
                     hb.target_pane = new_pane
                     return new_pane
             except Exception as e:
@@ -484,14 +491,7 @@ def send_agent_prompt(herdr: Herdr, pane_id: str, text: str) -> None:
             raise
 
 
-def alert_tab(hb: HeartbeatItem) -> str:
-    """The tab a check that ended in an alert is still in, if any.
-
-    That tab is what the alert is about - the finding, the PR it opened - so
-    the next run leaves it for somebody to read rather than clearing it away.
-    """
-    pane_id = (hb.unseen_alert or {}).get("pane_id") or (
-        hb.target_pane if hb.last_status == "alert" else "")
+def _tab_for_pane(pane_id: str) -> str:
     if not pane_id:
         return ""
     try:
@@ -501,17 +501,41 @@ def alert_tab(hb: HeartbeatItem) -> str:
     return next((p.get("tab_id") or "" for p in panes if p.get("pane_id") == pane_id), "")
 
 
+def _agent_name(hb_id: str, pane_id: str) -> str:
+    """Agent name unique to this heartbeat and pane, so a kept alert tab never
+    causes agent_name_taken on subsequent runs."""
+    suffix = pane_id.split(":")[-1] if ":" in pane_id else pane_id
+    return f"hb-{hb_id[:8]}-{suffix}"
+
+
+def _sync_and_save(cfg: HeartbeatConfig, target_hb: HeartbeatItem) -> None:
+    for i, hb in enumerate(cfg.heartbeats):
+        if hb.id == target_hb.id:
+            cfg.heartbeats[i] = target_hb
+            break
+    else:
+        cfg.heartbeats.append(target_hb)
+    cfg.save()
+
+
+def alert_tab(hb: HeartbeatItem) -> str:
+    """The tab a check that ended in an alert is still in, if any.
+
+    That tab is what the alert is about - the finding, the PR it opened - so
+    the next run leaves it for somebody to read rather than clearing it away.
+    """
+    pane_id = (hb.unseen_alert or {}).get("pane_id") or (
+        hb.target_pane if hb.last_status == "alert" else "")
+    return _tab_for_pane(pane_id)
+
+
 def started(cfg: HeartbeatConfig, target_hb: HeartbeatItem, pane_id: str, sentinel: str, prompt: str) -> dict:
     """Record a check as running in its new tab."""
     target_hb.target_pane = pane_id
     target_hb.last_run_at = time.time()
     target_hb.last_status = "running"
     target_hb.last_summary = "Check in progress…"
-    for i, hb in enumerate(cfg.heartbeats):
-        if hb.id == target_hb.id:
-            cfg.heartbeats[i] = target_hb
-            break
-    cfg.save()
+    _sync_and_save(cfg, target_hb)
     return {
         "ok": True,
         "id": target_hb.id,
@@ -559,17 +583,31 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
             tab_res = call_herdr_rpc("tab.list", {"workspace_id": target_hb.target_workspace})
             tabs = tab_res.get("result", {}).get("tabs", [])
             keep = alert_tab(target_hb)
+            pane_res = call_herdr_rpc("pane.list")
+            panes = pane_res.get("result", {}).get("panes", [])
+            if keep:
+                for t in tabs:
+                    if t.get("tab_id") == keep and t.get("label") == target_tab_label:
+                        try:
+                            call_herdr_rpc("tab.rename", {"tab_id": keep, "label": f"{target_tab_label}-alert"})
+                        except Exception:
+                            pass
+                        break
             for t in tabs:
                 label = t.get("label") or ""
                 if t.get("tab_id") == keep:
                     continue
                 if label == target_tab_label or label.startswith("hb-") or label == "heartbeat":
-                    if t.get("agent_status") == "working":
+                    matching_panes = [p for p in panes if p.get("tab_id") == t.get("tab_id")]
+                    is_active = any(is_heartbeat_active(p.get("pane_id")) for p in matching_panes)
+                    if is_active:
                         msg = f"Heartbeat '{target_hb.name}' is already running in {t.get('tab_id')}"
                         target_hb.last_status = "busy"
                         target_hb.last_summary = msg
-                        cfg.save()
+                        _sync_and_save(cfg, target_hb)
                         return {"ok": False, "error": msg}
+                    if t.get("agent_status") == "working":
+                        continue
                     try:
                         call_herdr_rpc("tab.close", {"tab_id": t.get("tab_id")})
                     except Exception:
@@ -582,7 +620,7 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
             msg = f"Target workspace '{target_hb.target_workspace}' not found or has no cwd"
             target_hb.last_status = "error"
             target_hb.last_summary = msg
-            cfg.save()
+            _sync_and_save(cfg, target_hb)
             return {"ok": False, "error": msg}
 
         try:
@@ -591,7 +629,7 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
             msg = f"Failed to create tab in {target_hb.target_workspace}: {e}"
             target_hb.last_status = "error"
             target_hb.last_summary = msg
-            cfg.save()
+            _sync_and_save(cfg, target_hb)
             return {"ok": False, "error": msg}
 
         args = _launch_args(target_hb.agent_kind or "claude", target_hb.model)
@@ -599,19 +637,21 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         args.append(clean_prompt)
         mark_heartbeat_started(pane_id, sentinel, target_hb.id, target_hb.name)
         try:
-            herdr.agent_start(f"hb-{target_hb.id[:8]}", pane_id, kind=target_hb.agent_kind or "claude", args=args)
-        except HerdrError as e:
-            # The prompt is a launch argument, so the agent works from its first
-            # second and only reads ready once it has finished: a check longer
-            # than the wait is running, not failed. Calling it failed dropped
-            # the run and retried it, and the retry closed the tab with its PR.
-            if e.code == "agent_never_ready":
+            herdr.agent_start(_agent_name(target_hb.id, pane_id), pane_id, kind=target_hb.agent_kind or "claude", args=args)
+        except Exception as e:
+            if isinstance(e, HerdrError) and e.code == "agent_never_ready":
                 return started(cfg, target_hb, pane_id, sentinel, prompt)
             pop_heartbeat(pane_id)
+            tab_id = _tab_for_pane(pane_id)
+            if tab_id:
+                try:
+                    call_herdr_rpc("tab.close", {"tab_id": tab_id})
+                except Exception as close_err:
+                    log.warning("failed to close tab for failed heartbeat start %s: %s", pane_id, close_err)
             msg = f"Failed to start {target_hb.agent_kind} in {pane_id}: {e}"
             target_hb.last_status = "error"
             target_hb.last_summary = msg
-            cfg.save()
+            _sync_and_save(cfg, target_hb)
             return {"ok": False, "error": msg}
 
         return started(cfg, target_hb, pane_id, sentinel, prompt)
@@ -622,7 +662,7 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         msg = f"No target agent configured or online for '{target_hb.name}'. Please select a project in Settings."
         target_hb.last_status = "error"
         target_hb.last_summary = msg
-        cfg.save()
+        _sync_and_save(cfg, target_hb)
         return {"ok": False, "error": msg}
 
     status = herdr.status(pane_id)
@@ -630,7 +670,7 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
         msg = f"Target agent in {pane_id} is currently busy doing other work"
         target_hb.last_status = "busy"
         target_hb.last_summary = msg
-        cfg.save()
+        _sync_and_save(cfg, target_hb)
         return {"ok": False, "error": msg}
 
     if target_hb.clear_session and status in ("idle", "done"):
@@ -652,11 +692,7 @@ def trigger_heartbeat(hb_or_cfg: HeartbeatItem | HeartbeatConfig | None = None,
     target_hb.last_summary = "Check in progress…"
 
     # Sync back to config and save
-    for i, hb in enumerate(cfg.heartbeats):
-        if hb.id == target_hb.id:
-            cfg.heartbeats[i] = target_hb
-            break
-    cfg.save()
+    _sync_and_save(cfg, target_hb)
 
     return {
         "ok": True,

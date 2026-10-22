@@ -83,6 +83,19 @@ function describe(last) {
   return { title: `${who} finished`, body: last.agents[0].title || "Tap to open." };
 }
 
+function fetchWithTimeout(url, ms = 2500) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return fetch(url, { cache: "no-store", signal: AbortSignal.timeout(ms) }).catch(() => null);
+  }
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), ms) : null;
+  return fetch(url, { cache: "no-store", signal: controller ? controller.signal : undefined })
+    .catch(() => null)
+    .finally(() => {
+      clearTimeout(timer);
+    });
+}
+
 self.addEventListener("push", (event) => {
   event.waitUntil(
     (async () => {
@@ -95,8 +108,8 @@ self.addEventListener("push", (event) => {
 
       try {
         const [agentsRes, lastRes] = await Promise.all([
-          fetch("/api/agents", { cache: "no-store" }).catch(() => null),
-          fetch("/api/push/last", { cache: "no-store" }).catch(() => null),
+          fetchWithTimeout("/api/agents", 2500),
+          fetchWithTimeout("/api/push/last", 2500),
         ]);
         const data = await readJson(agentsRes);
         const last = await readJson(lastRes);
