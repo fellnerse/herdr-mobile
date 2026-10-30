@@ -2266,7 +2266,7 @@ with tempfile.TemporaryDirectory(prefix="sheepit-hb-start-") as hb_dir:
         heartbeat.pop_heartbeat("wE:pW")
 
 # A run uses a unique agent name per pane to prevent agent_name_taken if an alert tab is open
-check("agent name includes pane suffix", heartbeat._agent_name("hb_1789984182331", "wE:p1P"), "hb-hb_17899-p1P")
+check("agent name includes pane suffix", heartbeat._agent_name("hb_1789984182331", "wE:p1P"), "hb-hb_17899-p1p")
 
 # When agent_start fails, the newly created tab is cleaned up and error is saved to config
 with tempfile.TemporaryDirectory(prefix="sheepit-hb-fail-cleanup-") as hb_dir:
