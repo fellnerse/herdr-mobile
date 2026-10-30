@@ -505,7 +505,7 @@ def _agent_name(hb_id: str, pane_id: str) -> str:
     """Agent name unique to this heartbeat and pane, so a kept alert tab never
     causes agent_name_taken on subsequent runs."""
     suffix = pane_id.split(":")[-1] if ":" in pane_id else pane_id
-    return f"hb-{hb_id[:8]}-{suffix}"
+    return f"hb-{hb_id[:8]}-{suffix}".lower()  # herdr: [a-z][a-z0-9_-]{0,31}
 
 
 def _sync_and_save(cfg: HeartbeatConfig, target_hb: HeartbeatItem) -> None:
